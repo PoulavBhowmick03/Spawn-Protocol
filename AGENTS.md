@@ -18,9 +18,9 @@ Both Claude Code agents should read this file before starting work and update it
 
 ## Agent 2 (Terminal s013) — Core Development
 **Status:** ACTIVE
-**Last action:** Swarm running live on both chains, 8+ votes cast, Venice 6-call pipeline working
-**Currently working on:** StETHTreasury.sol (real Lido bounty) + DelegationEnforcer.sol (MetaMask bounty)
-**Files recently modified:** contracts/src/*, agent/src/swarm.ts, agent/src/venice.ts, agent/src/chain.ts, agent.json
+**Last action:** Unique child wallets + onchain SpawnENSRegistry deployed + StETHTreasury
+**Currently working on:** Running swarm with all new features
+**Files recently modified:** contracts/src/StETHTreasury.sol, contracts/src/SpawnENSRegistry.sol, agent/src/wallet-manager.ts, agent/src/ens.ts, agent/src/child.ts, agent/src/swarm.ts, agent/src/spawn-child.ts
 
 ---
 
