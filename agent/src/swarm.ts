@@ -438,32 +438,33 @@ async function main() {
     });
   } catch {}
 
-  // Initialize both chains
+  // Initialize Base Sepolia (Celo disabled — contracts need redeploy with operator auth)
   await initChain(BASE_CONFIG);
-  await initChain(CELO_CONFIG);
+  // TODO: await initChain(CELO_CONFIG); — redeploy Celo contracts first
 
   // Start discovery feed — mirrors real/simulated proposals to each governor
   console.log("\n── Starting proposal discovery feed ──");
   for (const gov of BASE_CONFIG.governors) {
     await startProposalFeed(gov.addr, BASE_CONFIG.sendTx as any);
   }
-  for (const gov of CELO_CONFIG.governors) {
-    await startProposalFeed(gov.addr, CELO_CONFIG.sendTx as any);
-  }
+  // Celo disabled until redeploy
+  // for (const gov of CELO_CONFIG.governors) {
+  //   await startProposalFeed(gov.addr, CELO_CONFIG.sendTx as any);
+  // }
   console.log(`[Discovery] Feed active for ${BASE_CONFIG.governors.length + CELO_CONFIG.governors.length} governors across 2 chains`);
 
   // Also create proposals from the bank for diverse coverage
   console.log("\n── Seeding initial proposals ──");
   for (let i = 0; i < 3; i++) {
     await createProposalOnChain(BASE_CONFIG);
-    await createProposalOnChain(CELO_CONFIG);
+    // await createProposalOnChain(CELO_CONFIG);
   }
 
   // Proposal creation loop — new proposals appear automatically
   setInterval(async () => {
     console.log("\n── New proposals appearing ──");
     await createProposalOnChain(BASE_CONFIG);
-    await createProposalOnChain(CELO_CONFIG);
+    // await createProposalOnChain(CELO_CONFIG); // disabled until redeploy
     // Log discovered DAOs for visibility
     const daos = getDiscoveredDAOs();
     if (daos.length > 0) {
@@ -479,8 +480,9 @@ async function main() {
     console.log(`\n[Base Sepolia]`);
     await evaluateChainChildren(BASE_CONFIG);
 
-    console.log(`\n[Celo Sepolia]`);
-    await evaluateChainChildren(CELO_CONFIG);
+    // Celo disabled until redeploy
+    // console.log(`\n[Celo Sepolia]`);
+    // await evaluateChainChildren(CELO_CONFIG);
 
     console.log(`\n[Yield]`);
     await logYieldStatus();
@@ -488,7 +490,7 @@ async function main() {
     // Venice: generate swarm status report
     try {
       const allChildren: { name: string; score: number; votes: number }[] = [];
-      for (const cfg of [BASE_CONFIG, CELO_CONFIG]) {
+      for (const cfg of [BASE_CONFIG]) { // Celo disabled until redeploy
         const kids = (await cfg.readClient.readContract({
           address: cfg.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
         })) as any[];
