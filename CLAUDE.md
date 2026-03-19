@@ -351,6 +351,14 @@ All team members must transfer ERC-8004 identity to a self-owned wallet:
 - **TimeLock:** `0x05952Db4Eece0EE3498fbcf25E8e29133AcAdE09`
 - **Deployer:** `0x15896e731c51ecB7BdB1447600DF126ea1d6969A`
 
+## Deployed Contracts (Celo Sepolia, chain 11142220)
+- **MockGovernor:** `0x8aF194474ebB0425b863036177FEA2AF37e1E41C`
+- **ParentTreasury:** `0x4Fb6c048377dcdE74c44aC672166A9427ed10909`
+- **ChildGovernor (impl):** `0xcD2ED80d015883fe861c2055f63f1879B0853D96`
+- **SpawnFactory:** `0x4687E4C2B7087382d634D61fa973b134a5d9617D`
+- **TimeLock:** `0x8a3c83F32FAdDd4DA7d8d190ce740dd441D871B5`
+- **RPC:** `https://celo-sepolia.drpc.org`
+
 ## Dashboard Agent Instructions
 A separate Claude Code agent should build the dashboard in `dashboard/`.
 See the "Dashboard Agent Prompt" section below for the full prompt.
@@ -456,7 +464,7 @@ npx shadcn@latest init -d
 - [x] ENS subdomains wired into parent spawn flow (local fallback on Base Sepolia) ✓ VERIFIED LIVE
 - [x] Lido stETH integration (yield tracking + self-sustainability metrics)
 - [x] End-to-end demo tested on Base Sepolia ✓ ALL VOTES ONCHAIN
-- [ ] Deployed to Celo Sepolia (RPC down globally)
+- [x] Deployed to Celo Sepolia (chain 11142220)
 - [ ] Dashboard live (separate agent building)
 - [ ] Demo recorded
 - [ ] Submitted
