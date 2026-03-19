@@ -18,6 +18,7 @@ contract ChildGovernor is Initializable {
     address public parent;
     address public factory;
     address public governance;
+    address public operator; // child's unique wallet — can cast votes
     uint256 public maxGasPerVote;
     uint256 public alignmentScore;
     bool public active;
@@ -31,7 +32,7 @@ contract ChildGovernor is Initializable {
     event Deactivated();
 
     modifier onlyAuthorized() {
-        require(msg.sender == parent || msg.sender == factory, "unauthorized");
+        require(msg.sender == parent || msg.sender == factory || msg.sender == operator, "unauthorized");
         _;
     }
 
@@ -52,6 +53,12 @@ contract ChildGovernor is Initializable {
         maxGasPerVote = _maxGas;
         alignmentScore = 100;
         active = true;
+    }
+
+    /// @notice Parent sets the child's unique wallet as operator
+    function setOperator(address _operator) external {
+        require(msg.sender == parent, "only parent");
+        operator = _operator;
     }
 
     function castVote(

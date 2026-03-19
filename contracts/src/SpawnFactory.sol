@@ -135,6 +135,13 @@ contract SpawnFactory {
         emit FundsReallocated(fromId, toId, amount);
     }
 
+    /// @notice Set a child's operator wallet (its unique signing address)
+    function setChildOperator(uint256 childId, address operatorAddr) external onlyParent {
+        ChildInfo storage info = children[childId];
+        require(info.active, "child not active");
+        ChildGovernor(payable(info.childAddr)).setOperator(operatorAddr);
+    }
+
     function getActiveChildren() external view returns (ChildInfo[] memory) {
         ChildInfo[] memory result = new ChildInfo[](activeChildIds.length);
         for (uint256 i = 0; i < activeChildIds.length; i++) {

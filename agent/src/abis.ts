@@ -319,6 +319,16 @@ export const SpawnFactoryABI = [
   },
   {
     type: "function",
+    name: "setChildOperator",
+    inputs: [
+      { name: "childId", type: "uint256" },
+      { name: "operatorAddr", type: "address" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "setParentAgent",
     inputs: [{ name: "_parentAgent", type: "address" }],
     outputs: [],
@@ -399,6 +409,13 @@ export const ChildGovernorABI = [
     type: "function",
     name: "deactivate",
     inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "setOperator",
+    inputs: [{ name: "_operator", type: "address" }],
     outputs: [],
     stateMutability: "nonpayable",
   },
