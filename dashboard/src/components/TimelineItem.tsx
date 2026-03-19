@@ -109,9 +109,15 @@ export function TimelineItem({ event }: TimelineItemProps) {
             {style.label}
           </span>
           <div className="flex items-center gap-2">
-            <span className="font-mono text-xs text-gray-600">
-              block #{event.blockNumber.toString()}
-            </span>
+            {event.timestamp ? (
+              <span className="font-mono text-xs text-gray-500">
+                {new Date(Number(event.timestamp) * 1000).toLocaleString()}
+              </span>
+            ) : (
+              <span className="font-mono text-xs text-gray-600">
+                block #{event.blockNumber.toString()}
+              </span>
+            )}
             {event.transactionHash && event.transactionHash !== "0x" && (
               <a
                 href={explorerTx(event.transactionHash)}

@@ -236,6 +236,23 @@ export function useTimeline() {
         })),
       ];
 
+      // Fetch timestamps for unique block numbers (batch, max 20)
+      const uniqueBlocks = [...new Set(allEvents.map((e) => e.blockNumber))].slice(0, 20);
+      const blockTimestamps = new Map<bigint, bigint>();
+      await Promise.all(
+        uniqueBlocks.map(async (bn) => {
+          try {
+            const block = await publicClient.getBlock({ blockNumber: bn });
+            blockTimestamps.set(bn, block.timestamp);
+          } catch {}
+        })
+      );
+
+      // Attach timestamps
+      for (const event of allEvents) {
+        event.timestamp = blockTimestamps.get(event.blockNumber);
+      }
+
       allEvents.sort((a, b) => {
         if (b.blockNumber > a.blockNumber) return 1;
         if (b.blockNumber < a.blockNumber) return -1;
