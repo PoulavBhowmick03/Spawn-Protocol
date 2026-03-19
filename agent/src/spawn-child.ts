@@ -5,6 +5,9 @@
  *
  * The parent agent spawns this as a separate process for each child,
  * making each child a genuinely independent reasoning loop.
+ *
+ * Each child gets its own wallet via CHILD_PRIVATE_KEY environment variable,
+ * so every child signs transactions from a unique address.
  */
 
 import { publicClient } from "./chain.js";
@@ -17,6 +20,9 @@ if (!childAddr || !governanceAddr || !label) {
   console.error("Usage: tsx src/spawn-child.ts <childAddr> <governanceAddr> <label> [treasuryAddr]");
   process.exit(1);
 }
+
+// Child's unique private key, passed by the parent swarm
+const childPrivateKey = process.env.CHILD_PRIVATE_KEY as `0x${string}` | undefined;
 
 async function main() {
   let values = "Prioritize decentralization, support public goods, oppose inflation";
@@ -32,12 +38,18 @@ async function main() {
     } catch {}
   }
 
-  console.log(`[ChildProcess:${label}] PID ${process.pid} starting...`);
+  if (childPrivateKey) {
+    console.log(`[ChildProcess:${label}] PID ${process.pid} starting with unique wallet...`);
+  } else {
+    console.log(`[ChildProcess:${label}] PID ${process.pid} starting (shared wallet)...`);
+  }
+
   await runChildLoop(
     childAddr as `0x${string}`,
     governanceAddr as `0x${string}`,
     values,
-    label
+    label,
+    childPrivateKey
   );
 }
 

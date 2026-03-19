@@ -1,8 +1,9 @@
 import { publicClient, walletClient, account } from "./chain.js";
+import { createWalletClientFromKey } from "./wallet-manager.js";
 import { ChildGovernorABI, MockGovernorABI } from "./abis.js";
 import { reasonAboutProposal, summarizeProposal, assessProposalRisk } from "./venice.js";
 import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./lit.js";
-import { toHex } from "viem";
+import { toHex, type Hex } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 
 const CYCLE_INTERVAL_MS = 30_000;
@@ -11,8 +12,21 @@ export async function runChildLoop(
   childAddr: `0x${string}`,
   governanceAddr: `0x${string}`,
   governanceValues: string,
-  childLabel: string
+  childLabel: string,
+  childPrivateKey?: `0x${string}`
 ) {
+  // Create child-specific wallet client if a private key was provided
+  // Using 'any' to avoid viem's strict chain typing on generic WalletClient
+  let childWalletClient: any;
+  if (childPrivateKey) {
+    childWalletClient = createWalletClientFromKey(childPrivateKey);
+    const childAccount = childWalletClient.account;
+    console.log(`[Child:${childLabel}] Using unique wallet: ${childAccount?.address}`);
+  } else {
+    childWalletClient = walletClient;
+    console.log(`[Child:${childLabel}] Using shared parent wallet: ${account.address}`);
+  }
+
   console.log(`[Child:${childLabel}] Starting child agent loop...`);
   console.log(`[Child:${childLabel}] Contract: ${childAddr}`);
   console.log(`[Child:${childLabel}] Governance: ${governanceAddr}`);
@@ -45,7 +59,7 @@ Your owner's governance values: ${governanceValues}`;
         break;
       }
 
-      await childCycle(childAddr, governanceAddr, governanceValues, childLabel, systemPrompt, litAvailable);
+      await childCycle(childAddr, governanceAddr, governanceValues, childLabel, systemPrompt, litAvailable, childWalletClient);
     } catch (err) {
       console.error(`[Child:${childLabel}] Cycle error:`, err);
     }
@@ -59,7 +73,8 @@ async function childCycle(
   governanceValues: string,
   childLabel: string,
   systemPrompt: string,
-  litAvailable: boolean = false
+  litAvailable: boolean = false,
+  childWalletClient: any = walletClient
 ) {
   // 1. Get total proposal count
   const proposalCount = (await publicClient.readContract({
@@ -143,8 +158,8 @@ async function childCycle(
           encryptedRationale = toHex(reasoning);
         }
 
-        // 5. Cast vote onchain
-        const hash = await walletClient.writeContract({
+        // 5. Cast vote onchain using child's own wallet
+        const hash = await childWalletClient.writeContract({
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "castVote",
@@ -219,7 +234,7 @@ async function childCycle(
             }
           }
 
-          const hash = await walletClient.writeContract({
+          const hash = await childWalletClient.writeContract({
             address: childAddr,
             abi: ChildGovernorABI,
             functionName: "revealRationale",

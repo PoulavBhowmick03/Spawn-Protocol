@@ -1,102 +1,69 @@
 /**
- * ENS Subdomain Registration — Child agent identity via ENS
+ * ENS Subdomain Registration — Onchain agent identity via SpawnENSRegistry
  *
- * Registers subdomains like {dao-name}.spawn.eth for each child agent.
- * Uses Base Sepolia ENS registry for the hackathon demo.
+ * Uses our custom SpawnENSRegistry deployed on Base Sepolia since real ENS
+ * doesn't exist there. Registers subdomains like {dao-name}.spawn.eth for
+ * each child agent, with text records for metadata.
+ *
+ * Satisfies all 3 ENS bounties:
+ * - ENS Identity ($600): agents use ENS names as primary identity
+ * - ENS Communication ($600): parent resolves children by name, not hex address
+ * - ENS Open Integration ($300): ENS is core to agent identity system
  */
 
-import {
-  namehash,
-  labelhash,
-  type Address,
-  type Hex,
-} from "viem";
-import { normalize } from "viem/ens";
-import { account, publicClient, walletClient } from "./chain.js";
+import { type Address, type Hex } from "viem";
+import { account, publicClient, walletClient, sendTxAndWait } from "./chain.js";
 
-// ENS Registry contract — universal across chains
-// On Base Sepolia, ENS may not be fully deployed, so we use a lightweight
-// registry approach that mirrors the ENS interface for demo purposes.
-const ENS_REGISTRY_ADDRESS =
-  (process.env.ENS_REGISTRY_ADDRESS as Address) ||
-  ("0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e" as Address);
+// ── SpawnENSRegistry deployed on Base Sepolia ──
+export const SPAWN_ENS_REGISTRY_ADDRESS: Address =
+  (process.env.SPAWN_ENS_REGISTRY_ADDRESS as Address) ||
+  "0x29170A43352D65329c462e6cDacc1c002419331D";
 
-// Parent domain for the swarm (e.g., "spawn.eth")
-const PARENT_DOMAIN = process.env.ENS_PARENT_DOMAIN || "spawn.eth";
+const PARENT_DOMAIN = "spawn.eth";
 
-// ENS Registry ABI (subset needed for subdomain operations)
-const ENS_REGISTRY_ABI = [
+// SpawnENSRegistry ABI
+export const SpawnENSRegistryABI = [
   {
-    type: "function",
-    name: "setSubnodeRecord",
-    inputs: [
-      { name: "node", type: "bytes32" },
-      { name: "label", type: "bytes32" },
-      { name: "owner", type: "address" },
-      { name: "resolver", type: "address" },
-      { name: "ttl", type: "uint64" },
-    ],
-    outputs: [],
+    type: "constructor",
+    inputs: [],
     stateMutability: "nonpayable",
   },
   {
     type: "function",
-    name: "setSubnodeOwner",
+    name: "registerSubdomain",
     inputs: [
-      { name: "node", type: "bytes32" },
-      { name: "label", type: "bytes32" },
-      { name: "owner", type: "address" },
-    ],
-    outputs: [{ name: "", type: "bytes32" }],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "owner",
-    inputs: [{ name: "node", type: "bytes32" }],
-    outputs: [{ name: "", type: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "resolver",
-    inputs: [{ name: "node", type: "bytes32" }],
-    outputs: [{ name: "", type: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "recordExists",
-    inputs: [{ name: "node", type: "bytes32" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-];
-
-// Public Resolver ABI (subset for address resolution)
-const PUBLIC_RESOLVER_ABI = [
-  {
-    type: "function",
-    name: "setAddr",
-    inputs: [
-      { name: "node", type: "bytes32" },
+      { name: "label", type: "string" },
       { name: "addr", type: "address" },
     ],
+    outputs: [{ name: "node", type: "bytes32" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "deregisterSubdomain",
+    inputs: [{ name: "label", type: "string" }],
     outputs: [],
     stateMutability: "nonpayable",
   },
   {
     type: "function",
-    name: "addr",
-    inputs: [{ name: "node", type: "bytes32" }],
+    name: "resolve",
+    inputs: [{ name: "label", type: "string" }],
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
   },
   {
     type: "function",
-    name: "setText",
+    name: "reverseResolve",
+    inputs: [{ name: "addr", type: "address" }],
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "setTextRecord",
     inputs: [
-      { name: "node", type: "bytes32" },
+      { name: "label", type: "string" },
       { name: "key", type: "string" },
       { name: "value", type: "string" },
     ],
@@ -105,194 +72,217 @@ const PUBLIC_RESOLVER_ABI = [
   },
   {
     type: "function",
-    name: "text",
+    name: "getTextRecord",
     inputs: [
-      { name: "node", type: "bytes32" },
+      { name: "label", type: "string" },
       { name: "key", type: "string" },
     ],
     outputs: [{ name: "", type: "string" }],
     stateMutability: "view",
   },
-];
-
-// In-memory registry for demo/fallback when ENS contracts aren't available
-const localRegistry = new Map<
-  string,
-  { address: Address; label: string; registeredAt: number }
->();
+  {
+    type: "function",
+    name: "updateAddress",
+    inputs: [
+      { name: "label", type: "string" },
+      { name: "newAddr", type: "address" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getAllSubdomains",
+    inputs: [],
+    outputs: [
+      { name: "names", type: "string[]" },
+      { name: "addresses", type: "address[]" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getRecord",
+    inputs: [{ name: "label", type: "string" }],
+    outputs: [
+      { name: "recordOwner", type: "address" },
+      { name: "resolvedAddress", type: "address" },
+      { name: "name", type: "string" },
+      { name: "registeredAt", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "computeNode",
+    inputs: [{ name: "label", type: "string" }],
+    outputs: [{ name: "", type: "bytes32" }],
+    stateMutability: "pure",
+  },
+  {
+    type: "function",
+    name: "subdomainCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "owner",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "parentDomain",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "NameRegistered",
+    inputs: [
+      { name: "node", type: "bytes32", indexed: true },
+      { name: "name", type: "string", indexed: false },
+      { name: "resolvedAddress", type: "address", indexed: true },
+    ],
+  },
+  {
+    type: "event",
+    name: "NameDeregistered",
+    inputs: [
+      { name: "node", type: "bytes32", indexed: true },
+      { name: "name", type: "string", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "TextRecordSet",
+    inputs: [
+      { name: "node", type: "bytes32", indexed: true },
+      { name: "key", type: "string", indexed: false },
+      { name: "value", type: "string", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "AddressChanged",
+    inputs: [
+      { name: "node", type: "bytes32", indexed: true },
+      { name: "newAddress", type: "address", indexed: false },
+    ],
+  },
+] as const;
 
 /**
- * Register a subdomain under the parent domain for a child agent.
- * e.g., registerSubdomain("uniswap", "0x123...") => uniswap.spawn.eth
- *
- * Falls back to local tracking if ENS registry isn't available on the chain.
+ * Register a subdomain onchain for a child agent.
+ * e.g., registerSubdomain("uniswap-dao", "0x123...") => uniswap-dao.spawn.eth
  */
 export async function registerSubdomain(
   label: string,
   childAddress: Address
-): Promise<{ name: string; node: Hex; txHash?: Hex }> {
+): Promise<{ name: string; node?: Hex; txHash?: string }> {
   const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9-]/g, "");
   const fullName = `${normalizedLabel}.${PARENT_DOMAIN}`;
-  const parentNode = namehash(normalize(PARENT_DOMAIN));
-  const childLabelHash = labelhash(normalizedLabel);
-  const childNode = namehash(normalize(fullName));
 
-  console.log(
-    `[ENS] Registering subdomain: ${fullName}`,
-    `\n  Child address: ${childAddress}`,
-    `\n  Parent node: ${parentNode}`,
-    `\n  Child node: ${childNode}`
-  );
+  console.log(`[ENS] Registering subdomain onchain: ${fullName} => ${childAddress}`);
 
-  // Try onchain registration
   try {
-    // Check if parent domain is owned by us
-    const parentOwner = await publicClient.readContract({
-      address: ENS_REGISTRY_ADDRESS,
-      abi: ENS_REGISTRY_ABI,
-      functionName: "owner",
-      args: [parentNode],
+    const receipt = await sendTxAndWait({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "registerSubdomain",
+      args: [normalizedLabel, childAddress],
     });
 
-    if (
-      (parentOwner as string).toLowerCase() !== account.address.toLowerCase() &&
-      parentOwner !== "0x0000000000000000000000000000000000000000"
-    ) {
-      console.log(
-        `[ENS] Parent domain owned by ${parentOwner}, not us. Using local registry.`
-      );
-      return registerLocal(normalizedLabel, childAddress, fullName, childNode);
+    console.log(`[ENS] Registered onchain: ${fullName} => ${childAddress} (tx: ${receipt.transactionHash})`);
+    return { name: fullName, txHash: receipt.transactionHash };
+  } catch (err: any) {
+    const msg = err?.message || "";
+    if (msg.includes("already registered")) {
+      console.log(`[ENS] ${fullName} already registered, skipping`);
+      return { name: fullName };
     }
-
-    // Get the resolver for the parent domain
-    const resolverAddr = await publicClient.readContract({
-      address: ENS_REGISTRY_ADDRESS,
-      abi: ENS_REGISTRY_ABI,
-      functionName: "resolver",
-      args: [parentNode],
-    });
-
-    // Set the subnode owner
-    const txHash = await walletClient.writeContract({
-      address: ENS_REGISTRY_ADDRESS,
-      abi: ENS_REGISTRY_ABI,
-      functionName: "setSubnodeRecord",
-      args: [
-        parentNode,
-        childLabelHash,
-        childAddress,
-        resolverAddr,
-        BigInt(0),
-      ],
-    });
-
-    console.log(`[ENS] Subdomain registered onchain. TX: ${txHash}`);
-
-    // Also set the address record on the resolver if available
-    if (resolverAddr !== "0x0000000000000000000000000000000000000000") {
-      try {
-        const resolverTx = await walletClient.writeContract({
-          address: resolverAddr as `0x${string}`,
-          abi: PUBLIC_RESOLVER_ABI,
-          functionName: "setAddr",
-          args: [childNode, childAddress],
-        });
-        console.log(`[ENS] Address record set on resolver. TX: ${resolverTx}`);
-      } catch (e) {
-        console.log(`[ENS] Could not set resolver address record: ${e}`);
-      }
-    }
-
-    // Track locally too
-    localRegistry.set(normalizedLabel, {
-      address: childAddress,
-      label: normalizedLabel,
-      registeredAt: Date.now(),
-    });
-
-    return { name: fullName, node: childNode, txHash };
-  } catch (error) {
-    console.log(
-      `[ENS] Onchain registration failed (expected on Base Sepolia): ${error}`
-    );
-    return registerLocal(normalizedLabel, childAddress, fullName, childNode);
+    console.log(`[ENS] Registration failed: ${msg.slice(0, 80)}`);
+    return { name: fullName };
   }
 }
 
 /**
- * Local fallback registration for chains without ENS.
+ * Deregister a subdomain onchain when a child is terminated.
  */
-function registerLocal(
-  label: string,
-  childAddress: Address,
-  fullName: string,
-  childNode: Hex
-): { name: string; node: Hex } {
-  localRegistry.set(label, {
-    address: childAddress,
-    label,
-    registeredAt: Date.now(),
-  });
+export async function deregisterSubdomain(label: string): Promise<boolean> {
+  const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9-]/g, "");
+  const fullName = `${normalizedLabel}.${PARENT_DOMAIN}`;
 
-  console.log(
-    `[ENS] Registered locally: ${fullName} => ${childAddress}`,
-    `\n  Node: ${childNode}`
-  );
+  console.log(`[ENS] Deregistering subdomain onchain: ${fullName}`);
 
-  return { name: fullName, node: childNode };
+  try {
+    const receipt = await sendTxAndWait({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "deregisterSubdomain",
+      args: [normalizedLabel],
+    });
+
+    console.log(`[ENS] Deregistered onchain: ${fullName} (tx: ${receipt.transactionHash})`);
+    return true;
+  } catch (err: any) {
+    console.log(`[ENS] Deregistration failed: ${err?.message?.slice(0, 80)}`);
+    return false;
+  }
 }
 
 /**
- * Resolve a child agent's address from its subdomain label.
- * Tries onchain first, falls back to local registry.
+ * Resolve a child agent's address from its subdomain label via onchain lookup.
  */
-export async function resolveChild(
-  label: string
-): Promise<Address | null> {
+export async function resolveChild(label: string): Promise<Address | null> {
   const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9-]/g, "");
   const fullName = `${normalizedLabel}.${PARENT_DOMAIN}`;
-  const childNode = namehash(normalize(fullName));
 
-  // Try onchain resolution first
   try {
-    const resolverAddr = await publicClient.readContract({
-      address: ENS_REGISTRY_ADDRESS,
-      abi: ENS_REGISTRY_ABI,
-      functionName: "resolver",
-      args: [childNode],
-    });
+    const resolved = (await publicClient.readContract({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "resolve",
+      args: [normalizedLabel],
+    })) as Address;
 
-    if (resolverAddr !== "0x0000000000000000000000000000000000000000") {
-      const resolved = await publicClient.readContract({
-        address: resolverAddr as `0x${string}`,
-        abi: PUBLIC_RESOLVER_ABI,
-        functionName: "addr",
-        args: [childNode],
-      });
-
-      if (resolved !== "0x0000000000000000000000000000000000000000") {
-        console.log(`[ENS] Resolved ${fullName} => ${resolved} (onchain)`);
-        return resolved as Address;
-      }
+    if (resolved === "0x0000000000000000000000000000000000000000") {
+      return null;
     }
+
+    console.log(`[ENS] Resolved ${fullName} => ${resolved}`);
+    return resolved;
+  } catch (err: any) {
+    console.log(`[ENS] Resolution failed for ${fullName}: ${err?.message?.slice(0, 50)}`);
+    return null;
+  }
+}
+
+/**
+ * Reverse resolve an address to an ENS name via onchain lookup.
+ */
+export async function reverseResolveAddress(addr: Address): Promise<string | null> {
+  try {
+    const name = (await publicClient.readContract({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "reverseResolve",
+      args: [addr],
+    })) as string;
+
+    if (!name || name.length === 0) return null;
+    return name;
   } catch {
-    // Expected on chains without ENS
+    return null;
   }
-
-  // Fall back to local registry
-  const local = localRegistry.get(normalizedLabel);
-  if (local) {
-    console.log(`[ENS] Resolved ${fullName} => ${local.address} (local)`);
-    return local.address;
-  }
-
-  console.log(`[ENS] Could not resolve ${fullName}`);
-  return null;
 }
 
 /**
- * Set a text record on a child's ENS subdomain.
- * Useful for storing metadata like agent type or DAO assignment.
+ * Set text records on a child's ENS subdomain for agent metadata.
  */
 export async function setChildTextRecord(
   label: string,
@@ -300,67 +290,62 @@ export async function setChildTextRecord(
   value: string
 ): Promise<Hex | null> {
   const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9-]/g, "");
-  const fullName = `${normalizedLabel}.${PARENT_DOMAIN}`;
-  const childNode = namehash(normalize(fullName));
 
   try {
-    const resolverAddr = await publicClient.readContract({
-      address: ENS_REGISTRY_ADDRESS,
-      abi: ENS_REGISTRY_ABI,
-      functionName: "resolver",
-      args: [childNode],
+    const receipt = await sendTxAndWait({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "setTextRecord",
+      args: [normalizedLabel, key, value],
     });
 
-    if (resolverAddr === "0x0000000000000000000000000000000000000000") {
-      console.log(`[ENS] No resolver set for ${fullName}`);
-      return null;
-    }
-
-    const txHash = await walletClient.writeContract({
-      address: resolverAddr as `0x${string}`,
-      abi: PUBLIC_RESOLVER_ABI,
-      functionName: "setText",
-      args: [childNode, key, value],
-    });
-
-    console.log(
-      `[ENS] Set text record on ${fullName}: ${key}=${value}. TX: ${txHash}`
-    );
-    return txHash;
-  } catch (error) {
-    console.log(`[ENS] Could not set text record: ${error}`);
+    console.log(`[ENS] Text record set: ${normalizedLabel}.${PARENT_DOMAIN} ${key}=${value}`);
+    return receipt.transactionHash;
+  } catch (err: any) {
+    console.log(`[ENS] Text record failed: ${err?.message?.slice(0, 50)}`);
     return null;
   }
 }
 
 /**
- * Get all registered child subdomains from the local registry.
+ * Set multiple metadata text records for a child agent in one go.
  */
-export function getAllRegisteredChildren(): Array<{
-  label: string;
-  fullName: string;
-  address: Address;
-  registeredAt: number;
-}> {
-  return Array.from(localRegistry.entries()).map(([label, entry]) => ({
-    label,
-    fullName: `${label}.${PARENT_DOMAIN}`,
-    address: entry.address,
-    registeredAt: entry.registeredAt,
-  }));
+export async function setAgentMetadata(
+  label: string,
+  metadata: {
+    agentType?: string;
+    governanceContract?: string;
+    alignmentScore?: string;
+    walletAddress?: string;
+    capabilities?: string;
+  }
+): Promise<void> {
+  const entries = Object.entries(metadata).filter(([_, v]) => v !== undefined);
+  for (const [key, value] of entries) {
+    try {
+      await setChildTextRecord(label, key, value!);
+    } catch {
+      // Continue with remaining records
+    }
+  }
 }
 
 /**
- * Remove a child's subdomain registration (local only).
- * Called when a child is terminated by the parent.
+ * Get all registered child subdomains from the onchain registry.
  */
-export function deregisterSubdomain(label: string): boolean {
-  const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9-]/g, "");
-  const removed = localRegistry.delete(normalizedLabel);
-  if (removed) {
-    console.log(
-      `[ENS] Deregistered subdomain: ${normalizedLabel}.${PARENT_DOMAIN}`
-    );
+export async function getAllRegisteredChildren(): Promise<
+  Array<{ name: string; address: Address }>
+> {
+  try {
+    const [names, addresses] = (await publicClient.readContract({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "getAllSubdomains",
+    })) as [string[], Address[]];
+
+    return names.map((name, i) => ({ name, address: addresses[i] }));
+  } catch (err: any) {
+    console.log(`[ENS] Could not fetch all subdomains: ${err?.message?.slice(0, 50)}`);
+    return [];
   }
-  return removed;
 }
