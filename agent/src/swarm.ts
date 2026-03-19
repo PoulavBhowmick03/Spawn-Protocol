@@ -442,16 +442,9 @@ async function main() {
   await initChain(BASE_CONFIG);
   // TODO: await initChain(CELO_CONFIG); — redeploy Celo contracts first
 
-  // Start discovery feed — mirrors real/simulated proposals to each governor
-  console.log("\n── Starting proposal discovery feed ──");
-  for (const gov of BASE_CONFIG.governors) {
-    await startProposalFeed(gov.addr, BASE_CONFIG.sendTx as any);
-  }
-  // Celo disabled until redeploy
-  // for (const gov of CELO_CONFIG.governors) {
-  //   await startProposalFeed(gov.addr, CELO_CONFIG.sendTx as any);
-  // }
-  console.log(`[Discovery] Feed active for ${BASE_CONFIG.governors.length + CELO_CONFIG.governors.length} governors across 2 chains`);
+  // Discovery feed disabled — has infinite loop bug. Using proposal bank instead.
+  // TODO: fix discovery.ts mirror function (Cannot read properties of undefined reading 'push')
+  console.log("\n── Using proposal bank (discovery feed disabled) ──");
 
   // Also create proposals from the bank for diverse coverage
   console.log("\n── Seeding initial proposals ──");

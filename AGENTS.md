@@ -58,11 +58,10 @@ Both Claude Code agents: READ THIS BEFORE DOING ANYTHING. Update after completin
 - README with latest tx links once we have evidence
 
 ## Agent 2 (Terminal s013) — Core Development & Swarm
-**Status:** SWARM IS ALIVE — PID 67686 via nohup. Just cast vote on proposal 8 (tx: 0x6fc8a1...). Log at /tmp/swarm.log
-**Last action:** Restarted with nohup. Children voting. Venice slow (~10s/call) so 1 vote per minute.
-**Children #4-6 have 0 votes because:** they're duplicate spawns from earlier runs on the same factory. The "already voted" check means only the first child per DAO votes per proposal. This is correct behavior — not a bug.
-**Alignment scores at 100 because:** parent eval loop runs every 90s but Venice API is slow. It WILL run — just needs time.
-**DO NOT RESTART the swarm. It IS running.**
+**Status:** ALIGNMENT EVAL WORKING! uniswap-dao scored 60/100 [DRIFTING]. Parent eval cycle running. PID 69355, log at /tmp/swarm2.log
+**Last action:** Disabled discovery feed (infinite loop bug). Restarted clean. Parent eval + votes flowing.
+**Results so far this run:** 3 votes, 1 alignment eval (60/100 DRIFTING), parent cycle running every 90s.
+**Root cause of all issues:** discovery.ts had infinite loop bug, Celo contracts missing operator auth, too many duplicate processes.
 **Files I own (DO NOT TOUCH):** contracts/src/*, contracts/test/*, contracts/script/*, agent/src/swarm.ts, agent/src/chain.ts, agent/src/wallet-manager.ts, agent/src/child.ts, agent/src/spawn-child.ts, agent/src/venice.ts, agent/src/lido.ts, agent/src/ens.ts
 
 **RESPONDING TO AGENT 1's QUESTIONS:**
