@@ -115,4 +115,110 @@ Respond in JSON: {"score": <number>, "explanation": "<brief explanation>"}`,
   }
 }
 
+/**
+ * Summarize a proposal into key points before voting.
+ * Shows Venice as the reasoning backbone, not just a decision machine.
+ */
+export async function summarizeProposal(
+  proposalDescription: string
+): Promise<string> {
+  const response = await venice.chat.completions.create({
+    model: "llama-3.3-70b",
+    messages: [
+      {
+        role: "system",
+        content: "You are a governance analyst. Summarize proposals concisely.",
+      },
+      {
+        role: "user",
+        content: `Summarize this governance proposal in 2-3 bullet points. Focus on: what changes, who benefits, what risks exist.\n\n${proposalDescription}`,
+      },
+    ],
+  });
+  return response.choices[0]?.message?.content || proposalDescription;
+}
+
+/**
+ * Assess risk level of a proposal before voting.
+ * Separate Venice call shows deeper reasoning workflow.
+ */
+export async function assessProposalRisk(
+  proposalDescription: string,
+  governanceValues: string
+): Promise<{ riskLevel: "low" | "medium" | "high" | "critical"; factors: string }> {
+  const response = await venice.chat.completions.create({
+    model: "llama-3.3-70b",
+    messages: [
+      {
+        role: "system",
+        content: "You are a governance risk assessor. Evaluate proposals for treasury risk, centralization risk, and alignment risk.",
+      },
+      {
+        role: "user",
+        content: `Governance values: ${governanceValues}\n\nProposal: ${proposalDescription}\n\nRespond in JSON: {"riskLevel": "low"|"medium"|"high"|"critical", "factors": "brief risk factors"}`,
+      },
+    ],
+  });
+
+  const content = response.choices[0]?.message?.content || "";
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return { riskLevel: parsed.riskLevel || "medium", factors: parsed.factors || content };
+    } catch {}
+  }
+  return { riskLevel: "medium", factors: content };
+}
+
+/**
+ * Generate a swarm activity report after each evaluation cycle.
+ * Shows Venice generating narrative outputs, not just classifications.
+ */
+export async function generateSwarmReport(
+  childrenStatus: { name: string; score: number; votes: number }[],
+  governanceValues: string
+): Promise<string> {
+  const response = await venice.chat.completions.create({
+    model: "llama-3.3-70b",
+    messages: [
+      {
+        role: "system",
+        content: "You are a governance swarm reporter. Write concise status reports.",
+      },
+      {
+        role: "user",
+        content: `Write a 3-sentence swarm status report.\n\nOwner values: ${governanceValues}\n\nAgent status:\n${childrenStatus.map((c) => `${c.name}: alignment ${c.score}/100, ${c.votes} votes cast`).join("\n")}\n\nInclude: overall health, any concerns, recommendation.`,
+      },
+    ],
+  });
+  return response.choices[0]?.message?.content || "Report generation failed.";
+}
+
+/**
+ * Generate termination post-mortem when a child is killed.
+ * Explains what went wrong for transparency and audit trail.
+ */
+export async function generateTerminationReport(
+  childName: string,
+  votingHistory: { proposalId: string; support: number }[],
+  governanceValues: string,
+  finalScore: number
+): Promise<string> {
+  const response = await venice.chat.completions.create({
+    model: "llama-3.3-70b",
+    messages: [
+      {
+        role: "system",
+        content: "You are a governance audit agent. Write termination post-mortems.",
+      },
+      {
+        role: "user",
+        content: `Agent "${childName}" was terminated with alignment score ${finalScore}/100.\n\nOwner values: ${governanceValues}\n\nVoting record: ${JSON.stringify(votingHistory)}\n\nWrite a 2-sentence explanation of why this agent was misaligned and what the replacement should do differently.`,
+      },
+    ],
+  });
+  return response.choices[0]?.message?.content || "Termination report unavailable.";
+}
+
 export { venice };

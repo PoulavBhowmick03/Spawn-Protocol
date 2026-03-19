@@ -21,7 +21,7 @@ import {
 import {
   MockGovernorABI, ParentTreasuryABI, SpawnFactoryABI, ChildGovernorABI,
 } from "./abis.js";
-import { evaluateAlignment } from "./venice.js";
+import { evaluateAlignment, generateSwarmReport, generateTerminationReport } from "./venice.js";
 import { registerSubdomain } from "./ens.js";
 import { registerAgent, updateAgentMetadata } from "./identity.js";
 import { createVotingDelegation } from "./delegation.js";
@@ -287,6 +287,13 @@ async function evaluateChainChildren(config: ChainConfig) {
           });
           logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "alignment_below_threshold" }, { finalScore: clamped });
 
+          // Venice: generate termination post-mortem
+          try {
+            const postMortem = await generateTerminationReport(child.ensLabel, historyForEval, values, clamped);
+            console.log(`  Post-mortem: ${postMortem.slice(0, 120)}`);
+            logParentAction("termination_report", { child: child.ensLabel }, { report: postMortem });
+          } catch {}
+
           const newLabel = `${child.ensLabel}-v2`;
           await config.sendTx({
             address: config.factory,
@@ -377,6 +384,29 @@ async function main() {
 
     console.log(`\n[Yield]`);
     await logYieldStatus();
+
+    // Venice: generate swarm status report
+    try {
+      const allChildren: { name: string; score: number; votes: number }[] = [];
+      for (const cfg of [BASE_CONFIG, CELO_CONFIG]) {
+        const kids = (await cfg.readClient.readContract({
+          address: cfg.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+        })) as any[];
+        for (const c of kids) {
+          try {
+            const score = Number(await cfg.readClient.readContract({ address: c.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }));
+            const hist = (await cfg.readClient.readContract({ address: c.childAddr, abi: ChildGovernorABI, functionName: "getVotingHistory" })) as any[];
+            allChildren.push({ name: `${c.ensLabel}@${cfg.name}`, score, votes: hist.length });
+          } catch {}
+        }
+      }
+      if (allChildren.length > 0) {
+        const values = (await BASE_CONFIG.readClient.readContract({ address: BASE_CONFIG.treasury, abi: ParentTreasuryABI, functionName: "getGovernanceValues" })) as string;
+        const report = await generateSwarmReport(allChildren, values);
+        console.log(`\n[Swarm Report] ${report}`);
+        logParentAction("swarm_report", { agentCount: allChildren.length }, { report });
+      }
+    } catch {}
 
     setTimeout(parentLoop, PARENT_CYCLE_MS);
   };

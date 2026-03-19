@@ -65,19 +65,23 @@
   "contracts": {
     "base-sepolia": {
       "chainId": 84532,
-      "MockGovernor": "0x377c623bf42580DAa8F6a9138639aC4861097700",
-      "ParentTreasury": "0xd6222F060FEe779E4F6A7f604b8E37593AE279dF",
-      "ChildGovernor": "0x7d3F6A908d28D910421A90BF8E92F5D50d46e23e",
-      "SpawnFactory": "0x15003b671d3b83a0Df2592665283742f8e65ED36",
-      "TimeLock": "0x5962CdAF11C0A1DE9498fF05F0926ba33a0257CA"
+      "UniswapGovernor": "0x900Ea5B3D69eD4f12Fe8cDCF5BaCd0671742D380",
+      "LidoGovernor": "0xbCB2d76e5838313B422094909e833bA3f13714B5",
+      "ENSGovernor": "0xa127EB3882CA0E8C0F9730cb2D9781F5d02EeAD6",
+      "ParentTreasury": "0x51Ec9a651A56B81e2309fE4615fE26B99a93902F",
+      "ChildGovernor": "0xdAC96F133cb8a062AEEAAe136Cee25FF3BbDfddC",
+      "SpawnFactory": "0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053",
+      "TimeLock": "0xB16d8446Fa4eFB48c17cd2bFe35B97a768459f5E"
     },
     "celo-sepolia": {
       "chainId": 11142220,
-      "MockGovernor": "0x8aF194474ebB0425b863036177FEA2AF37e1E41C",
-      "ParentTreasury": "0x4Fb6c048377dcdE74c44aC672166A9427ed10909",
-      "ChildGovernor": "0xcD2ED80d015883fe861c2055f63f1879B0853D96",
-      "SpawnFactory": "0x4687E4C2B7087382d634D61fa973b134a5d9617D",
-      "TimeLock": "0x8a3c83F32FAdDd4DA7d8d190ce740dd441D871B5"
+      "UniswapGovernor": "0x739F3AE3be1EC6261caF97cC92938edCd3D36D61",
+      "LidoGovernor": "0xF81dEf4254ee1EC95dA18954044defB34C30fef8",
+      "ENSGovernor": "0x5687a0414Fdc510Dde3DB7b33C3b557619FBFf01",
+      "ParentTreasury": "0xa661fa0Ec3DDfcE13eC4b67633E39fbc0068b52E",
+      "ChildGovernor": "0x2EBCAf300Cd4d519b394359887D30BfBe43C23ca",
+      "SpawnFactory": "0x6286FEC559c37C4C1ea4e756D368Db0b9226716d",
+      "TimeLock": "0xd34FC1ee378F342EFb92C0D334362B9E577b489f"
     }
   },
   "reasoning": {

@@ -1,6 +1,6 @@
 import { publicClient, walletClient, account } from "./chain.js";
 import { ChildGovernorABI, MockGovernorABI } from "./abis.js";
-import { reasonAboutProposal } from "./venice.js";
+import { reasonAboutProposal, summarizeProposal, assessProposalRisk } from "./venice.js";
 import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./lit.js";
 import { toHex } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
@@ -100,7 +100,19 @@ async function childCycle(
           `[Child:${childLabel}] Evaluating proposal ${i}: ${proposal.description}`
         );
 
-        // 3. Reason via Venice
+        // 3a. Summarize via Venice (private reasoning step 1)
+        try {
+          const summary = await summarizeProposal(proposal.description);
+          console.log(`[Child:${childLabel}] Summary: ${summary.slice(0, 100)}...`);
+        } catch {}
+
+        // 3b. Risk assessment via Venice (private reasoning step 2)
+        try {
+          const risk = await assessProposalRisk(proposal.description, governanceValues);
+          console.log(`[Child:${childLabel}] Risk: ${risk.riskLevel} — ${risk.factors.slice(0, 80)}`);
+        } catch {}
+
+        // 3c. Vote decision via Venice (private reasoning step 3)
         const { decision, reasoning } = await reasonAboutProposal(
           proposal.description,
           governanceValues,
