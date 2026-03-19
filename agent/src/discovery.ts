@@ -55,134 +55,141 @@ let simulatedIndex = 0;
 const TALLY_ENDPOINT = "https://api.tally.xyz/query";
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-const TALLY_QUERY = `
-query GovernanceProposals {
-  proposals(
-    chainIds: ["eip155:1"]
-    pagination: { limit: 10, offset: 0 }
-    sort: { field: START_BLOCK, order: DESC }
-  ) {
-    id
-    title
-    description
-    start {
-      timestamp
+// Top DAO organization IDs on Tally
+const TALLY_ORG_IDS = [
+  "2206072050315953936", // Arbitrum
+  "2206072049871356990", // Optimism
+  "2297436623035434412", // ZKsync
+];
+
+function buildTallyQuery(orgId: string): string {
+  return `{
+    proposals(input: {
+      filters: { organizationId: "${orgId}" }
+      page: { limit: 3 }
+      sort: { isDescending: true, sortBy: id }
+    }) {
+      nodes {
+        ... on Proposal {
+          id
+          metadata { title description }
+          status
+          start { ... on Block { timestamp } ... on BlocklessTimestamp { timestamp } }
+          end { ... on Block { timestamp } ... on BlocklessTimestamp { timestamp } }
+          governor { name slug }
+        }
+      }
     }
-    end {
-      timestamp
-    }
-    governor {
-      name
-      slug
-    }
-    voteStats {
-      support
-      weight
-    }
-  }
+  }`;
 }
-`;
 
 interface TallyProposal {
   id: string;
-  title: string;
-  description: string;
+  metadata: { title: string; description: string };
+  status: string;
   start: { timestamp: string };
   end: { timestamp: string };
   governor: { name: string; slug: string };
-  voteStats: Array<{ support: string; weight: string }>;
 }
 
 async function fetchFromTally(): Promise<DiscoveredProposal[]> {
   try {
     const apiKey = process.env.TALLY_API_KEY;
+    if (!apiKey) {
+      console.log("[Discovery] No TALLY_API_KEY — using simulated feed");
+      tallyAvailable = false;
+      return [];
+    }
+
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-    };
-    if (apiKey) {
-      headers["Api-Key"] = apiKey;
-    }
-
-    const response = await fetch(TALLY_ENDPOINT, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ query: TALLY_QUERY }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!response.ok) {
-      console.log(
-        `[Discovery] Tally returned ${response.status} — falling back to simulated feed`
-      );
-      tallyAvailable = false;
-      return [];
-    }
-
-    const json = (await response.json()) as {
-      data?: { proposals: TallyProposal[] };
-      errors?: Array<{ message: string }>;
+      "Api-Key": apiKey,
     };
 
-    if (json.errors?.length) {
-      console.log(
-        `[Discovery] Tally GraphQL error: ${json.errors[0].message} — falling back to simulated feed`
-      );
-      tallyAvailable = false;
-      return [];
-    }
-
-    if (!json.data?.proposals?.length) {
-      console.log("[Discovery] Tally returned no proposals");
-      tallyAvailable = true;
-      return [];
-    }
-
-    tallyAvailable = true;
+    const allProposals: DiscoveredProposal[] = [];
     const now = Math.floor(Date.now() / 1000);
-    const proposals: DiscoveredProposal[] = [];
 
-    for (const p of json.data.proposals) {
-      const endTs = parseInt(p.end.timestamp, 10);
-      // Only include proposals where voting hasn't ended
-      if (endTs <= now) continue;
-
-      const daoName = p.governor.name || "Unknown DAO";
-      const daoSlug = p.governor.slug || "unknown";
-
-      // Track discovered DAOs
-      const existing = discoveredDAOs.get(daoSlug);
-      if (existing) {
-        existing.proposalCount++;
-      } else {
-        discoveredDAOs.set(daoSlug, {
-          name: daoName,
-          slug: daoSlug,
-          proposalCount: 1,
+    // Fetch from multiple DAOs
+    for (const orgId of TALLY_ORG_IDS) {
+      try {
+        const response = await fetch(TALLY_ENDPOINT, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ query: buildTallyQuery(orgId) }),
+          signal: AbortSignal.timeout(15_000),
         });
-      }
 
-      proposals.push({
-        externalId: `tally-${p.id}`,
-        title: p.title || "Untitled Proposal",
-        description: truncateDescription(p.description || p.title || ""),
-        daoName,
-        daoSlug,
-        startTimestamp: parseInt(p.start.timestamp, 10),
-        endTimestamp: endTs,
-        source: "tally",
-        discoveredAt: now,
-      });
+        if (!response.ok) {
+          console.log(`[Discovery] Tally returned ${response.status} for org ${orgId}`);
+          continue;
+        }
+
+        const json = (await response.json()) as {
+          data?: { proposals: { nodes: TallyProposal[] } };
+          errors?: Array<{ message: string }>;
+        };
+
+        if (json.errors?.length) {
+          console.log(`[Discovery] Tally error: ${json.errors[0].message}`);
+          continue;
+        }
+
+        const nodes = json.data?.proposals?.nodes || [];
+        for (const p of nodes) {
+          const daoName = p.governor?.name || "Unknown DAO";
+          const daoSlug = p.governor?.slug || "unknown";
+          const title = p.metadata?.title || "Untitled";
+          const description = p.metadata?.description || title;
+
+          // Track discovered DAOs
+          const existing = discoveredDAOs.get(daoSlug);
+          if (existing) {
+            existing.proposalCount++;
+          } else {
+            discoveredDAOs.set(daoSlug, { name: daoName, slug: daoSlug, proposalCount: 1 });
+          }
+
+          // Parse timestamps (could be ISO string or unix)
+          let startTs = now;
+          let endTs = now + 300;
+          try {
+            const startRaw = p.start?.timestamp;
+            const endRaw = p.end?.timestamp;
+            startTs = startRaw?.includes?.("T") ? Math.floor(new Date(startRaw).getTime() / 1000) : parseInt(startRaw, 10);
+            endTs = endRaw?.includes?.("T") ? Math.floor(new Date(endRaw).getTime() / 1000) : parseInt(endRaw, 10);
+          } catch {}
+
+          allProposals.push({
+            externalId: `tally-${p.id}`,
+            title,
+            description: `[${daoName} — Real Governance via Tally] ${title}\n\n${truncateDescription(description)}`,
+            daoName,
+            daoSlug,
+            startTimestamp: startTs,
+            endTimestamp: endTs,
+            source: "tally",
+            discoveredAt: now,
+          });
+        }
+
+        // Rate limit: 1 req/sec
+        await new Promise((r) => setTimeout(r, 1100));
+      } catch (err: any) {
+        console.log(`[Discovery] Tally fetch error for org ${orgId}: ${err?.message?.slice(0, 60)}`);
+      }
     }
 
-    console.log(
-      `[Discovery] Fetched ${proposals.length} active proposals from Tally`
-    );
-    return proposals;
+    if (allProposals.length > 0) {
+      tallyAvailable = true;
+      console.log(`[Discovery] Fetched ${allProposals.length} real proposals from Tally (${TALLY_ORG_IDS.length} DAOs)`);
+    } else {
+      tallyAvailable = false;
+    }
+
+    return allProposals;
   } catch (err: any) {
     const msg = err?.message || String(err);
-    console.log(
-      `[Discovery] Tally fetch failed: ${msg.slice(0, 80)} — falling back to simulated feed`
-    );
+    console.log(`[Discovery] Tally fetch failed: ${msg.slice(0, 80)} — falling back to simulated feed`);
     tallyAvailable = false;
     return [];
   }
