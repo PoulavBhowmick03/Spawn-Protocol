@@ -64,7 +64,7 @@ export function Navbar() {
           <span className="font-mono text-xs text-gray-500">Base Sepolia</span>
         </div>
         <a
-          href="https://sepolia.basescan.org/address/0x2D71B32Bb8B69238228A0717AE150d3f1a64185F"
+          href="https://sepolia.basescan.org/address/0xbee1A2c4950117a276FBBa17eebc33b324125760"
           target="_blank"
           rel="noopener noreferrer"
           className="font-mono text-xs text-gray-700 hover:text-gray-400 transition-colors"

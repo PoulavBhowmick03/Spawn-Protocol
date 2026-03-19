@@ -5,32 +5,33 @@ import {
   ChildGovernorABI,
 } from "./abis";
 
-// Latest deployment — Base Sepolia (chain 84532) — with operator auth + unique child wallets
+// Latest deployment — Base Sepolia (chain 84532)
+// With operator auth, unique child wallets, SpawnENSRegistry, StETHTreasury
 export const CONTRACTS = {
   MockGovernor: {
-    address: "0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970" as const,
+    address: "0x55d18aAFaf7Ef1838d3df5DCb4B0A899F6fB6B0e" as const,
     abi: MockGovernorABI,
   },
   ParentTreasury: {
-    address: "0x6408Cd02EB770b81ab9870af1E6aB5A478448d99" as const,
+    address: "0xF470384d5d08720785460567f2F785f62b6d016c" as const,
     abi: ParentTreasuryABI,
   },
   SpawnFactory: {
-    address: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F" as const,
+    address: "0xbee1A2c4950117a276FBBa17eebc33b324125760" as const,
     abi: SpawnFactoryABI,
   },
   ChildGovernorImpl: {
-    address: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F" as const,
+    address: "0xEE0ed30B41B57Eb715EFe586723bfde551EFa407" as const,
     abi: ChildGovernorABI,
   },
 } as const;
 
-// All 3 DAO governors — used by proposals page and swarm
+// All 3 DAO governors
 export const GOVERNORS = [
   {
     name: "Uniswap DAO",
     slug: "uniswap",
-    address: "0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970" as const,
+    address: "0x55d18aAFaf7Ef1838d3df5DCb4B0A899F6fB6B0e" as const,
     abi: MockGovernorABI,
     color: "text-pink-400",
     borderColor: "border-pink-400/30",
@@ -39,7 +40,7 @@ export const GOVERNORS = [
   {
     name: "Lido DAO",
     slug: "lido",
-    address: "0x5a43535847fdB0B7A7edF71aAd0BAEcb766B0FCA" as const,
+    address: "0x34384d90A14633309100BA52f73Aec0e0D5C0a8C" as const,
     abi: MockGovernorABI,
     color: "text-blue-400",
     borderColor: "border-blue-400/30",
@@ -48,7 +49,7 @@ export const GOVERNORS = [
   {
     name: "ENS DAO",
     slug: "ens",
-    address: "0x8fd54F8a71746845f58497f3056E6dfff08d960a" as const,
+    address: "0xFB98e4688e31E56e761d2837248CD1C1181D3BE7" as const,
     abi: MockGovernorABI,
     color: "text-purple-400",
     borderColor: "border-purple-400/30",
