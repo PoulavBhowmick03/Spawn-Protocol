@@ -6,13 +6,17 @@
   "scripts": {
     "parent": "tsx src/parent.ts",
     "child": "tsx src/child.ts",
-    "demo": "tsx src/demo.ts"
+    "demo": "tsx src/demo.ts",
+    "spawn-child": "tsx src/spawn-child.ts"
   },
   "dependencies": {
-    "@lit-protocol/constants": "^9.0.1",
+    "@lit-protocol/auth-helpers": "^7.4.0",
+    "@lit-protocol/constants": "^7.4.0",
     "@lit-protocol/lit-node-client": "^7.4.0",
-    "@lit-protocol/types": "^8.0.4",
+    "@lit-protocol/types": "^7.4.0",
+    "@metamask/delegation-toolkit": "^0.13.0",
     "dotenv": "^16.4.7",
+    "ethers": "^5.7.2",
     "openai": "^4.77.0",
     "viem": "^2.23.0"
   },

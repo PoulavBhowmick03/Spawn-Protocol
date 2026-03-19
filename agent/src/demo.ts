@@ -236,8 +236,49 @@ async function main() {
   }
   console.log();
 
-  // ── Step 7: Yield status ──
-  console.log("── Step 7: Treasury yield status (Lido stETH) ──");
+  // ── Step 7: Terminate misaligned child + respawn ──
+  console.log("── Step 7: Simulating misalignment — terminate + respawn ──");
+  if (children.length >= 3) {
+    const target = children[2]; // last child
+    console.log(`  Marking ${target.ensLabel} as misaligned (score 15)...`);
+    await sendTxAndWait({
+      address: target.childAddr,
+      abi: ChildGovernorABI,
+      functionName: "updateAlignmentScore",
+      args: [15n],
+    });
+
+    console.log(`  TERMINATING ${target.ensLabel} (recallChild)...`);
+    await sendTxAndWait({
+      address: ADDRESSES.spawnFactory,
+      abi: SpawnFactoryABI,
+      functionName: "recallChild",
+      args: [target.id],
+    });
+
+    const newLabel = `${target.ensLabel}-v2`;
+    console.log(`  RESPAWNING replacement: ${newLabel}...`);
+    await sendTxAndWait({
+      address: ADDRESSES.spawnFactory,
+      abi: SpawnFactoryABI,
+      functionName: "spawnChild",
+      args: [newLabel, ADDRESSES.mockGovernor, 0n, 200000n],
+    });
+
+    const updatedChildren = (await publicClient.readContract({
+      address: ADDRESSES.spawnFactory,
+      abi: SpawnFactoryABI,
+      functionName: "getActiveChildren",
+    })) as any[];
+    console.log(`  Active children after respawn: ${updatedChildren.length}`);
+    for (const c of updatedChildren) {
+      console.log(`    ${c.id}: ${c.ensLabel} @ ${c.childAddr} (active: ${c.active})`);
+    }
+  }
+  console.log();
+
+  // ── Step 8: Yield status ──
+  console.log("── Step 8: Treasury yield status (Lido stETH) ──");
   await logYieldStatus();
   console.log();
 
