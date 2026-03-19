@@ -55,7 +55,7 @@ stated preferences.
 
 ### Smart Contracts (Foundry, in `contracts/`)
 
-Deploy to **Base Sepolia (primary)** + **Celo Alfajores (secondary)**.
+Deploy to **Base Sepolia (primary)** + **Celo Sepolia (secondary)**.
 
 1. **`MockGovernor.sol`** — BUILD THIS FIRST
    - Simplified governance with configurable voting periods (default 5 min / 300s)
@@ -195,7 +195,7 @@ const response = await venice.chat.completions.create({
 - **Delegations:** MetaMask Delegation Toolkit (@metamask/delegation-toolkit)
 - **Identity:** ERC-8004 on Base Mainnet
 - **Dashboard:** Next.js + React + viem
-- **Chains:** Base Sepolia (primary) + Celo Alfajores (secondary)
+- **Chains:** Base Sepolia (primary) + Celo Sepolia (secondary)
 
 ## Project Structure
 ```
@@ -260,7 +260,7 @@ synthesis/
 - [ ] ERC-8004: register parent + all children on Base Mainnet
 - [ ] ENS subdomain registration for each child
 - [ ] Lido stETH yield integration (treasury funds from yield, not principal)
-- [ ] Deploy to Celo Alfajores (secondary chain)
+- [ ] Deploy to Celo Sepolia (secondary chain)
 
 ### Phase 3 — Demo & Polish (March 21-22, WIN CONDITION)
 - [ ] Next.js dashboard showing swarm in real-time
@@ -442,7 +442,7 @@ npx shadcn@latest init -d
 - [x] ParentTreasury written + tested
 - [x] Integration test passing (23/23)
 - [x] Deployed to Base Sepolia
-- [ ] Deployed to Celo Alfajores (RPC down globally, retrying)
+- [ ] Deployed to Celo Sepolia (RPC down globally, retrying)
 - [x] Agent runtime scaffolded
 - [x] Venice API integrated (credits active, llama-3.3-70b confirmed working)
 - [x] Parent agent loop working (with ENS, ERC-8004, delegation, yield monitoring)
@@ -456,7 +456,7 @@ npx shadcn@latest init -d
 - [x] ENS subdomains wired into parent spawn flow (local fallback on Base Sepolia) ✓ VERIFIED LIVE
 - [x] Lido stETH integration (yield tracking + self-sustainability metrics)
 - [x] End-to-end demo tested on Base Sepolia ✓ ALL VOTES ONCHAIN
-- [ ] Deployed to Celo Alfajores (RPC down globally)
+- [ ] Deployed to Celo Sepolia (RPC down globally)
 - [ ] Dashboard live (separate agent building)
 - [ ] Demo recorded
 - [ ] Submitted
