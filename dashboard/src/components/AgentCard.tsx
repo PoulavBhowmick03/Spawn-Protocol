@@ -7,9 +7,10 @@ import type { ChildInfo } from "@/hooks/useSwarmData";
 
 interface AgentCardProps {
   child: ChildInfo;
+  justVoted?: boolean;
 }
 
-export function AgentCard({ child }: AgentCardProps) {
+export function AgentCard({ child, justVoted = false }: AgentCardProps) {
   const score = Number(child.alignmentScore);
   const isActive = child.active;
 
@@ -45,7 +46,7 @@ export function AgentCard({ child }: AgentCardProps) {
   return (
     <Link href={`/agent/${child.id.toString()}`}>
       <div
-        className={`relative border rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all cursor-pointer ${borderColor} ${pulseClass}`}
+        className={`relative border rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all cursor-pointer ${justVoted ? "border-blue-400/60" : borderColor} ${pulseClass}`}
       >
         {/* Status indicator */}
         <div className="flex items-center justify-between mb-3">
@@ -113,6 +114,15 @@ export function AgentCard({ child }: AgentCardProps) {
             {(Number(child.budget) / 1e18).toFixed(4)} ETH
           </span>
         </div>
+
+        {justVoted && (
+          <>
+            <div className="absolute inset-0 rounded-lg bg-blue-400/10 animate-pulse pointer-events-none" />
+            <div className="absolute top-2 right-2 text-[10px] font-mono text-blue-400 bg-blue-400/20 border border-blue-400/40 rounded px-1.5 py-0.5 animate-pulse">
+              ⚡ VOTING
+            </div>
+          </>
+        )}
       </div>
     </Link>
   );

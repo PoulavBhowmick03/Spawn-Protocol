@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useChainContext } from "@/context/ChainContext";
 
 const NAV_ITEMS = [
   { href: "/", label: "Swarm", icon: "⬡" },
+  { href: "/graph", label: "Graph", icon: "◎" },
   { href: "/proposals", label: "Proposals", icon: "◈" },
   { href: "/timeline", label: "Timeline", icon: "≡" },
   { href: "/logs", label: "Exec Log", icon: "◉" },
@@ -13,6 +15,7 @@ const NAV_ITEMS = [
 
 export function Navbar() {
   const pathname = usePathname();
+  const { chainId, setChainId } = useChainContext();
 
   return (
     <aside className="fixed top-0 left-0 h-full w-56 bg-[#07070f] border-r border-gray-800/60 flex flex-col z-50">
@@ -57,14 +60,42 @@ export function Navbar() {
         })}
       </nav>
 
+      {/* Chain selector */}
+      <div className="px-3 py-3 border-t border-gray-800/60">
+        <p className="text-[10px] text-gray-600 uppercase tracking-widest mb-2 px-1">Chain</p>
+        <div className="flex flex-col gap-1">
+          {([
+            { id: "base", label: "Base Sepolia", color: "text-blue-400" },
+            { id: "celo", label: "Celo Alfajores", color: "text-green-400" },
+          ] as const).map((chain) => (
+            <button
+              key={chain.id}
+              onClick={() => setChainId(chain.id)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono transition-all border ${
+                chainId === chain.id
+                  ? `${chain.color} border-current bg-current/10`
+                  : "text-gray-600 border-transparent hover:text-gray-400"
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${chainId === chain.id ? "bg-current animate-ping" : "bg-gray-700"}`} style={chainId === chain.id ? { animationDuration: "2s" } : {}} />
+              {chain.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Footer */}
       <div className="px-5 py-4 border-t border-gray-800/60">
         <div className="flex items-center gap-2 mb-2">
           <div className="w-2 h-2 rounded-full bg-green-400 animate-ping" style={{ animationDuration: "2s" }} />
-          <span className="font-mono text-xs text-gray-500">Base Sepolia</span>
+          <span className="font-mono text-xs text-gray-500">
+            {chainId === "base" ? "Base Sepolia" : "Celo Alfajores"}
+          </span>
         </div>
         <a
-          href="https://sepolia.basescan.org/address/0xbee1A2c4950117a276FBBa17eebc33b324125760"
+          href={chainId === "base"
+            ? "https://sepolia.basescan.org/address/0xbee1A2c4950117a276FBBa17eebc33b324125760"
+            : "https://celo-alfajores.blockscout.com/address/0x6286FEC559c37C4C1ea4e756D368Db0b9226716d"}
           target="_blank"
           rel="noopener noreferrer"
           className="font-mono text-xs text-gray-700 hover:text-gray-400 transition-colors"

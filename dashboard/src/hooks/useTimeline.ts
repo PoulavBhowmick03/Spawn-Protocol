@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { publicClient } from "@/lib/client";
-import { CONTRACTS } from "@/lib/contracts";
+import { useChainContext } from "@/context/ChainContext";
+import { CONTRACTS, CELO_CONTRACTS } from "@/lib/contracts";
 import type { Address } from "viem";
 
 export type EventType =
@@ -25,22 +25,24 @@ export interface TimelineEvent {
 }
 
 export function useTimeline() {
+  const { client, chainId } = useChainContext();
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
     try {
       // Get a safe fromBlock — public RPCs limit getLogs to 10k block range
-      const currentBlock = await publicClient.getBlockNumber();
+      const currentBlock = await client.getBlockNumber();
       const startBlock = currentBlock > BigInt(9999) ? currentBlock - BigInt(9999) : BigInt(0);
 
       // First get active children so we can fetch their events
       let childAddresses: `0x${string}`[] = [];
       try {
-        const rawChildren = await publicClient.readContract({
-          address: CONTRACTS.SpawnFactory.address,
-          abi: CONTRACTS.SpawnFactory.abi,
+        const rawChildren = await client.readContract({
+          address: contracts.SpawnFactory.address,
+          abi: contracts.SpawnFactory.abi,
           functionName: "getActiveChildren",
         });
         childAddresses = rawChildren.map((c) => c.childAddr);
@@ -53,8 +55,8 @@ export function useTimeline() {
         valuesLogs,
         depositLogs,
       ] = await Promise.all([
-        publicClient.getLogs({
-          address: CONTRACTS.SpawnFactory.address,
+        client.getLogs({
+          address: contracts.SpawnFactory.address,
           event: {
             type: "event",
             name: "ChildSpawned",
@@ -68,8 +70,8 @@ export function useTimeline() {
           fromBlock: startBlock,
           toBlock: "latest",
         }),
-        publicClient.getLogs({
-          address: CONTRACTS.SpawnFactory.address,
+        client.getLogs({
+          address: contracts.SpawnFactory.address,
           event: {
             type: "event",
             name: "ChildTerminated",
@@ -82,8 +84,8 @@ export function useTimeline() {
           fromBlock: startBlock,
           toBlock: "latest",
         }),
-        publicClient.getLogs({
-          address: CONTRACTS.SpawnFactory.address,
+        client.getLogs({
+          address: contracts.SpawnFactory.address,
           event: {
             type: "event",
             name: "FundsReallocated",
@@ -96,8 +98,8 @@ export function useTimeline() {
           fromBlock: startBlock,
           toBlock: "latest",
         }),
-        publicClient.getLogs({
-          address: CONTRACTS.ParentTreasury.address,
+        client.getLogs({
+          address: contracts.ParentTreasury.address,
           event: {
             type: "event",
             name: "ValuesUpdated",
@@ -106,8 +108,8 @@ export function useTimeline() {
           fromBlock: startBlock,
           toBlock: "latest",
         }),
-        publicClient.getLogs({
-          address: CONTRACTS.ParentTreasury.address,
+        client.getLogs({
+          address: contracts.ParentTreasury.address,
           event: {
             type: "event",
             name: "Deposited",
@@ -127,7 +129,7 @@ export function useTimeline() {
       for (const addr of childAddresses) {
         try {
           const [votes, aligns] = await Promise.all([
-            publicClient.getLogs({
+            client.getLogs({
               address: addr,
               event: {
                 type: "event",
@@ -141,7 +143,7 @@ export function useTimeline() {
               fromBlock: startBlock,
               toBlock: "latest",
             }),
-            publicClient.getLogs({
+            client.getLogs({
               address: addr,
               event: {
                 type: "event",
@@ -242,7 +244,7 @@ export function useTimeline() {
       await Promise.all(
         uniqueBlocks.map(async (bn) => {
           try {
-            const block = await publicClient.getBlock({ blockNumber: bn });
+            const block = await client.getBlock({ blockNumber: bn });
             blockTimestamps.set(bn, block.timestamp);
           } catch {}
         })
@@ -266,9 +268,11 @@ export function useTimeline() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [client, chainId]);
 
   useEffect(() => {
+    setLoading(true);
+    setEvents([]);
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
@@ -278,6 +282,7 @@ export function useTimeline() {
 }
 
 export function useTreasuryData() {
+  const { client, chainId } = useChainContext();
   const [governanceValues, setGovernanceValues] = useState<string>("");
   const [parentAgent, setParentAgent] = useState<Address | null>(null);
   const [maxChildren, setMaxChildren] = useState<bigint>(BigInt(0));
@@ -287,31 +292,32 @@ export function useTreasuryData() {
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
     try {
       const [values, agent, maxC, maxB, paused] = await Promise.all([
-        publicClient.readContract({
-          address: CONTRACTS.ParentTreasury.address,
-          abi: CONTRACTS.ParentTreasury.abi,
+        client.readContract({
+          address: contracts.ParentTreasury.address,
+          abi: contracts.ParentTreasury.abi,
           functionName: "getGovernanceValues",
         }),
-        publicClient.readContract({
-          address: CONTRACTS.ParentTreasury.address,
-          abi: CONTRACTS.ParentTreasury.abi,
+        client.readContract({
+          address: contracts.ParentTreasury.address,
+          abi: contracts.ParentTreasury.abi,
           functionName: "parentAgent",
         }),
-        publicClient.readContract({
-          address: CONTRACTS.ParentTreasury.address,
-          abi: CONTRACTS.ParentTreasury.abi,
+        client.readContract({
+          address: contracts.ParentTreasury.address,
+          abi: contracts.ParentTreasury.abi,
           functionName: "maxChildren",
         }),
-        publicClient.readContract({
-          address: CONTRACTS.ParentTreasury.address,
-          abi: CONTRACTS.ParentTreasury.abi,
+        client.readContract({
+          address: contracts.ParentTreasury.address,
+          abi: contracts.ParentTreasury.abi,
           functionName: "maxBudgetPerChild",
         }),
-        publicClient.readContract({
-          address: CONTRACTS.ParentTreasury.address,
-          abi: CONTRACTS.ParentTreasury.abi,
+        client.readContract({
+          address: contracts.ParentTreasury.address,
+          abi: contracts.ParentTreasury.abi,
           functionName: "emergencyPause",
         }),
       ]);
@@ -326,9 +332,10 @@ export function useTreasuryData() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [client, chainId]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);

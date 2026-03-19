@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { publicClient } from "@/lib/client";
-import { CONTRACTS, GOVERNORS } from "@/lib/contracts";
+import { useChainContext } from "@/context/ChainContext";
+import { CONTRACTS, CELO_CONTRACTS, GOVERNORS, CELO_GOVERNORS } from "@/lib/contracts";
 import { SpawnFactoryABI, ChildGovernorABI } from "@/lib/abis";
 
 export interface ProposalVoter {
@@ -48,18 +48,21 @@ interface RawProposal {
 }
 
 export function useProposals() {
+  const { client, chainId } = useChainContext();
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
+    const governors = chainId === "celo" ? CELO_GOVERNORS : GOVERNORS;
     try {
       const allProposals: Proposal[] = [];
 
       await Promise.all(
-        GOVERNORS.map(async (gov) => {
+        governors.map(async (gov) => {
           try {
-            const count = await publicClient.readContract({
+            const count = await client.readContract({
               address: gov.address,
               abi: gov.abi,
               functionName: "proposalCount",
@@ -73,13 +76,13 @@ export function useProposals() {
             const results = await Promise.all(
               ids.map(async (id) => {
                 const [rawProposal, state] = await Promise.all([
-                  publicClient.readContract({
+                  client.readContract({
                     address: gov.address,
                     abi: gov.abi,
                     functionName: "getProposal",
                     args: [id],
                   }) as Promise<RawProposal>,
-                  publicClient.readContract({
+                  client.readContract({
                     address: gov.address,
                     abi: gov.abi,
                     functionName: "state",
@@ -126,15 +129,15 @@ export function useProposals() {
       // Aggregate votes from ChildGovernor contracts (since children
       // record votes locally, not on MockGovernor)
       try {
-        const rawChildren = await publicClient.readContract({
-          address: CONTRACTS.SpawnFactory.address,
+        const rawChildren = await client.readContract({
+          address: contracts.SpawnFactory.address,
           abi: SpawnFactoryABI,
           functionName: "getActiveChildren",
         });
 
         for (const child of rawChildren) {
           try {
-            const history = await publicClient.readContract({
+            const history = await client.readContract({
               address: child.childAddr,
               abi: ChildGovernorABI,
               functionName: "getVotingHistory",
@@ -177,9 +180,11 @@ export function useProposals() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [client, chainId]);
 
   useEffect(() => {
+    setLoading(true);
+    setProposals([]);
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);

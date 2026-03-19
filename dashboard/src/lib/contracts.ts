@@ -57,6 +57,52 @@ export const GOVERNORS = [
   },
 ] as const;
 
+// Celo Alfajores (chain 44787) contracts
+export const CELO_CONTRACTS = {
+  ParentTreasury: {
+    address: "0xa661fa0Ec3DDfcE13eC4b67633E39fbc0068b52E" as const,
+    abi: ParentTreasuryABI,
+  },
+  SpawnFactory: {
+    address: "0x6286FEC559c37C4C1ea4e756D368Db0b9226716d" as const,
+    abi: SpawnFactoryABI,
+  },
+  ChildGovernorImpl: {
+    address: "0x2ebcaf300cd4d519b394359887d30bfbe43c23ca" as const,
+    abi: ChildGovernorABI,
+  },
+} as const;
+
+export const CELO_GOVERNORS = [
+  {
+    name: "Uniswap DAO",
+    slug: "uniswap",
+    address: "0x739F3AE3be1EC6261caF97cC92938edCd3D36D61" as const,
+    abi: MockGovernorABI,
+    color: "text-pink-400",
+    borderColor: "border-pink-400/30",
+    bgColor: "bg-pink-400/5",
+  },
+  {
+    name: "Lido DAO",
+    slug: "lido",
+    address: "0xF81dEf4254ee1EC95dA18954044defB34C30fef8" as const,
+    abi: MockGovernorABI,
+    color: "text-blue-400",
+    borderColor: "border-blue-400/30",
+    bgColor: "bg-blue-400/5",
+  },
+  {
+    name: "ENS DAO",
+    slug: "ens",
+    address: "0x5687a0414Fdc510Dde3DB7b33C3b557619FBFf01" as const,
+    abi: MockGovernorABI,
+    color: "text-purple-400",
+    borderColor: "border-purple-400/30",
+    bgColor: "bg-purple-400/5",
+  },
+] as const;
+
 export const EXPLORER_BASE = "https://sepolia.basescan.org";
 
 export function explorerTx(hash: string): string {

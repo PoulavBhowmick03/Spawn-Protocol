@@ -2,10 +2,14 @@
 
 import { useSwarmData } from "@/hooks/useSwarmData";
 import { AgentCard } from "@/components/AgentCard";
-import { CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
+import { CONTRACTS, CELO_CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
+import { useChainContext } from "@/context/ChainContext";
 
 export default function SwarmPage() {
-  const { children, loading, error } = useSwarmData();
+  const { children, loading, error, justVotedSet } = useSwarmData();
+  const { chainId, explorerBase } = useChainContext();
+  const activeContracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
+  const chainLabel = chainId === "base" ? "Base Sepolia" : "Celo Alfajores";
 
   const activeCount = children.filter((c) => c.active).length;
   const totalCount = children.length;
@@ -23,7 +27,7 @@ export default function SwarmPage() {
               Agent Swarm
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              Autonomous DAO governance agents — Base Sepolia
+              Autonomous DAO governance agents — {chainLabel}
             </p>
           </div>
           <div className="flex gap-6 text-center">
@@ -56,20 +60,22 @@ export default function SwarmPage() {
         <div className="flex gap-4 text-xs font-mono text-gray-600 mt-4 flex-wrap">
           <span>
             SpawnFactory:{" "}
-            <a href={explorerAddress(CONTRACTS.SpawnFactory.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
-              {formatAddress(CONTRACTS.SpawnFactory.address)}
+            <a href={`${explorerBase}/address/${activeContracts.SpawnFactory.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+              {formatAddress(activeContracts.SpawnFactory.address)}
             </a>
           </span>
-          <span>
-            MockGovernor:{" "}
-            <a href={explorerAddress(CONTRACTS.MockGovernor.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
-              {formatAddress(CONTRACTS.MockGovernor.address)}
-            </a>
-          </span>
+          {chainId === "base" && (
+            <span>
+              MockGovernor:{" "}
+              <a href={explorerAddress(CONTRACTS.MockGovernor.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+                {formatAddress(CONTRACTS.MockGovernor.address)}
+              </a>
+            </span>
+          )}
           <span>
             ParentTreasury:{" "}
-            <a href={explorerAddress(CONTRACTS.ParentTreasury.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
-              {formatAddress(CONTRACTS.ParentTreasury.address)}
+            <a href={`${explorerBase}/address/${activeContracts.ParentTreasury.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+              {formatAddress(activeContracts.ParentTreasury.address)}
             </a>
           </span>
         </div>
@@ -99,7 +105,7 @@ export default function SwarmPage() {
           <div className="text-4xl mb-4">⬡</div>
           <h2 className="font-mono text-lg text-gray-400 mb-2">No agents spawned yet</h2>
           <p className="text-sm text-gray-600">The parent agent will spawn children when proposals are detected.</p>
-          <p className="text-xs font-mono text-gray-700 mt-4">Polling SpawnFactory @ {formatAddress(CONTRACTS.SpawnFactory.address)}</p>
+          <p className="text-xs font-mono text-gray-700 mt-4">Polling SpawnFactory @ {formatAddress(activeContracts.SpawnFactory.address)}</p>
         </div>
       )}
 
@@ -112,7 +118,7 @@ export default function SwarmPage() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {children.filter((c) => c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} />
+                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} />
                 ))}
               </div>
             </div>
@@ -124,7 +130,7 @@ export default function SwarmPage() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 opacity-60">
                 {children.filter((c) => !c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} />
+                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} />
                 ))}
               </div>
             </div>

@@ -167,38 +167,127 @@ The system demonstrates genuine autonomy at multiple levels:
 
 ## Bounty Alignment
 
-### Venice Private Agents ($11.5K) `ea3b366947c54689bd82ae80bf9f3310`
-Every reasoning call goes through Venice API (llama-3.3-70b). No other LLM is used in the product. Venice provides private, no-data-retention inference for governance decisions. Children reason about proposals privately — their rationale is encrypted via Lit Protocol and only revealed after voting closes. This is the exact use case Venice describes: "private cognition wired to trustworthy public action."
+> Format: **Bounty name · prize · `track-uuid`**
+> Each section: one-line claim → proof artifact → onchain tx.
 
-### Synthesis Open Track ($25K) `fdb76d08812b43f6a5f454744b66f590`
-Community-funded pool. Spawn Protocol addresses the unsolved problem of DAO governance participation — under 10% voter turnout industry-wide. Autonomous agent swarms that vote according to owner values, with built-in alignment monitoring and self-correction.
+---
 
-### Protocol Labs — "Let the Agent Cook" ($4K + $150K pool) `10bd47fac07e4f85bda33ba482695b24`
-Maximum autonomy: parent discovers proposals, spawns children, children reason and vote independently, parent evaluates alignment and terminates/respawns — all without human intervention. Full decision loop: discover → plan → execute → verify → correct. ERC-8004 identity for every agent. Compute budget awareness via `maxGasPerVote` enforcement and Lido yield tracking.
+### Venice Private Agents · $11.5K · `ea3b366947c54689bd82ae80bf9f3310`
 
-### Protocol Labs — "Agents With Receipts" ($4K + $150K pool) `3bf41be958da497bbb69f1a150c76af9`
-ERC-8004 onchain identity for every agent (parent + children). Registered on the official Base identity registry (`0x8004A818...`). Metadata includes agent type, assigned DAO, alignment score, ENS name, and capabilities. Parent updates child metadata (alignment scores) after each evaluation cycle — creating a verifiable onchain reputation trail.
+**Every inference call in the product routes through Venice API (llama-3.3-70b, no data retention). No other LLM is used.**
 
-### MetaMask Delegations ($5K) `0d69d56a8a084ac5b7dbe0dc1da73e1d`
-ERC-7715 scoped delegations with three-caveat architecture: `AllowedTargetsEnforcer` (specific governance contract), `AllowedMethodsEnforcer` (`castVote` selector only), `LimitedCallsEnforcer` (caps total votes). Delegations flow owner → parent → children, creating a hierarchical sub-delegation chain. Children can only vote — they cannot transfer funds, change settings, or call any other function.
+- Code proof: `agent/src/venice.ts` — single `OpenAI` client with `baseURL: "https://api.venice.ai/api/v1"`. Grep the entire `agent/src/` for any other LLM import — there is none.
+- 6 distinct Venice call types: `evaluateProposal`, `evaluateAlignment`, `generateTerminationReport`, `generateSwarmReport`, `generateRecalibrationPrompt`, `generateProposalSummary`
+- Children reason privately → rationale encrypted via Lit Protocol → revealed only after vote closes
+- Venice vote tx: [`0x85945e...`](https://sepolia.basescan.org/tx/0x85945e34982392e5e86442c3701440c01f056f3a71695847a5a180bd78c06c17)
+- Venice alignment tx: [`0x1e55ea...`](https://sepolia.basescan.org/tx/0x1e55ea01be0c465d9dd3803ebec579842ec94997e3295388025213cf6942fb1e)
 
-### Best Agent on Celo ($5K) `ff26ab4933c84eea856a5c6bf513370b`
-Full contract suite deployed to Celo Sepolia (chain 11142220). Same architecture, same agent runtime, multi-chain ready. Celo's low-cost L2 infrastructure makes agent swarms economically viable for high-frequency governance participation.
+---
 
-### Base Agent Services ($5K) `6f0e3d7dcadf4ef080d3f424963caff5`
-Primary deployment on Base Sepolia. All demo transactions execute on Base. The agent swarm provides governance-as-a-service — token holders deposit ETH, set values, and the swarm votes across DAOs on their behalf.
+### Synthesis Open Track · $25K · `fdb76d08812b43f6a5f454744b66f590`
 
-### ENS Identity ($600) `627a3f5a288344489fe777212b03f953`
-Each child agent gets an ENS subdomain (`uniswap-gov.spawn.eth`, `lido-gov.spawn.eth`, `ens-gov.spawn.eth`). ENS names replace hex addresses as the primary identity for agents in the swarm.
+**Solves <10% DAO voter turnout with an autonomous, self-correcting governance agent swarm.**
 
-### ENS Communication ($600) `9c4599cf9d0f4002b861ff1a4b27f10a`
-Parent-to-child communication uses ENS names for routing. The parent resolves `{dao-name}.spawn.eth` to find child contract addresses. ENS-powered agent-to-agent communication within the swarm.
+- Token holder sets values once → parent spawns per-DAO children → children vote via Venice → parent kills misaligned children → swarm self-funds via Lido yield
+- 6 fully autonomous agents across 2 chains, 3 DAOs each, running without human intervention
+- Real onchain votes on Uniswap, Lido, ENS governance proposals (sourced from Tally API)
 
-### ENS Open Integration ($300) `8840da28fb3b46bcb08465e1d0e8756d`
-ENS is core to the agent identity system — not an afterthought. Every child is registered with an ENS subdomain at spawn time, and the subdomain is deregistered when the child is terminated.
+---
 
-### Lido stETH Agent Treasury ($3K) `5e445a077b5248e0974904915f76e1a0`
-Treasury earns yield via Lido stETH. Yield covers Venice API costs for vote reasoning — self-sustaining agent swarm. The agent spends from yield, not principal, creating a sustainable operating budget.
+### Protocol Labs "Let the Agent Cook" · $4K + $150K pool · `10bd47fac07e4f85bda33ba482695b24`
+
+**Maximum autonomy: full discover → reason → execute → evaluate → correct loop with zero human steps.**
+
+- Parent discovers proposals via Tally API (`agent/src/discovery.ts`)
+- Children spawn as separate OS processes (`fork()` in `agent/src/swarm.ts`) — genuinely independent reasoning
+- Parent evaluates alignment every 90s, terminates children scoring <40 for 2+ cycles, respawns with recalibrated Venice prompt
+- Compute budget enforced: `maxGasPerVote` per child, Lido yield tracks operating cost sustainability
+- ERC-8004 identity on every agent — autonomy with receipts
+- Full execution log: `agent_log.json` (root of repo)
+- ERC-8004 parent registration tx: [`0x464bac...`](https://sepolia.basescan.org/tx/0x464bacc3f2fb6608dd8d4810773537dec7db79997aae5b019ca208582d189e19)
+
+---
+
+### Protocol Labs "Agents With Receipts" · $4K + $150K pool · `3bf41be958da497bbb69f1a150c76af9`
+
+**ERC-8004 onchain identity for every agent. Parent updates child metadata after every alignment cycle — a live, verifiable reputation trail.**
+
+- Registry: `0x8004A818BFB912233c491871b3d84c89A494BD9e` (Base Mainnet)
+- Parent (ID #2220): [`0x464bac...`](https://sepolia.basescan.org/tx/0x464bacc3f2fb6608dd8d4810773537dec7db79997aae5b019ca208582d189e19)
+- Uniswap child (ID #2221): [`0xc3e31d...`](https://sepolia.basescan.org/tx/0xc3e31d218c24bdb0b2e2b279d710d3baba0359dc3a74c03d891927330d7b1d16)
+- Lido child (ID #2222): [`0x16c4ea...`](https://sepolia.basescan.org/tx/0x16c4ea081fc241cf3fa84af547827e6cf9e899f5cd827a5bce04b20a3fe8200e)
+- ENS child (ID #2223): [`0x2da98f...`](https://sepolia.basescan.org/tx/0x2da98f891805292fc0fb352859756aceadaac860f12af4aa489ed22359ae1249)
+- Metadata per agent: type, assignedDAO, alignmentScore, ensName, capabilities, governanceContract
+
+---
+
+### MetaMask Delegations · $5K · `0d69d56a8a084ac5b7dbe0dc1da73e1d`
+
+**ERC-7715 scoped delegations — children can ONLY call `castVote` on their assigned governance contract. Nothing else.**
+
+- Code: `agent/src/delegation.ts`
+- Three-caveat architecture: `AllowedTargetsEnforcer` (specific governor address) + `AllowedMethodsEnforcer` (`castVote` selector only) + `LimitedCallsEnforcer` (caps total votes per child)
+- Delegation chain: owner → parent → each child — hierarchical sub-delegation
+- Children cannot transfer funds, change settings, or call any other function
+
+---
+
+### Best Agent on Celo · $5K · `ff26ab4933c84eea856a5c6bf513370b`
+
+**Full contract suite deployed on Celo Alfajores (chain 44787). Same swarm runs on both chains simultaneously.**
+
+- SpawnFactory: [`0x6286...716d`](https://celo-alfajores.blockscout.com/address/0x6286FEC559c37C4C1ea4e756D368Db0b9226716d)
+- ParentTreasury: [`0xa661...b52E`](https://celo-alfajores.blockscout.com/address/0xa661fa0Ec3DDfcE13eC4b67633E39fbc0068b52E)
+- 3 governors (Uniswap/Lido/ENS) deployed on Celo — same agent runtime connects to both chains via `celoPublicClient` in `agent/src/chain.ts`
+- Dashboard has live chain toggle: Base Sepolia ↔ Celo Alfajores
+
+---
+
+### Base Agent Services · $5K · `6f0e3d7dcadf4ef080d3f424963caff5`
+
+**Primary deployment on Base Sepolia. All demo votes execute on Base.**
+
+- SpawnFactory: [`0xbee1...5760`](https://sepolia.basescan.org/address/0xbee1A2c4950117a276FBBa17eebc33b324125760)
+- Child spawn tx: [`0x80ef42...`](https://sepolia.basescan.org/tx/0x80ef42c28384c79fdbd7af847cba72fa6de3f6d774949219ce0d208539c23b24)
+- Governance-as-a-service: deposit ETH → set values → swarm votes across 3 DAOs autonomously
+
+---
+
+### ENS Identity · $600 · `627a3f5a288344489fe777212b03f953`
+
+**Every child agent gets an ENS subdomain at spawn time (`{dao}.spawn.eth`). Subdomain deregistered on termination.**
+
+- Code: `agent/src/ens.ts` → `registerSubdomain(label, childAddress)` called in spawn flow
+- Labels: `uniswap-gov.spawn.eth`, `lido-gov.spawn.eth`, `ens-gov.spawn.eth`
+- ENS name is the primary identity displayed in dashboard agent cards
+
+---
+
+### ENS Communication · $600 · `9c4599cf9d0f4002b861ff1a4b27f10a`
+
+**Parent resolves `{dao-name}.spawn.eth` to route to child contracts. ENS names used for all inter-agent addressing.**
+
+- Parent reads ENS registry to locate each child's contract address
+- Agent metadata stored as ENS text records: `agentType`, `governanceContract`, `walletAddress`, `capabilities`
+- Code: `agent/src/ens.ts` → `setAgentMetadata(label, metadata)`
+
+---
+
+### ENS Open Integration · $300 · `8840da28fb3b46bcb08465e1d0e8756d`
+
+**ENS is load-bearing infrastructure, not decorative. Agent lifecycle is ENS lifecycle: spawn = register, terminate = deregister.**
+
+- `SpawnENSRegistry.sol` deployed — custom ENS registry for agent subdomains (`contracts/src/SpawnENSRegistry.sol`)
+
+---
+
+### Lido stETH Agent Treasury · $3K · `5e445a077b5248e0974904915f76e1a0`
+
+**Treasury earns stETH yield. Venice API costs paid from yield only — the swarm spends earnings, never principal.**
+
+- Code: `agent/src/lido.ts` — yield tracking + sustainability metrics logged each cycle
+- Contract: `contracts/src/StETHTreasury.sol` — stETH deposit, yield accrual, operator withdrawal
+- Self-sustainability ratio reported in each parent evaluation cycle log
 
 ## Judge Verification Guide
 

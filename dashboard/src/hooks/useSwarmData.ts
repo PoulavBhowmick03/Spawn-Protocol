@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { publicClient } from "@/lib/client";
-import { CONTRACTS } from "@/lib/contracts";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useChainContext } from "@/context/ChainContext";
+import { CONTRACTS, CELO_CONTRACTS } from "@/lib/contracts";
 import { ChildGovernorABI } from "@/lib/abis";
 import type { Address } from "viem";
 
@@ -20,15 +20,19 @@ export interface ChildInfo {
 }
 
 export function useSwarmData() {
+  const { client, chainId } = useChainContext();
   const [children, setChildren] = useState<ChildInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [justVotedSet, setJustVotedSet] = useState<Set<string>>(new Set());
+  const prevVoteCounts = useRef<Map<string, number>>(new Map());
 
   const fetchData = useCallback(async () => {
+    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
     try {
-      const rawChildren = await publicClient.readContract({
-        address: CONTRACTS.SpawnFactory.address,
-        abi: CONTRACTS.SpawnFactory.abi,
+      const rawChildren = await client.readContract({
+        address: contracts.SpawnFactory.address,
+        abi: contracts.SpawnFactory.abi,
         functionName: "getActiveChildren",
       });
 
@@ -40,17 +44,17 @@ export function useSwarmData() {
 
           try {
             const [score, count, history] = await Promise.all([
-              publicClient.readContract({
+              client.readContract({
                 address: child.childAddr,
                 abi: ChildGovernorABI,
                 functionName: "alignmentScore",
               }),
-              publicClient.readContract({
+              client.readContract({
                 address: child.childAddr,
                 abi: ChildGovernorABI,
                 functionName: "getVoteCount",
               }),
-              publicClient.readContract({
+              client.readContract({
                 address: child.childAddr,
                 abi: ChildGovernorABI,
                 functionName: "getVotingHistory",
@@ -80,6 +84,29 @@ export function useSwarmData() {
         })
       );
 
+      // Detect which children just had their vote count increase
+      const newlyVoted = new Set<string>();
+      for (const child of enriched) {
+        const addr = child.childAddr as string;
+        const prev = prevVoteCounts.current.get(addr);
+        const curr = Number(child.voteCount);
+        if (prev !== undefined && curr > prev) {
+          newlyVoted.add(addr);
+        }
+        prevVoteCounts.current.set(addr, curr);
+      }
+
+      if (newlyVoted.size > 0) {
+        setJustVotedSet(newlyVoted);
+        setTimeout(() => {
+          setJustVotedSet((prev) => {
+            const next = new Set(prev);
+            for (const addr of newlyVoted) next.delete(addr);
+            return next;
+          });
+        }, 3000);
+      }
+
       setChildren(enriched);
       setError(null);
     } catch (err) {
@@ -87,18 +114,21 @@ export function useSwarmData() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [client, chainId]);
 
   useEffect(() => {
+    setLoading(true);
+    setChildren([]);
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  return { children, loading, error, refetch: fetchData };
+  return { children, loading, error, refetch: fetchData, justVotedSet };
 }
 
 export function useChildData(childId: string) {
+  const { client, chainId } = useChainContext();
   const [child, setChild] = useState<ChildInfo | null>(null);
   const [voteHistory, setVoteHistory] = useState<Array<{
     proposalId: bigint;
@@ -112,10 +142,11 @@ export function useChildData(childId: string) {
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
     try {
-      const rawChild = await publicClient.readContract({
-        address: CONTRACTS.SpawnFactory.address,
-        abi: CONTRACTS.SpawnFactory.abi,
+      const rawChild = await client.readContract({
+        address: contracts.SpawnFactory.address,
+        abi: contracts.SpawnFactory.abi,
         functionName: "getChild",
         args: [BigInt(childId)],
       });
@@ -126,17 +157,17 @@ export function useChildData(childId: string) {
 
       try {
         const [score, count, raw] = await Promise.all([
-          publicClient.readContract({
+          client.readContract({
             address: rawChild.childAddr,
             abi: ChildGovernorABI,
             functionName: "alignmentScore",
           }),
-          publicClient.readContract({
+          client.readContract({
             address: rawChild.childAddr,
             abi: ChildGovernorABI,
             functionName: "getVoteCount",
           }),
-          publicClient.readContract({
+          client.readContract({
             address: rawChild.childAddr,
             abi: ChildGovernorABI,
             functionName: "getVotingHistory",
@@ -178,7 +209,7 @@ export function useChildData(childId: string) {
     } finally {
       setLoading(false);
     }
-  }, [childId]);
+  }, [childId, client, chainId]);
 
   useEffect(() => {
     fetchData();
