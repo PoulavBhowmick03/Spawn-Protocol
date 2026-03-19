@@ -62,12 +62,12 @@ const BASE_CONFIG: ChainConfig = {
   name: "base-sepolia",
   sendTx: sendTxAndWait,
   readClient: publicClient,
-  treasury: "0x6408Cd02EB770b81ab9870af1E6aB5A478448d99",
-  factory: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F",
+  treasury: "0xF470384d5d08720785460567f2F785f62b6d016c",
+  factory: "0xbee1A2c4950117a276FBBa17eebc33b324125760",
   governors: [
-    { name: "uniswap-dao", addr: "0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970" },
-    { name: "lido-dao", addr: "0x5a43535847fdB0B7A7edF71aAd0BAEcb766B0FCA" },
-    { name: "ens-dao", addr: "0x8fd54F8a71746845f58497f3056E6dfff08d960a" },
+    { name: "uniswap-dao", addr: "0x55d18aAFaf7Ef1838d3df5DCb4B0A899F6fB6B0e" },
+    { name: "lido-dao", addr: "0x34384d90A14633309100BA52f73Aec0e0D5C0a8C" },
+    { name: "ens-dao", addr: "0xFB98e4688e31E56e761d2837248CD1C1181D3BE7" },
   ],
 };
 
@@ -174,18 +174,22 @@ async function initChain(config: ChainConfig) {
       });
       console.log(`[${config.name}] Spawned ${gov.name}`);
 
-      // Set child's unique wallet as operator on the ChildGovernor contract
+      // Set child's unique wallet as operator — call directly on ChildGovernor
+      // (parent is authorized to call setOperator)
       try {
-        const childId = (await config.readClient.readContract({
-          address: config.factory, abi: SpawnFactoryABI, functionName: "childCount",
-        })) as bigint;
-        await config.sendTx({
-          address: config.factory,
-          abi: SpawnFactoryABI,
-          functionName: "setChildOperator",
-          args: [childId, childWallet.address],
-        });
-        console.log(`[${config.name}] Operator set: ${gov.name} => ${childWallet.address}`);
+        const children = (await config.readClient.readContract({
+          address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+        })) as any[];
+        const justSpawned = children.find((c: any) => c.ensLabel === gov.name);
+        if (justSpawned) {
+          await config.sendTx({
+            address: justSpawned.childAddr,
+            abi: ChildGovernorABI,
+            functionName: "setOperator",
+            args: [childWallet.address],
+          });
+          console.log(`[${config.name}] Operator set: ${gov.name} => ${childWallet.address}`);
+        }
       } catch (err: any) {
         console.log(`[${config.name}] Operator set failed: ${err?.message?.slice(0, 50)}`);
       }

@@ -31,15 +31,9 @@ export async function runChildLoop(
   console.log(`[Child:${childLabel}] Contract: ${childAddr}`);
   console.log(`[Child:${childLabel}] Governance: ${governanceAddr}`);
 
-  // Initialize Lit Protocol for rationale encryption
-  let litAvailable = false;
-  try {
-    await initLit();
-    litAvailable = true;
-    console.log(`[Child:${childLabel}] Lit Protocol initialized.`);
-  } catch (err) {
-    console.warn(`[Child:${childLabel}] Lit Protocol unavailable, using hex fallback:`, err);
-  }
+  // Lit Protocol disabled for swarm mode (blocks child startup for 30s+)
+  // Rationale is hex-encoded instead — Lit integration available via demo.ts
+  const litAvailable = false;
 
   const systemPrompt = `You are an autonomous governance agent named "${childLabel}".
 You vote on DAO proposals according to your owner's values.
@@ -115,19 +109,7 @@ async function childCycle(
           `[Child:${childLabel}] Evaluating proposal ${i}: ${proposal.description}`
         );
 
-        // 3a. Summarize via Venice (private reasoning step 1)
-        try {
-          const summary = await summarizeProposal(proposal.description);
-          console.log(`[Child:${childLabel}] Summary: ${summary.slice(0, 100)}...`);
-        } catch {}
-
-        // 3b. Risk assessment via Venice (private reasoning step 2)
-        try {
-          const risk = await assessProposalRisk(proposal.description, governanceValues);
-          console.log(`[Child:${childLabel}] Risk: ${risk.riskLevel} — ${risk.factors.slice(0, 80)}`);
-        } catch {}
-
-        // 3c. Vote decision via Venice (private reasoning step 3)
+        // Venice reasoning — vote decision (summary + risk available but skipped in swarm for speed)
         const { decision, reasoning } = await reasonAboutProposal(
           proposal.description,
           governanceValues,

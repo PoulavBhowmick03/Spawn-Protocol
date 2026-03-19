@@ -55,9 +55,9 @@ contract ChildGovernor is Initializable {
         active = true;
     }
 
-    /// @notice Parent sets the child's unique wallet as operator
+    /// @notice Parent or factory sets the child's unique wallet as operator
     function setOperator(address _operator) external {
-        require(msg.sender == parent, "only parent");
+        require(msg.sender == parent || msg.sender == factory, "only parent or factory");
         operator = _operator;
     }
 
