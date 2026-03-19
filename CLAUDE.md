@@ -343,12 +343,14 @@ All team members must transfer ERC-8004 identity to a self-owned wallet:
   building-blocks, orchestration, addresses, concepts, security, audit,
   testing, indexing, frontend-ux, frontend-playbook, qa.
 
-## Deployed Contracts (Base Sepolia, chain 84532)
-- **MockGovernor:** `0x377c623bf42580DAa8F6a9138639aC4861097700`
-- **ParentTreasury:** `0xd6222F060FEe779E4F6A7f604b8E37593AE279dF`
-- **ChildGovernor (impl):** `0x7d3F6A908d28D910421A90BF8E92F5D50d46e23e`
-- **SpawnFactory:** `0x15003b671d3b83a0Df2592665283742f8e65ED36`
-- **TimeLock:** `0x5962CdAF11C0A1DE9498fF05F0926ba33a0257CA`
+## Deployed Contracts — Multi-DAO (Base Sepolia, chain 84532)
+- **Uniswap Governor:** `0x900Ea5B3D69eD4f12Fe8cDCF5BaCd0671742D380`
+- **Lido Governor:** `0xbCB2d76e5838313B422094909e833bA3f13714B5`
+- **ENS Governor:** `0xa127EB3882CA0E8C0F9730cb2D9781F5d02EeAD6`
+- **ParentTreasury:** `0x51Ec9a651A56B81e2309fE4615fE26B99a93902F`
+- **SpawnFactory:** `0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053`
+- **ChildGovernor (impl):** `0xdAC96F133cb8a062AEEAAe136Cee25FF3BbDfddC`
+- **TimeLock:** `0xB16d8446Fa4eFB48c17cd2bFe35B97a768459f5E`
 - **Deployer:** `0x15896e731c51ecB7BdB1447600DF126ea1d6969A`
 
 ## Deployed Contracts (Celo Sepolia, chain 11142220)
