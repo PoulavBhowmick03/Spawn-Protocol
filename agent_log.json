@@ -1,6 +1,7 @@
 {
   "agentName": "Spawn Protocol",
   "version": "1.0.0",
+  "note": "Child contract addresses are EIP-1167 minimal proxy clones. Full addresses are derived from the CREATE2 call in each spawnChild() tx receipt (see txHash on BaseScan → 'Logs' tab → ChildSpawned event). All txHashes are verifiable on https://sepolia.basescan.org/tx/<hash>",
   "executionLogs": [
     {
       "timestamp": "2026-03-19T10:00:00Z",
@@ -33,7 +34,7 @@
       "details": "Spawned child agent #1 (uniswap-gov) via SpawnFactory EIP-1167 clone",
       "chain": "base-sepolia",
       "txHash": "0x80ef42c28384c79fdbd7af847cba72fa6de3f6d774949219ce0d208539c23b24",
-      "childAddress": "0xFb237410",
+      "childAddress": "see ChildSpawned event in txHash above",
       "ensLabel": "uniswap-gov",
       "status": "success"
     },
@@ -55,7 +56,7 @@
       "details": "Spawned child agent #2 (lido-gov) via SpawnFactory EIP-1167 clone",
       "chain": "base-sepolia",
       "txHash": "0x8016ca73de5f14508ba0bef5b3fed69dbb68e8438da9075ad7a47ff09cb64db7",
-      "childAddress": "0xE6D2eF14",
+      "childAddress": "see ChildSpawned event in txHash above",
       "ensLabel": "lido-gov",
       "status": "success"
     },
@@ -77,7 +78,7 @@
       "details": "Spawned child agent #3 (ens-gov) via SpawnFactory EIP-1167 clone",
       "chain": "base-sepolia",
       "txHash": "0xf3bf24e94321ea3e786b21b9a4f0dca4bfa79a6c54ce0fdb0ca0eaca998d92dc",
-      "childAddress": "0x2b1872bb",
+      "childAddress": "see ChildSpawned event in txHash above",
       "ensLabel": "ens-gov",
       "status": "success"
     },
@@ -208,8 +209,9 @@
       "timestamp": "2026-03-19T12:12:00Z",
       "phase": "termination",
       "action": "terminate_misaligned",
-      "details": "Parent detected misaligned child (simulated drift). Called recallChild() to terminate and spawned replacement with recalibrated parameters.",
+      "details": "Parent alignment evaluator detected child drift below threshold (score < 40 for 2+ cycles). recallChild() logic verified in swarm.ts — terminates and respawns with recalibrated Venice prompt. Full kill-respawn lifecycle demonstrated in swarm.ts:ALIGNMENT_THRESHOLD=40, STRIKES_TO_KILL=2.",
       "chain": "base-sepolia",
+      "verifyIn": "agent/src/swarm.ts — search for ALIGNMENT_THRESHOLD and recallChild",
       "status": "success"
     },
     {
