@@ -27,6 +27,7 @@ import { registerAgent, updateAgentMetadata } from "./identity.js";
 import { createVotingDelegation } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
+import { startProposalFeed, getDiscoveredDAOs, getLatestProposals } from "./discovery.js";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -334,8 +335,18 @@ async function main() {
   await initChain(BASE_CONFIG);
   await initChain(CELO_CONFIG);
 
-  // Create initial proposals on both chains
-  console.log("\n── Creating initial proposals ──");
+  // Start discovery feed — mirrors real/simulated proposals to each governor
+  console.log("\n── Starting proposal discovery feed ──");
+  for (const gov of BASE_CONFIG.governors) {
+    await startProposalFeed(gov.addr, BASE_CONFIG.sendTx as any);
+  }
+  for (const gov of CELO_CONFIG.governors) {
+    await startProposalFeed(gov.addr, CELO_CONFIG.sendTx as any);
+  }
+  console.log(`[Discovery] Feed active for ${BASE_CONFIG.governors.length + CELO_CONFIG.governors.length} governors across 2 chains`);
+
+  // Also create proposals from the bank for diverse coverage
+  console.log("\n── Seeding initial proposals ──");
   for (let i = 0; i < 3; i++) {
     await createProposalOnChain(BASE_CONFIG);
     await createProposalOnChain(CELO_CONFIG);
@@ -346,6 +357,11 @@ async function main() {
     console.log("\n── New proposals appearing ──");
     await createProposalOnChain(BASE_CONFIG);
     await createProposalOnChain(CELO_CONFIG);
+    // Log discovered DAOs for visibility
+    const daos = getDiscoveredDAOs();
+    if (daos.length > 0) {
+      console.log(`[Discovery] DAOs tracked: ${daos.map(d => `${d.name}(${d.proposalCount})`).join(", ")}`);
+    }
   }, PROPOSAL_INTERVAL_MS);
 
   // Parent evaluation loop
