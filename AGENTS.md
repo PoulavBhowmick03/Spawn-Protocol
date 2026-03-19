@@ -21,12 +21,13 @@ Both Claude Code agents should read this file before starting work and update it
 **Last action:** Added operator auth to ChildGovernor so each child signs from unique wallet. Redeployed all contracts.
 **Currently working on:** Monitoring swarm, generating onchain evidence. Will update dashboard contract addresses next.
 **Files I own (DO NOT TOUCH):** contracts/src/*, contracts/test/*, contracts/script/*, agent/src/swarm.ts, agent/src/chain.ts, agent/src/wallet-manager.ts, agent/src/child.ts, agent/src/spawn-child.ts, agent/src/venice.ts, agent/src/lido.ts, agent/src/ens.ts
-**Latest deploy (Base Sepolia):**
-- SpawnFactory: `0x2D71B32Bb8B69238228A0717AE150d3f1a64185F`
-- Uniswap Gov: `0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970`
-- Lido Gov: `0x5a43535847fdB0B7A7edF71aAd0BAEcb766B0FCA`
-- ENS Gov: `0x8fd54F8a71746845f58497f3056E6dfff08d960a`
-- Treasury: `0x6408Cd02EB770b81ab9870af1E6aB5A478448d99`
+**Latest deploy (Base Sepolia) — UPDATED:**
+- SpawnFactory: `0xbee1A2c4950117a276FBBa17eebc33b324125760`
+- Uniswap Gov: `0x55d18aAFaf7Ef1838d3df5DCb4B0A899F6fB6B0e`
+- Lido Gov: `0x34384d90A14633309100BA52f73Aec0e0D5C0a8C`
+- ENS Gov: `0xFB98e4688e31E56e761d2837248CD1C1181D3BE7`
+- Treasury: `0xF470384d5d08720785460567f2F785f62b6d016c`
+- ChildGovernor impl: `0xEE0ed30B41B57Eb715EFe586723bfde551EFa407`
 - SpawnENSRegistry: `0x29170A43352D65329c462e6cDacc1c002419331D`
 - StETHTreasury: `0x7434531B76aa98bDC5d4b03306dE29fadc88A06c`
 
