@@ -343,27 +343,117 @@ All team members must transfer ERC-8004 identity to a self-owned wallet:
   building-blocks, orchestration, addresses, concepts, security, audit,
   testing, indexing, frontend-ux, frontend-playbook, qa.
 
+## Deployed Contracts (Base Sepolia, chain 84532)
+- **MockGovernor:** `0xA90f96DB17FfA5AfB02b90Fc8bA667F735198306`
+- **ParentTreasury:** `0x2BC402E4dF978812d28D4652b211b6a2243a57aA`
+- **ChildGovernor (impl):** `0x34b1761E941e762994B6089D1b8681eFE527a393`
+- **SpawnFactory:** `0x427aa82cD76e57d41eF8f685d7f1A76A415fA75d`
+- **TimeLock:** `0x1bDeaE9e843188DBF31bf69b65809da485174ea3`
+- **Deployer:** `0x15896e731c51ecB7BdB1447600DF126ea1d6969A`
+
+## Dashboard Agent Instructions
+A separate Claude Code agent should build the dashboard in `dashboard/`.
+See the "Dashboard Agent Prompt" section below for the full prompt.
+The dashboard agent should NOT modify files in `contracts/` or `agent/src/`.
+
+## Dashboard Agent Prompt
+Give this prompt to a second Claude Code agent running in the same repo:
+
+```
+You are building the real-time dashboard for Spawn Protocol, a DAO governance
+agent swarm. Work ONLY in the dashboard/ directory. Do not modify contracts/ or agent/.
+
+### What to build
+A Next.js 14 app (App Router) that visualizes the agent swarm in real time by
+polling onchain events from Base Sepolia.
+
+### Deployed contracts (Base Sepolia, chain 84532)
+- MockGovernor: 0xA90f96DB17FfA5AfB02b90Fc8bA667F735198306
+- ParentTreasury: 0x2BC402E4dF978812d28D4652b211b6a2243a57aA
+- ChildGovernor (impl): 0x34b1761E941e762994B6089D1b8681eFE527a393
+- SpawnFactory: 0x427aa82cD76e57d41eF8f685d7f1A76A415fA75d
+- TimeLock: 0x1bDeaE9e843188DBF31bf69b65809da485174ea3
+- RPC: https://sepolia.base.org
+
+### Pages / Views
+1. **Swarm Overview** (/) — grid of active child agents as cards. Each shows:
+   - ENS label, contract address, assigned DAO
+   - Alignment score (color-coded: green >70, yellow 40-70, red <40)
+   - Vote count, last vote timestamp
+   - Status: active (green pulse), voting (blue), terminated (red)
+2. **Agent Detail** (/agent/[id]) — single child's full history:
+   - All votes with proposal descriptions, decision, reasoning (if revealed)
+   - Alignment score over time (line chart)
+   - Onchain tx links to Base Sepolia explorer
+3. **Proposals** (/proposals) — all MockGovernor proposals with:
+   - Status (Active/Succeeded/Defeated/Executed)
+   - Vote breakdown (for/against/abstain)
+   - Which children voted and how
+4. **Timeline** (/timeline) — chronological feed of all events:
+   - ChildSpawned, VoteCast, AlignmentUpdated, ChildTerminated, RationaleRevealed
+   - Color-coded: spawn=green, vote=blue, terminate=red
+5. **Owner Panel** (/settings) — display governance values from ParentTreasury
+   - Show owner's stated values
+   - "Spawn New Child" and "Set Values" controls (write txs via wallet connect)
+
+### Tech
+- Next.js 14 with App Router, TypeScript, Tailwind CSS
+- viem for onchain reads (publicClient, no wallet needed for reads)
+- Poll events every 10 seconds using useEffect + setInterval
+- Copy ABIs from agent/src/abis.ts (or import directly)
+- Use shadcn/ui components for cards, tables, badges
+- Dark theme (space/cyberpunk aesthetic — this is an agent SWARM)
+- Responsive but desktop-first (demo will be on laptop)
+
+### Visual Style
+- Dark background (#0a0a0f), neon accent colors
+- Green pulse animation for active agents
+- Blue glow for voting events
+- Red flash for terminations
+- Monospace font for addresses and tx hashes
+- Animated particle/connection lines between parent and children (optional, time permitting)
+
+### Key Implementation Notes
+- The SpawnFactory emits ChildSpawned events — use getLogs to fetch all children
+- Each child's address comes from ChildSpawned events, then read ChildGovernor ABI on those addresses
+- For alignment scores, read alignmentScore() on each child contract
+- For proposals, iterate proposalCount on MockGovernor and getProposal for each
+- The ParentTreasury has getGovernanceValues() for the owner's stated values
+- Use viem's watchContractEvent or poll with getLogs for real-time updates
+
+### Init commands
+cd /Users/odinson/Developer/synthesis
+npx create-next-app@latest dashboard --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm
+cd dashboard && npm install viem
+npx shadcn@latest init -d
+
+### DO NOT
+- Do not install wagmi or connectkit (overkill for read-only dashboard, add wallet connect later if time)
+- Do not use hardcoded mock data — everything reads from onchain
+- Do not add authentication
+- Do not create a backend API — read directly from chain
+```
+
 ## Current Status
-[UPDATE THIS AS YOU BUILD]
-- [ ] Project scaffolded
-- [ ] MockGovernor written + tested
-- [ ] SpawnFactory written + tested
-- [ ] ChildGovernor written + tested
-- [ ] ParentTreasury written + tested
-- [ ] Integration test passing
-- [ ] Deployed to Base Sepolia
-- [ ] Deployed to Celo Alfajores
-- [ ] Agent runtime scaffolded
-- [ ] Venice API integrated
-- [ ] Parent agent loop working
-- [ ] Child agent loop working
-- [ ] Children vote autonomously
+- [x] Project scaffolded
+- [x] MockGovernor written + tested
+- [x] SpawnFactory written + tested
+- [x] ChildGovernor written + tested
+- [x] ParentTreasury written + tested
+- [x] Integration test passing (23/23)
+- [x] Deployed to Base Sepolia
+- [ ] Deployed to Celo Alfajores (RPC down, retry later)
+- [x] Agent runtime scaffolded
+- [x] Venice API integrated
+- [x] Parent agent loop working
+- [x] Child agent loop working
+- [ ] Children vote autonomously (needs Venice credits + testnet ETH)
 - [ ] Parent evaluates alignment
 - [ ] Parent kills/respawns misaligned children
-- [ ] Lit Protocol encryption working
-- [ ] MetaMask delegations working
-- [ ] ERC-8004 identities registered
-- [ ] ENS subdomains registered
+- [ ] Lit Protocol encryption working (Phase 2 in progress)
+- [ ] MetaMask delegations working (Phase 2 in progress)
+- [ ] ERC-8004 identities registered (Phase 2 in progress)
+- [ ] ENS subdomains registered (Phase 2 in progress)
 - [ ] Lido stETH integration
 - [ ] Dashboard live
 - [ ] Demo recorded
