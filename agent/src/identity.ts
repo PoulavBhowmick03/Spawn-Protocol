@@ -54,6 +54,16 @@ const ERC8004_ABI = [
   },
   {
     type: "function",
+    name: "setAgentURI",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "uri", type: "string" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
     name: "ownerOf",
     inputs: [{ name: "agentId", type: "uint256" }],
     outputs: [{ name: "", type: "address" }],
@@ -419,6 +429,44 @@ async function fetchMetadata(
     });
     return (value as string) || null;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Update an agent's onchain URI with current stats.
+ * Creates a verifiable performance trail on ERC-8004 — each update is an onchain tx.
+ * URI format: spawn://{label}.spawn.eth?alignment={score}&votes={count}&status={status}&updatedAt={timestamp}
+ */
+export async function updateAgentURI(
+  agentId: bigint,
+  label: string,
+  stats: { alignmentScore?: number; voteCount?: number; status?: string; chain?: string }
+): Promise<string | null> {
+  const registryAddr = process.env.ERC8004_REGISTRY_ADDRESS as Address | undefined;
+  if (!registryAddr) return null;
+
+  const params = new URLSearchParams();
+  if (stats.alignmentScore !== undefined) params.set("alignment", stats.alignmentScore.toString());
+  if (stats.voteCount !== undefined) params.set("votes", stats.voteCount.toString());
+  if (stats.status) params.set("status", stats.status);
+  if (stats.chain) params.set("chain", stats.chain);
+  params.set("updatedAt", Math.floor(Date.now() / 1000).toString());
+
+  const uri = `spawn://${label}.spawn.eth?${params.toString()}`;
+
+  try {
+    const hash = await walletClient.writeContract({
+      address: registryAddr,
+      abi: ERC8004_ABI,
+      functionName: "setAgentURI",
+      args: [agentId, uri],
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    console.log(`[ERC-8004] Updated agent ${agentId} URI: ${uri} (tx: ${receipt.transactionHash})`);
+    return receipt.transactionHash;
+  } catch (err: any) {
+    console.log(`[ERC-8004] setAgentURI failed for ${agentId}: ${err?.message?.slice(0, 50)}`);
     return null;
   }
 }

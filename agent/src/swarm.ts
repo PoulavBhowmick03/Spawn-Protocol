@@ -23,12 +23,12 @@ import {
 } from "./abis.js";
 import { evaluateAlignment, generateSwarmReport, generateTerminationReport } from "./venice.js";
 import { registerSubdomain, deregisterSubdomain, setAgentMetadata } from "./ens.js";
+import { deriveChildWallet } from "./wallet-manager.js";
 import { registerAgent, updateAgentMetadata } from "./identity.js";
 import { createVotingDelegation } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals } from "./discovery.js";
-import { deriveChildWallet } from "./wallet-manager.js";
 import { parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
@@ -62,12 +62,12 @@ const BASE_CONFIG: ChainConfig = {
   name: "base-sepolia",
   sendTx: sendTxAndWait,
   readClient: publicClient,
-  treasury: "0x51Ec9a651A56B81e2309fE4615fE26B99a93902F",
-  factory: "0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053",
+  treasury: "0x6408Cd02EB770b81ab9870af1E6aB5A478448d99",
+  factory: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F",
   governors: [
-    { name: "uniswap-dao", addr: "0x900Ea5B3D69eD4f12Fe8cDCF5BaCd0671742D380" },
-    { name: "lido-dao", addr: "0xbCB2d76e5838313B422094909e833bA3f13714B5" },
-    { name: "ens-dao", addr: "0xa127EB3882CA0E8C0F9730cb2D9781F5d02EeAD6" },
+    { name: "uniswap-dao", addr: "0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970" },
+    { name: "lido-dao", addr: "0x5a43535847fdB0B7A7edF71aAd0BAEcb766B0FCA" },
+    { name: "ens-dao", addr: "0x8fd54F8a71746845f58497f3056E6dfff08d960a" },
   ],
 };
 
@@ -173,6 +173,23 @@ async function initChain(config: ChainConfig) {
         args: [gov.name, gov.addr, 0n, 200000n],
       });
       console.log(`[${config.name}] Spawned ${gov.name}`);
+
+      // Set child's unique wallet as operator on the ChildGovernor contract
+      try {
+        const childId = (await config.readClient.readContract({
+          address: config.factory, abi: SpawnFactoryABI, functionName: "childCount",
+        })) as bigint;
+        await config.sendTx({
+          address: config.factory,
+          abi: SpawnFactoryABI,
+          functionName: "setChildOperator",
+          args: [childId, childWallet.address],
+        });
+        console.log(`[${config.name}] Operator set: ${gov.name} => ${childWallet.address}`);
+      } catch (err: any) {
+        console.log(`[${config.name}] Operator set failed: ${err?.message?.slice(0, 50)}`);
+      }
+
       logParentAction("spawn_child", {
         chain: config.name, dao: gov.name, governor: gov.addr,
         childWallet: childWallet.address,

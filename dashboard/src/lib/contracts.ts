@@ -5,23 +5,22 @@ import {
   ChildGovernorABI,
 } from "./abis";
 
-// Multi-DAO deployment — Base Sepolia (chain 84532)
+// Latest deployment — Base Sepolia (chain 84532) — with operator auth + unique child wallets
 export const CONTRACTS = {
-  // Legacy single governor (kept for backward compat)
   MockGovernor: {
-    address: "0x900Ea5B3D69eD4f12Fe8cDCF5BaCd0671742D380" as const,
+    address: "0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970" as const,
     abi: MockGovernorABI,
   },
   ParentTreasury: {
-    address: "0x51Ec9a651A56B81e2309fE4615fE26B99a93902F" as const,
+    address: "0x6408Cd02EB770b81ab9870af1E6aB5A478448d99" as const,
     abi: ParentTreasuryABI,
   },
   SpawnFactory: {
-    address: "0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053" as const,
+    address: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F" as const,
     abi: SpawnFactoryABI,
   },
   ChildGovernorImpl: {
-    address: "0xdAC96F133cb8a062AEEAAe136Cee25FF3BbDfddC" as const,
+    address: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F" as const,
     abi: ChildGovernorABI,
   },
 } as const;
@@ -31,7 +30,7 @@ export const GOVERNORS = [
   {
     name: "Uniswap DAO",
     slug: "uniswap",
-    address: "0x900Ea5B3D69eD4f12Fe8cDCF5BaCd0671742D380" as const,
+    address: "0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970" as const,
     abi: MockGovernorABI,
     color: "text-pink-400",
     borderColor: "border-pink-400/30",
@@ -40,7 +39,7 @@ export const GOVERNORS = [
   {
     name: "Lido DAO",
     slug: "lido",
-    address: "0xbCB2d76e5838313B422094909e833bA3f13714B5" as const,
+    address: "0x5a43535847fdB0B7A7edF71aAd0BAEcb766B0FCA" as const,
     abi: MockGovernorABI,
     color: "text-blue-400",
     borderColor: "border-blue-400/30",
@@ -49,7 +48,7 @@ export const GOVERNORS = [
   {
     name: "ENS DAO",
     slug: "ens",
-    address: "0xa127EB3882CA0E8C0F9730cb2D9781F5d02EeAD6" as const,
+    address: "0x8fd54F8a71746845f58497f3056E6dfff08d960a" as const,
     abi: MockGovernorABI,
     color: "text-purple-400",
     borderColor: "border-purple-400/30",
