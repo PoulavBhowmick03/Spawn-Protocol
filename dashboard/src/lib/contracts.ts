@@ -20,7 +20,7 @@ export const CONTRACTS = {
     abi: SpawnFactoryABI,
   },
   ChildGovernorImpl: {
-    address: "0x2D71B32Bb8B69238228A0717AE150d3f1a64185F" as const,
+    address: "0x3b1aa4e67c3afa1d6a3359ba1759f209784a0b57" as const,
     abi: ChildGovernorABI,
   },
 } as const;

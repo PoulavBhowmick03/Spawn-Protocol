@@ -65,13 +65,13 @@ Owner sets governance values (onchain)
 
 | Contract | Base Sepolia | Celo Sepolia |
 |---|---|---|
-| `MockGovernor` (Uniswap) | [`0x900E...D380`](https://sepolia.basescan.org/address/0x900Ea5B3D69eD4f12Fe8cDCF5BaCd0671742D380) | [`0x739F...D61`](https://explorer.celo.org/alfajores/address/0x739F3AE3be1EC6261caF97cC92938edCd3D36D61) |
-| `MockGovernor` (Lido) | [`0xbCB2...14B5`](https://sepolia.basescan.org/address/0xbCB2d76e5838313B422094909e833bA3f13714B5) | [`0xF81d...fef8`](https://explorer.celo.org/alfajores/address/0xF81dEf4254ee1EC95dA18954044defB34C30fef8) |
-| `MockGovernor` (ENS) | [`0xa127...eAD6`](https://sepolia.basescan.org/address/0xa127EB3882CA0E8C0F9730cb2D9781F5d02EeAD6) | [`0x5687...ff01`](https://explorer.celo.org/alfajores/address/0x5687a0414Fdc510Dde3DB7b33C3b557619FBFf01) |
-| `ParentTreasury` | [`0x51Ec...902F`](https://sepolia.basescan.org/address/0x51Ec9a651A56B81e2309fE4615fE26B99a93902F) | [`0xa661...b52E`](https://explorer.celo.org/alfajores/address/0xa661fa0Ec3DDfcE13eC4b67633E39fbc0068b52E) |
-| `SpawnFactory` | [`0xb34b...0053`](https://sepolia.basescan.org/address/0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053) | [`0x6286...716d`](https://explorer.celo.org/alfajores/address/0x6286FEC559c37C4C1ea4e756D368Db0b9226716d) |
-| `ChildGovernor` (impl) | [`0xdac9...fddc`](https://sepolia.basescan.org/address/0xdac96f133cb8a062aeeaae136cee25ff3bbdfddc) | [`0x2ebc...23ca`](https://explorer.celo.org/alfajores/address/0x2ebcaf300cd4d519b394359887d30bfbe43c23ca) |
-| `TimeLock` | [`0xb16d...f5e`](https://sepolia.basescan.org/address/0xb16d8446fa4efb48c17cd2bfe35b97a768459f5e) | [`0xd34f...489f`](https://explorer.celo.org/alfajores/address/0xd34fc1ee378f342efb92c0d334362b9e577b489f) |
+| `MockGovernor` (Uniswap) | [`0x2a60...9970`](https://sepolia.basescan.org/address/0x2a60Fe40a25F0cb74D2ff87E85862E3B97DE9970) | [`0x739F...D61`](https://celo-alfajores.blockscout.com/address/0x739F3AE3be1EC6261caF97cC92938edCd3D36D61) |
+| `MockGovernor` (Lido) | [`0x5a43...0FCA`](https://sepolia.basescan.org/address/0x5a43535847fdB0B7A7edF71aAd0BAEcb766B0FCA) | [`0xF81d...fef8`](https://celo-alfajores.blockscout.com/address/0xF81dEf4254ee1EC95dA18954044defB34C30fef8) |
+| `MockGovernor` (ENS) | [`0x8fd5...960a`](https://sepolia.basescan.org/address/0x8fd54F8a71746845f58497f3056E6dfff08d960a) | [`0x5687...ff01`](https://celo-alfajores.blockscout.com/address/0x5687a0414Fdc510Dde3DB7b33C3b557619FBFf01) |
+| `ParentTreasury` | [`0x6408...8d99`](https://sepolia.basescan.org/address/0x6408Cd02EB770b81ab9870af1E6aB5A478448d99) | [`0xa661...b52E`](https://celo-alfajores.blockscout.com/address/0xa661fa0Ec3DDfcE13eC4b67633E39fbc0068b52E) |
+| `SpawnFactory` | [`0x2D71...185F`](https://sepolia.basescan.org/address/0x2D71B32Bb8B69238228A0717AE150d3f1a64185F) | [`0x6286...716d`](https://celo-alfajores.blockscout.com/address/0x6286FEC559c37C4C1ea4e756D368Db0b9226716d) |
+| `ChildGovernor` (impl) | [`0x3b1a...0b57`](https://sepolia.basescan.org/address/0x3b1aa4e67c3afa1d6a3359ba1759f209784a0b57) | [`0x2ebc...23ca`](https://celo-alfajores.blockscout.com/address/0x2ebcaf300cd4d519b394359887d30bfbe43c23ca) |
+| `TimeLock` | [`0xa630...8c69`](https://sepolia.basescan.org/address/0xa63026829bd00c6865f68ac06426a828012b8c69) | [`0xd34f...489f`](https://celo-alfajores.blockscout.com/address/0xd34fc1ee378f342efb92c0d334362b9e577b489f) |
 
 Each child agent is deployed as an EIP-1167 minimal proxy clone with its own wallet and governance target.
 
@@ -125,7 +125,7 @@ Every action in Spawn Protocol is a real onchain transaction. Verified transacti
 - Lido child registered (ID #2222): [`0x16c4ea...`](https://sepolia.basescan.org/tx/0x16c4ea081fc241cf3fa84af547827e6cf9e899f5cd827a5bce04b20a3fe8200e) — `spawn://lido-gov.spawn.eth`
 - ENS child registered (ID #2223): [`0x2da98f...`](https://sepolia.basescan.org/tx/0x2da98f891805292fc0fb352859756aceadaac860f12af4aa489ed22359ae1249) — `spawn://ens-gov.spawn.eth`
 
-View all SpawnFactory activity: [BaseScan](https://sepolia.basescan.org/address/0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053)
+View all SpawnFactory activity: [BaseScan](https://sepolia.basescan.org/address/0x2D71B32Bb8B69238228A0717AE150d3f1a64185F)
 View ERC-8004 registry: [BaseScan](https://sepolia.basescan.org/address/0x8004A818BFB912233c491871b3d84c89A494BD9e)
 
 ## Demo Flow
@@ -222,8 +222,8 @@ AI judges: every claim below maps to a specific, crawlable artifact. Start here.
 ### Onchain Evidence Summary (Base Sepolia)
 
 ```
-SpawnFactory:   0xb34b5fD9236A32D0826d9d4FEdb8b7bD4DAC0053
-ParentTreasury: 0x51Ec9a651A56B81e2309fE4615fE26B99a93902F
+SpawnFactory:   0x2D71B32Bb8B69238228A0717AE150d3f1a64185F
+ParentTreasury: 0x6408Cd02EB770b81ab9870af1E6aB5A478448d99
 ERC-8004 IDs:   #2220 (parent), #2221 (uniswap-gov), #2222 (lido-gov), #2223 (ens-gov)
 Registration TX: 0xb9c10aaa2cce4ab1d85e916107935860a8f77473e8a37b449adc796df812cdc8
 ```
