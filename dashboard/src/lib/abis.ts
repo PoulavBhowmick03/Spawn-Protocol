@@ -1,0 +1,338 @@
+export const MockGovernorABI = [
+  {
+    type: "constructor",
+    inputs: [{ name: "_votingPeriod", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "createProposal",
+    inputs: [{ name: "description", type: "string" }],
+    outputs: [{ name: "proposalId", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "castVote",
+    inputs: [
+      { name: "proposalId", type: "uint256" },
+      { name: "support", type: "uint8" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getProposal",
+    inputs: [{ name: "proposalId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "description", type: "string" },
+          { name: "startTime", type: "uint256" },
+          { name: "endTime", type: "uint256" },
+          { name: "forVotes", type: "uint256" },
+          { name: "againstVotes", type: "uint256" },
+          { name: "abstainVotes", type: "uint256" },
+          { name: "executed", type: "bool" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "state",
+    inputs: [{ name: "proposalId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint8" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "proposalCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "votingPeriod",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "hasVoted",
+    inputs: [
+      { name: "", type: "uint256" },
+      { name: "", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "ProposalCreated",
+    inputs: [
+      { name: "proposalId", type: "uint256", indexed: true },
+      { name: "description", type: "string", indexed: false },
+      { name: "startTime", type: "uint256", indexed: false },
+      { name: "endTime", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "VoteCast",
+    inputs: [
+      { name: "proposalId", type: "uint256", indexed: true },
+      { name: "voter", type: "address", indexed: true },
+      { name: "support", type: "uint8", indexed: false },
+      { name: "reason", type: "string", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "ProposalExecuted",
+    inputs: [{ name: "proposalId", type: "uint256", indexed: true }],
+  },
+] as const;
+
+export const ParentTreasuryABI = [
+  {
+    type: "function",
+    name: "owner",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "parentAgent",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getGovernanceValues",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "maxChildren",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "maxBudgetPerChild",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "emergencyPause",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "Deposited",
+    inputs: [
+      { name: "from", type: "address", indexed: true },
+      { name: "amount", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "ValuesUpdated",
+    inputs: [{ name: "values", type: "string", indexed: false }],
+  },
+  {
+    type: "event",
+    name: "AgentRegistered",
+    inputs: [{ name: "agent", type: "address", indexed: false }],
+  },
+] as const;
+
+export const SpawnFactoryABI = [
+  {
+    type: "function",
+    name: "parentAgent",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getActiveChildren",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "tuple[]",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "childAddr", type: "address" },
+          { name: "governance", type: "address" },
+          { name: "budget", type: "uint256" },
+          { name: "maxGasPerVote", type: "uint256" },
+          { name: "ensLabel", type: "string" },
+          { name: "active", type: "bool" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getChild",
+    inputs: [{ name: "childId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "childAddr", type: "address" },
+          { name: "governance", type: "address" },
+          { name: "budget", type: "uint256" },
+          { name: "maxGasPerVote", type: "uint256" },
+          { name: "ensLabel", type: "string" },
+          { name: "active", type: "bool" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "childCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getActiveChildCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "ChildSpawned",
+    inputs: [
+      { name: "childId", type: "uint256", indexed: true },
+      { name: "childAddr", type: "address", indexed: false },
+      { name: "governance", type: "address", indexed: false },
+      { name: "budget", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "ChildTerminated",
+    inputs: [
+      { name: "childId", type: "uint256", indexed: true },
+      { name: "childAddr", type: "address", indexed: false },
+      { name: "fundsReturned", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "FundsReallocated",
+    inputs: [
+      { name: "fromId", type: "uint256", indexed: true },
+      { name: "toId", type: "uint256", indexed: true },
+      { name: "amount", type: "uint256", indexed: false },
+    ],
+  },
+] as const;
+
+export const ChildGovernorABI = [
+  {
+    type: "function",
+    name: "getVotingHistory",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "tuple[]",
+        components: [
+          { name: "proposalId", type: "uint256" },
+          { name: "support", type: "uint8" },
+          { name: "encryptedRationale", type: "bytes" },
+          { name: "decryptedRationale", type: "bytes" },
+          { name: "timestamp", type: "uint256" },
+          { name: "revealed", type: "bool" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getVoteCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "parent",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "governance",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "alignmentScore",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "active",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "VoteCast",
+    inputs: [
+      { name: "proposalId", type: "uint256", indexed: true },
+      { name: "support", type: "uint8", indexed: false },
+      { name: "encryptedRationale", type: "bytes", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "RationaleRevealed",
+    inputs: [
+      { name: "proposalId", type: "uint256", indexed: true },
+      { name: "rationale", type: "bytes", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "AlignmentUpdated",
+    inputs: [{ name: "newScore", type: "uint256", indexed: false }],
+  },
+] as const;
