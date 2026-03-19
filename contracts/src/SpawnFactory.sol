@@ -4,6 +4,11 @@ pragma solidity ^0.8.28;
 import "@openzeppelin/contracts/proxy/Clones.sol";
 import "./ChildGovernor.sol";
 
+interface ITreasuryCaps {
+    function maxChildren() external view returns (uint256);
+    function maxBudgetPerChild() external view returns (uint256);
+}
+
 /// @title SpawnFactory — Spawns and manages child governance agents via EIP-1167 minimal proxies
 contract SpawnFactory {
     struct ChildInfo {
@@ -51,6 +56,12 @@ contract SpawnFactory {
         uint256 budget,
         uint256 maxGasPerVote
     ) external onlyParent returns (uint256 childId) {
+        // Enforce treasury caps
+        uint256 maxKids = ITreasuryCaps(treasury).maxChildren();
+        uint256 maxBudget = ITreasuryCaps(treasury).maxBudgetPerChild();
+        require(activeChildIds.length < maxKids, "max children reached");
+        require(budget <= maxBudget, "exceeds max budget per child");
+
         childId = ++childCount;
 
         address clone = Clones.clone(childImplementation);

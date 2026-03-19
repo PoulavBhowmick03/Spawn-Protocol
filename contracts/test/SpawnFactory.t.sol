@@ -89,5 +89,25 @@ contract SpawnFactoryTest is Test {
         assertFalse(factory.getChild(2).active);
     }
 
+    function test_maxChildrenCap() public {
+        // Treasury has maxChildren = 10, spawn 10 then try 11th
+        vm.startPrank(parentAgent);
+        for (uint256 i = 0; i < 10; i++) {
+            factory.spawnChild(string(abi.encodePacked("dao", i)), address(mockGov), 0, 100000);
+        }
+        assertEq(factory.getActiveChildCount(), 10);
+
+        vm.expectRevert("max children reached");
+        factory.spawnChild("dao11", address(mockGov), 0, 100000);
+        vm.stopPrank();
+    }
+
+    function test_maxBudgetPerChildCap() public {
+        // Treasury has maxBudgetPerChild = 1 ether
+        vm.prank(parentAgent);
+        vm.expectRevert("exceeds max budget per child");
+        factory.spawnChild("dao1", address(mockGov), 1.1 ether, 100000);
+    }
+
     receive() external payable {}
 }

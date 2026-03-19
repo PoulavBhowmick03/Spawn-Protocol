@@ -61,6 +61,7 @@ contract ChildGovernor is Initializable {
     ) external onlyAuthorized onlyActive {
         require(proposalToVoteIndex[proposalId] == 0, "already voted");
         require(support <= 2, "invalid support");
+        // maxGasPerVote enforced off-chain by agent (sets tx gas limit)
 
         voteHistory.push(VoteRecord({
             proposalId: proposalId,
