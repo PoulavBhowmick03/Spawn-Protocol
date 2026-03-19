@@ -49,6 +49,7 @@ const discoveredDAOs = new Map<string, DiscoveredDAO>();
 let feedInterval: ReturnType<typeof setInterval> | null = null;
 let tallyAvailable: boolean | null = null; // null = not checked yet
 let simulatedIndex = 0;
+let tallyLastFetched = 0; // timestamp of last Tally fetch (global cooldown)
 
 // ── Tally API ──
 
@@ -409,8 +410,10 @@ async function pollOnce(
 ): Promise<DiscoveredProposal[]> {
   let newProposals: DiscoveredProposal[] = [];
 
-  // Try Tally first (unless we already know it's unavailable)
-  if (tallyAvailable !== false) {
+  // Try Tally first — but only once per 5 min globally (not per-governor)
+  const now = Date.now();
+  if (tallyAvailable !== false && now - tallyLastFetched > 290_000) {
+    tallyLastFetched = now;
     const tallyProposals = await fetchFromTally();
     for (const p of tallyProposals) {
       if (!seenProposals.has(p.externalId)) {
@@ -420,21 +423,14 @@ async function pollOnce(
     }
   }
 
-  // If Tally is unavailable or returned nothing, use simulated feed
-  if (tallyAvailable === false || newProposals.length === 0) {
-    if (tallyAvailable === false) {
-      console.log(
-        "[Discovery] Using simulated proposal feed (Tally unavailable)"
-      );
-    }
-    // Generate 1-2 simulated proposals per cycle
-    const count = 1 + Math.floor(Math.random() * 2);
-    for (let i = 0; i < count; i++) {
-      const p = generateSimulatedProposal();
-      if (!seenProposals.has(p.externalId)) {
-        seenProposals.set(p.externalId, p);
-        newProposals.push(p);
-      }
+  // If Tally returned nothing new AND no simulated proposals were generated recently,
+  // generate one simulated proposal. But only if we haven't already generated one this cycle.
+  if (newProposals.length === 0 && tallyAvailable === false) {
+    console.log("[Discovery] Using simulated proposal feed (Tally unavailable)");
+    const p = generateSimulatedProposal();
+    if (!seenProposals.has(p.externalId)) {
+      seenProposals.set(p.externalId, p);
+      newProposals.push(p);
     }
   }
 
