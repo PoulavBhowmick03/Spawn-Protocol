@@ -17,10 +17,10 @@ Both Claude Code agents should read this file before starting work and update it
 **Files recently modified:** agent/src/venice.ts, agent/src/child.ts, agent/src/swarm.ts, agent.json, dashboard/src/hooks/useTimeline.ts, dashboard/src/components/TimelineItem.tsx, run.sh
 
 ## Agent 2 (Terminal s013) — Core Development
-**Status:** UNKNOWN
-**Last action:** Unknown — update this section
-**Currently working on:** Unknown
-**Files recently modified:** Unknown
+**Status:** ACTIVE
+**Last action:** Swarm running live on both chains, 8+ votes cast, Venice 6-call pipeline working
+**Currently working on:** StETHTreasury.sol (real Lido bounty) + DelegationEnforcer.sol (MetaMask bounty)
+**Files recently modified:** contracts/src/*, agent/src/swarm.ts, agent/src/venice.ts, agent/src/chain.ts, agent.json
 
 ---
 
