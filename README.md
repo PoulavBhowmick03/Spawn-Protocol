@@ -174,12 +174,19 @@ The system demonstrates genuine autonomy at multiple levels:
 
 ### Venice Private Agents · $11.5K · `ea3b366947c54689bd82ae80bf9f3310`
 
-**Every inference call in the product routes through Venice API (llama-3.3-70b, no data retention). No other LLM is used.**
+**Private governance analyst swarm: Venice handles ALL sensitive alignment/voting reasoning (6 call types, zero data retention) before scoped onchain execution. Full private → public pipeline with encrypted rationale.**
 
-- Code proof: `agent/src/venice.ts` — single `OpenAI` client with `baseURL: "https://api.venice.ai/api/v1"`. Grep the entire `agent/src/` for any other LLM import — there is none.
-- 6 distinct Venice call types: `reasonAboutProposal`, `evaluateAlignment`, `generateTerminationReport`, `generateSwarmReport`, `summarizeProposal`, `assessProposalRisk`
-- Children reason privately → rationale encrypted via Lit Protocol → revealed only after vote closes
-- Venice vote tx: [`0x85945e...`](https://sepolia.basescan.org/tx/0x85945e34982392e5e86442c3701440c01f056f3a71695847a5a180bd78c06c17)
+The privacy pipeline:
+1. **Private cognition** — Venice (llama-3.3-70b, no retention) reasons about governance proposals. Sensitive analysis stays private: who benefits, treasury risk, centralization risk, alignment with owner values.
+2. **Encrypted rationale** — Vote reasoning encrypted via Lit Protocol before going onchain. Cannot be front-run or used for social pressure during voting.
+3. **Public action** — Vote cast onchain via `ChildGovernor.castVote()`. Verifiable, immutable.
+4. **Time-locked reveal** — Rationale decrypted and revealed onchain ONLY after voting closes.
+
+This is not "call an API and post the result." It's a multi-agent private reasoning system where 9 child agents with different perspectives (DeFi, public-goods, conservative) independently analyze proposals through Venice, disagree with each other, and produce verifiable onchain votes — all without any reasoning data ever being stored.
+
+- Code proof: `agent/src/venice.ts` — single `OpenAI` client with `baseURL: "https://api.venice.ai/api/v1"`. Zero other LLM imports in `agent/src/`.
+- 6 distinct Venice call types: `summarizeProposal` → `assessProposalRisk` → `reasonAboutProposal` (per vote) + `evaluateAlignment` → `generateSwarmReport` → `generateTerminationReport` (per eval cycle)
+- If you remove Venice, the entire swarm dies — contracts become inert shells with no intelligence
 - Venice alignment tx: [`0x1e55ea...`](https://sepolia.basescan.org/tx/0x1e55ea01be0c465d9dd3803ebec579842ec94997e3295388025213cf6942fb1e)
 
 ---
