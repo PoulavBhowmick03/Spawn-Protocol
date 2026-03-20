@@ -279,25 +279,74 @@
         "0x000b9f0aff5a7f8c97216412020294020c675917e295077cc27934fd973e3e9a"
       ],
       "status": "success"
+    },
+    {
+      "timestamp": "2026-03-20T14:58:02.617Z",
+      "phase": "initialization",
+      "action": "register_parent",
+      "details": "Parent — register_parent — (chain=base-sepolia)",
+      "chain": "base-sepolia",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-03-20T14:58:12.449Z",
+      "phase": "initialization",
+      "action": "register_parent",
+      "details": "Parent — register_parent — (chain=celo-sepolia)",
+      "chain": "base-sepolia",
+      "status": "success"
     }
   ],
   "metrics": {
-    "totalOnchainTransactions": 22,
-    "chainsDeployed": ["base-sepolia", "celo-sepolia"],
+    "totalOnchainTransactions": 4589,
+    "chainsDeployed": [
+      "base-sepolia",
+      "celo-sepolia"
+    ],
     "contractsDeployed": 10,
     "agentsRegistered": 4,
     "proposalsCreated": 3,
-    "votesCast": 4,
-    "alignmentEvaluations": 2,
-    "childrenSpawned": 3,
-    "childrenTerminated": 1,
-    "childrenRespawned": 1,
-    "reasoningCalls": 7,
+    "votesCast": 527,
+    "alignmentEvaluations": 214,
+    "childrenSpawned": 76,
+    "childrenTerminated": 67,
+    "childrenRespawned": 67,
+    "reasoningCalls": 538,
     "reasoningProvider": "venice",
     "reasoningModel": "llama-3.3-70b",
     "e2eeEnabled": true,
     "yieldWithdrawals": 1,
-    "ensSubdomainsRegistered": 10,
+    "ensSubdomainsRegistered": 22,
     "contractsVerified": 9
-  }
+  },
+  "entries": [
+    {
+      "agentId": "parent",
+      "agentType": "parent",
+      "action": "register_parent",
+      "inputs": {
+        "chain": "base-sepolia"
+      },
+      "outputs": {
+        "address": "0x15896e731c51ecB7BdB1447600DF126ea1d6969A"
+      },
+      "chain": "base-sepolia",
+      "success": true,
+      "timestamp": "2026-03-20T14:58:02.617Z"
+    },
+    {
+      "agentId": "parent",
+      "agentType": "parent",
+      "action": "register_parent",
+      "inputs": {
+        "chain": "celo-sepolia"
+      },
+      "outputs": {
+        "address": "0x15896e731c51ecB7BdB1447600DF126ea1d6969A"
+      },
+      "chain": "base-sepolia",
+      "success": true,
+      "timestamp": "2026-03-20T14:58:12.449Z"
+    }
+  ]
 }

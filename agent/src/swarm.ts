@@ -274,8 +274,24 @@ async function initChain(config: ChainConfig) {
       // ERC-8004 identity
       try { await registerAgent(`spawn://${childName}.spawn.eth`, { agentType: "child", assignedDAO: gov.name, governanceContract: gov.addr, ensName: `${childName}.spawn.eth`, alignmentScore: 100, capabilities: ["vote", "reason", perspective.suffix], createdAt: Date.now() }); } catch {}
 
-      // MetaMask delegation
-      try { await createVotingDelegation(gov.addr, childWallet.address as `0x${string}`, 100); } catch {}
+      // MetaMask delegation — ERC-7715 scoped voting authority
+      try {
+        const delegationRecord = await createVotingDelegation(gov.addr, childWallet.address as `0x${string}`, 100);
+        console.log(`[${config.name}] Delegation created for ${childName}: hash=${delegationRecord.delegationHash.slice(0, 18)}...`);
+        logParentAction("delegation_granted", {
+          chain: config.name, child: childName, dao: gov.name,
+          delegatee: childWallet.address, maxVotes: 100,
+        }, {
+          delegationHash: delegationRecord.delegationHash,
+          caveats: delegationRecord.delegation.caveats.length,
+        });
+      } catch (delegErr: any) {
+        console.log(`[${config.name}] Delegation failed for ${childName}: ${delegErr?.message?.slice(0, 60) || "unknown error"}`);
+        logParentAction("delegation_granted", {
+          chain: config.name, child: childName, dao: gov.name,
+          delegatee: childWallet.address,
+        }, {}, undefined, false, delegErr?.message?.slice(0, 120));
+      }
     } catch (err: any) {
       console.log(`[${config.name}] ${childName}: ${err?.message?.slice(0, 50) || "spawn skipped"}`);
     }

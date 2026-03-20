@@ -198,6 +198,7 @@ async function childCycle(
         }
       } else {
         encryptedRationale = toHex(reasoning);
+        console.log(`[Child:${childLabel}] Rationale hex-encoded (Lit unavailable — disabled for swarm mode)`);
       }
 
       // Cast vote onchain using child's own wallet
@@ -272,6 +273,10 @@ async function childCycle(
           } catch {
             // Keep as raw hex fallback
           }
+        }
+
+        if (!litAvailable) {
+          console.log(`[Child:${childLabel}] Revealing hex-encoded rationale (Lit unavailable — no decryption needed)`);
         }
 
         const hash = await childWalletClient.writeContract({

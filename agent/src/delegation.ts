@@ -14,6 +14,8 @@ import {
 } from "@metamask/delegation-toolkit";
 import { encodeAbiParameters, keccak256, type Address, type Hex } from "viem";
 import { account, baseSepolia } from "./chain.js";
+import { setChildTextRecord } from "./ens.js";
+import { logParentAction } from "./logger.js";
 
 // ChildGovernor castVote selector: castVote(uint256,uint8,bytes)
 const CAST_VOTE_SELECTOR = "0x9d36475b" as Hex; // castVote(uint256,uint8,bytes)
@@ -115,7 +117,81 @@ export async function createVotingDelegation(
     `\n  Hash: ${delegationHash}`
   );
 
+  // Log delegation creation to agent_log.json for judging visibility
+  logParentAction(
+    "create_delegation",
+    {
+      delegatee: childAddress,
+      governanceContract,
+      maxVotes,
+      caveats: signedDelegation.caveats.length,
+    },
+    {
+      delegationHash,
+      signature: signature.slice(0, 66) + "...",
+      delegator: delegation.delegator,
+      delegate: delegation.delegate,
+    }
+  );
+
+  // Store delegation hash onchain as an ENS text record for verifiability
+  await storeDelegationOnchain(childAddress, delegationHash, governanceContract);
+
   return record;
+}
+
+/**
+ * Store a delegation hash as an ENS text record on the child's subdomain.
+ * This makes the offchain-signed ERC-7715 delegation verifiable onchain
+ * without needing to redeem it through the DelegationManager contract.
+ */
+async function storeDelegationOnchain(
+  childAddress: Address,
+  delegationHash: Hex,
+  governanceContract: Address
+): Promise<void> {
+  // Derive the ENS label from known active delegations or address
+  // The label is set by the caller in swarm.ts, but we can look up by address
+  // by searching the ENS registry. For now, store on a label derived from the address.
+  // The parent sets ENS labels before calling createVotingDelegation, so we
+  // iterate active delegations to find the matching child label.
+  try {
+    // Use the child address to find its ENS label via reverse resolution
+    const { reverseResolveAddress } = await import("./ens.js");
+    const ensName = await reverseResolveAddress(childAddress);
+
+    if (ensName) {
+      // Strip the ".spawn.eth" suffix to get the label
+      const label = ensName.replace(/\.spawn\.eth$/, "");
+      const txHash = await setChildTextRecord(
+        label,
+        "erc7715.delegation.hash",
+        delegationHash
+      );
+      if (txHash) {
+        console.log(
+          `[Delegation] Stored delegation hash onchain via ENS text record`,
+          `\n  Label: ${label}.spawn.eth`,
+          `\n  Key: erc7715.delegation.hash`,
+          `\n  Tx: ${txHash}`
+        );
+        logParentAction(
+          "store_delegation_hash_ens",
+          { label, delegationHash, governanceContract },
+          { txHash },
+          txHash
+        );
+      }
+    } else {
+      console.log(
+        `[Delegation] No ENS name found for ${childAddress.slice(0, 10)}... — delegation hash not stored onchain`
+      );
+    }
+  } catch (err: any) {
+    console.log(
+      `[Delegation] Failed to store delegation hash onchain: ${err?.message?.slice(0, 60) || "unknown error"}`
+    );
+  }
 }
 
 /**
