@@ -43,6 +43,53 @@ const PARENT_CYCLE_MS = 90_000; // evaluate every 90s
 const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
 
 const childProcesses = new Map<string, ChildProcess>();
+
+/**
+ * Fund a child wallet with retries and balance verification.
+ * If funding fails (nonce collision, underpriced), waits and retries.
+ * After funding, verifies the balance is non-zero.
+ */
+async function fundChildWallet(
+  targetAddr: string,
+  amount: string = "0.002",
+  chainName: string = "base-sepolia",
+  maxRetries: number = 3
+): Promise<boolean> {
+  const isBase = chainName === "base-sepolia";
+  const wc = isBase ? walletClient : celoWalletClient;
+  const pc = isBase ? publicClient : celoPublicClient;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // Check if already funded
+      const balance = await pc.getBalance({ address: targetAddr as `0x${string}` });
+      if (balance > 0n) {
+        console.log(`  [Fund] ${targetAddr.slice(0, 10)}... already has ${balance} wei`);
+        return true;
+      }
+
+      const fundHash = await (wc as any).sendTransaction({
+        to: targetAddr as `0x${string}`,
+        value: parseEther(amount),
+      });
+      await pc.waitForTransactionReceipt({ hash: fundHash });
+
+      // Verify balance after funding
+      const newBalance = await pc.getBalance({ address: targetAddr as `0x${string}` });
+      if (newBalance > 0n) {
+        console.log(`  [Fund] ${targetAddr.slice(0, 10)}... funded with ${amount} ETH`);
+        return true;
+      }
+    } catch (err: any) {
+      const msg = err?.message?.slice(0, 50) || "unknown error";
+      console.log(`  [Fund] Attempt ${attempt + 1}/${maxRetries} failed for ${targetAddr.slice(0, 10)}...: ${msg}`);
+      // Wait with backoff before retry
+      await new Promise(r => setTimeout(r, 3000 + attempt * 2000));
+    }
+  }
+  console.log(`  [Fund] FAILED to fund ${targetAddr.slice(0, 10)}... after ${maxRetries} attempts`);
+  return false;
+}
 const strikes = new Map<string, number>();
 const childWalletKeys = new Map<string, `0x${string}`>(); // label => child private key
 let nextChildId = 1; // global counter for deterministic wallet derivation
@@ -265,6 +312,19 @@ async function initChain(config: ChainConfig) {
         } catch {}
       }
 
+      // Auto-fund if wallet is empty (prevents "exceeds balance" errors)
+      if (childKey) {
+        try {
+          const { privateKeyToAccount } = await import("viem/accounts");
+          const childAccount = privateKeyToAccount(childKey);
+          const balance = await config.readClient.getBalance({ address: childAccount.address });
+          if (balance === 0n) {
+            console.log(`  ${child.ensLabel}: wallet empty — auto-funding`);
+            await fundChildWallet(childAccount.address, "0.003", config.name);
+          }
+        } catch {}
+      }
+
       spawnChildProcess(child.childAddr, child.governance, child.ensLabel, config.treasury, childKey, config.name);
     }
   }
@@ -429,13 +489,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
 
-          try {
-            const isBase = config.name === "base-sepolia";
-            const wc = isBase ? walletClient : celoWalletClient;
-            const pc = isBase ? publicClient : celoPublicClient;
-            const fundHash = await (wc as any).sendTransaction({ to: newChildWallet.address, value: parseEther("0.001") });
-            await pc.waitForTransactionReceipt({ hash: fundHash });
-          } catch {}
+          await fundChildWallet(newChildWallet.address, "0.003", config.name);
 
           childWalletKeys.set(newLabel, newChildWallet.privateKey);
 
@@ -496,11 +550,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
 
-          try {
-            const isBase = config.name === "base-sepolia";
-            const wc = isBase ? walletClient : celoWalletClient;
-            await (wc as any).sendTransaction({ to: newChildWallet.address, value: parseEther("0.001") });
-          } catch {}
+          await fundChildWallet(newChildWallet.address, "0.003", config.name);
           childWalletKeys.set(newLabel, newChildWallet.privateKey);
 
           try {
@@ -586,12 +636,7 @@ async function dynamicScaling(config: ChainConfig) {
         const childId = nextChildId++;
         const childWallet = deriveChildWallet(childId);
 
-        try {
-          const isBase = config.name === "base-sepolia";
-          const wc = isBase ? walletClient : celoWalletClient;
-          const fundHash = await (wc as any).sendTransaction({ to: childWallet.address, value: parseEther("0.001") });
-          await config.readClient.waitForTransactionReceipt({ hash: fundHash });
-        } catch {}
+        await fundChildWallet(childWallet.address, "0.003", config.name);
 
         childWalletKeys.set(childName, childWallet.privateKey);
 

@@ -75,8 +75,14 @@ Your owner's governance values: ${governanceValues}`;
       }
 
       await childCycle(childAddr, governanceAddr, governanceValues, childLabel, systemPrompt, litAvailable, childWalletClient, readClient);
-    } catch (err) {
-      console.error(`[Child:${childLabel}] Cycle error:`, err);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (msg.includes("exceeds the balance")) {
+        console.error(`[Child:${childLabel}] OUT OF GAS — wallet needs funding. Waiting 60s before retry.`);
+        await sleep(60_000);
+      } else {
+        console.error(`[Child:${childLabel}] Cycle error: ${msg.slice(0, 120)}`);
+      }
     }
     await sleep(CYCLE_INTERVAL_MS);
   }
