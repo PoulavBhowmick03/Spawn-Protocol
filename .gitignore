@@ -3,3 +3,7 @@
 node_modules/
 out/
 cache/
+.DS_Store
+grok.md
+judging.md
+AGENTS.md

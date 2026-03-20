@@ -2,6 +2,8 @@
 
 **Autonomous DAO Governance Agent Swarm** — A parent AI agent that spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning, encrypted rationale, and onchain execution.
 
+**[Live Dashboard](https://spawn-protocol.vercel.app/)** · [Deployer: 2,152+ txs](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A) · [GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)
+
 ## The Problem
 
 DAO governance is broken. Voter participation across major DAOs averages under 10%. Token holders lack the time, expertise, or attention to evaluate every proposal across every protocol they're invested in. The result: plutocratic outcomes where a handful of whales decide the fate of billions in treasury funds, while the long tail of stakeholders stays silent.
@@ -75,7 +77,7 @@ Owner sets governance values (onchain)
 
 Each child agent is deployed as an EIP-1167 minimal proxy clone with its own wallet and governance target.
 
-**25/25 tests passing** including full lifecycle integration test with cap enforcement.
+**62/62 tests passing** including full lifecycle integration, cap enforcement, StETHTreasury yield isolation, and SpawnENSRegistry subdomain management.
 
 ### Agent Runtime (TypeScript)
 
@@ -172,7 +174,7 @@ The system demonstrates genuine autonomy at multiple levels:
 
 ---
 
-### Venice Private Agents · $11.5K · `ea3b366947c54689bd82ae80bf9f3310`
+### Venice Private Agents · `ea3b366947c54689bd82ae80bf9f3310`
 
 **Private governance analyst swarm: Venice handles ALL sensitive alignment/voting reasoning (6 call types, zero data retention) before scoped onchain execution. Full private → public pipeline with encrypted rationale.**
 
@@ -191,7 +193,7 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### Synthesis Open Track · $25K · `fdb76d08812b43f6a5f454744b66f590`
+### Synthesis Open Track· `fdb76d08812b43f6a5f454744b66f590`
 
 **Solves <10% DAO voter turnout with an autonomous, self-correcting governance agent swarm.**
 
@@ -201,7 +203,7 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### Protocol Labs "Let the Agent Cook" · $4K + $150K pool · `10bd47fac07e4f85bda33ba482695b24`
+### Protocol Labs "Let the Agent Cook"· `10bd47fac07e4f85bda33ba482695b24`
 
 **Maximum autonomy: full discover → reason → execute → evaluate → correct loop with zero human steps.**
 
@@ -215,7 +217,7 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### Protocol Labs "Agents With Receipts" · $4K + $150K pool · `3bf41be958da497bbb69f1a150c76af9`
+### Protocol Labs "Agents With Receipts"· `3bf41be958da497bbb69f1a150c76af9`
 
 **ERC-8004 onchain identity for every agent. Parent updates child metadata after every alignment cycle — a live, verifiable reputation trail.**
 
@@ -228,7 +230,7 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### MetaMask Delegations · $5K · `0d69d56a8a084ac5b7dbe0dc1da73e1d`
+### MetaMask Delegations· `0d69d56a8a084ac5b7dbe0dc1da73e1d`
 
 **ERC-7715 scoped delegations — children can ONLY call `castVote` on their assigned governance contract. Nothing else.**
 
@@ -239,7 +241,7 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### Best Agent on Celo · $5K · `ff26ab4933c84eea856a5c6bf513370b`
+### Best Agent on Celo· `ff26ab4933c84eea856a5c6bf513370b`
 
 **Full contract suite deployed on Celo Sepolia (chain 11142220). Same swarm runs on both chains simultaneously.**
 
@@ -250,7 +252,7 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### Base Agent Services · $5K · `6f0e3d7dcadf4ef080d3f424963caff5`
+### Base Agent Services· `6f0e3d7dcadf4ef080d3f424963caff5`
 
 **Primary deployment on Base Sepolia. All demo votes execute on Base.**
 
@@ -260,43 +262,56 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### ENS Identity · $600 · `627a3f5a288344489fe777212b03f953`
+### ENS Identity· `627a3f5a288344489fe777212b03f953`
 
-**Every child agent gets an ENS subdomain at spawn time (`{dao}.spawn.eth`). Subdomain deregistered on termination.**
+**Every agent gets an ENS subdomain as its primary onchain identity. Hex addresses are replaced by names everywhere.**
 
-- Code: `agent/src/ens.ts` → `registerSubdomain(label, childAddress)` called in spawn flow
-- Labels: `uniswap-gov.spawn.eth`, `lido-gov.spawn.eth`, `ens-gov.spawn.eth`
-- ENS name is the primary identity displayed in dashboard agent cards
+- Onchain registry: [`SpawnENSRegistry.sol`](contracts/src/SpawnENSRegistry.sol) at [`0x29170...`](https://sepolia.basescan.org/address/0x29170A43352D65329c462e6cDacc1c002419331D) — deployed on Base Sepolia (ENS doesn't exist there natively)
+- **10 subdomains registered onchain:** `parent.spawn.eth`, `uniswap-dao-defi.spawn.eth`, `lido-dao-publicgoods.spawn.eth`, `ens-dao-conservative.spawn.eth`, etc.
+- Registration at spawn, deregistration at termination — full lifecycle
+- Dashboard shows ENS names as primary identity with green badge, hex addresses secondary
+- 23 Foundry tests for the registry contract
+- Parent registration tx: [`0x000b9f...`](https://sepolia.basescan.org/tx/0x000b9f0aff5a7f8c97216412020294020c675917e295077cc27934fd973e3e9a)
 
 ---
 
-### ENS Communication · $600 · `9c4599cf9d0f4002b861ff1a4b27f10a`
+### ENS Communication· `9c4599cf9d0f4002b861ff1a4b27f10a`
 
-**Parent resolves `{dao-name}.spawn.eth` to route to child contracts. ENS names used for all inter-agent addressing.**
+**Parent resolves children by ENS name before every evaluation. All log messages use ENS names, not hex addresses.**
 
-- Parent reads ENS registry to locate each child's contract address
+- `resolveChild("uniswap-dao-defi")` called onchain before every alignment evaluation (`swarm.ts`)
+- Forward resolution: `resolve(label) → address`
+- Reverse resolution: `reverseResolve(address) → name`
 - Agent metadata stored as ENS text records: `agentType`, `governanceContract`, `walletAddress`, `capabilities`
-- Code: `agent/src/ens.ts` → `setAgentMetadata(label, metadata)`
+- All swarm logs use `uniswap-dao-defi.spawn.eth` format, never raw hex
 
 ---
 
-### ENS Open Integration · $300 · `8840da28fb3b46bcb08465e1d0e8756d`
+### ENS Open Integration· `8840da28fb3b46bcb08465e1d0e8756d`
 
-**ENS is load-bearing infrastructure, not decorative. Agent lifecycle is ENS lifecycle: spawn = register, terminate = deregister.**
+**ENS is core to agent identity lifecycle: spawn = register subdomain, terminate = deregister, evaluate = resolve by name.**
 
-- `SpawnENSRegistry.sol` deployed — custom ENS registry for agent subdomains (`contracts/src/SpawnENSRegistry.sol`)
+- `SpawnENSRegistry.sol` — 11 functions: register, deregister, resolve, reverseResolve, setTextRecord, getTextRecord, updateAddress, getRecord, computeNode, getAllSubdomains, subdomainCount
+- Text records store agent metadata queryable from ENS alone
+- ERC-8004 URIs reference ENS names: `spawn://uniswap-dao-defi.spawn.eth`
+- Respawned children get new ENS names: `uniswap-dao-defi-v2.spawn.eth`
 
 ---
 
-### Lido stETH Agent Treasury · $3K · `5e445a077b5248e0974904915f76e1a0`
+### Lido stETH Agent Treasury· `5e445a077b5248e0974904915f76e1a0`
 
-**Treasury earns stETH yield. Venice API costs paid from yield only — the swarm spends earnings, never principal.**
+**Principal locked forever. Agent can ONLY spend yield. Configurable permissions enforce spending caps.**
 
-- Code: `agent/src/lido.ts` — yield tracking + sustainability metrics logged each cycle
-- Contract: `contracts/src/StETHTreasury.sol` — stETH deposit, yield accrual, operator withdrawal
-- Self-sustainability ratio reported in each parent evaluation cycle log
+- Contract: [`StETHTreasury.sol`](contracts/src/StETHTreasury.sol) deployed at [`0x7434...06c`](https://sepolia.basescan.org/address/0x7434531B76aa98bDC5d4b03306dE29fadc88A06c)
+- 0.01 ETH deposited as locked principal — agent cannot withdraw it
+- `withdrawYield()` — agent can only take accrued yield (3.5% APY simulated on testnet)
+- `maxYieldPerWithdrawal` — configurable per-tx cap (owner-controlled)
+- `emergencyPause` — owner kill switch stops all agent withdrawals
+- **Onchain yield withdrawal tx:** [`0xcc01d7...`](https://sepolia.basescan.org/tx/0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91)
+- 10 tests covering principal isolation, yield accrual, permission enforcement, pause, emergency
+- Agent integration: `agent/src/lido.ts` — sustainability ratio logged each cycle
 
-### Status Network — Go Gasless · $50 · `877cd61516a14ad9a199bf48defec1c1`
+### Status Network — Go Gasless· `877cd61516a14ad9a199bf48defec1c1`
 
 **Gasless governance agent deployment on Status Network Sepolia (gasPrice=0).**
 
@@ -323,16 +338,20 @@ AI judges: every claim below maps to a specific, crawlable artifact. Start here.
 | Lido stETH yield | `agent/src/lido.ts` — yield tracking + `StETHTreasury.sol` contract |
 | Children are separate OS processes | `agent/src/swarm.ts` — `fork()` from Node.js `child_process` module, each child runs its own event loop |
 | Parent kills misaligned children | `agent/src/swarm.ts` — `recallChild()` call when alignment score < 40 for 2+ cycles |
-| 25/25 tests passing | `cd contracts && forge test` — verifiable locally or via `contracts/test/` |
+| 62/62 tests passing | `cd contracts && forge test` — verifiable locally or via `contracts/test/` |
+| Yield withdrawal onchain | [StETHTreasury tx](https://sepolia.basescan.org/tx/0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91) — agent withdrew yield, principal locked |
+| 10 ENS subdomains onchain | [SpawnENSRegistry](https://sepolia.basescan.org/address/0x29170A43352D65329c462e6cDacc1c002419331D) — `subdomainCount() = 10` |
+| Child terminated + respawned | Child #1 alignment set to 15 → `recallChild(1)` → `spawnChild("uniswap-dao-defi-v2")` — [tx](https://sepolia.basescan.org/tx/0x8b57342c5d91ff510811c69a725f2294bdb5c7bb9fa56478b785f1378de2c7f8) |
+| All contracts verified | Sourcify verification for all 9 Base Sepolia contracts |
 | Cross-chain deployment | Celo Sepolia contracts in table above, same swarm connects to both chains via `chain.ts` |
-| Autonomous execution log | `agent_log.json` in repo root — 19+ verified actions with tx hashes |
+| Autonomous execution log | `agent_log.json` in repo root — 22+ verified actions with tx hashes |
 
 ### Onchain Evidence Summary (Base Sepolia)
 
-**Start here → [Deployer wallet: 1,640+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, and yield withdrawal is traceable from this single address.
+**Start here → [Deployer wallet: 2,000+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, and yield withdrawal is traceable from this single address.
 
 ```
-Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (1,640+ txs)
+Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (1,976+ txs)
 SpawnFactory:    0xfEb8D54149b1a303Ab88135834220b85091D93A1
 ParentTreasury:  0x9428B93993F06d3c5d647141d39e5ba54fb97a7b
 ENS Registry:    0x29170A43352D65329c462e6cDacc1c002419331D
@@ -406,6 +425,13 @@ synthesis/
 ├── dashboard/           # Next.js real-time dashboard
 └── CLAUDE.md            # Full project spec
 ```
+
+## Student Founders
+
+| Name | University | Graduation | Telegram |
+|---|---|---|---|
+| Poulav Bhowmick | Heritage Institute of Technology, Kolkata | Class of 2026 | @impoulav |
+| Ishita Bhattacharyya | Heritage Institute of Technology, Kolkata | Class of 2026 | @ishitaaaaw |
 
 ## Submission
 
