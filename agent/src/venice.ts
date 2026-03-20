@@ -95,7 +95,8 @@ export async function reasonAboutProposal(
   proposalDescription: string,
   governanceValues: string,
   childSystemPrompt: string
-): Promise<{ decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; usage?: any }> {
+): Promise<{ decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; publicGoodsScore?: number; usage?: any }> {
+  const isPublicGoodsPerspective = childSystemPrompt.includes("public goods impact evaluator");
   const response = await callWithRetry((model) =>
     venice.chat.completions.create({
       model,
@@ -110,7 +111,7 @@ Please evaluate this proposal and decide how to vote:
 ${proposalDescription}
 
 Respond in JSON format:
-{"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"}`,
+{"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"${isPublicGoodsPerspective ? ', "publicGoodsScore": <0-10 integer rating of public goods impact>' : ''}}`,
         },
       ],
     })
@@ -121,11 +122,15 @@ Respond in JSON format:
 
   const parsed = parseJsonFromText(content);
   if (parsed?.decision) {
-    return {
+    const result: { decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; publicGoodsScore?: number; usage?: any } = {
       decision: String(parsed.decision).toUpperCase() as "FOR" | "AGAINST" | "ABSTAIN",
       reasoning: (parsed.reasoning || content) as string,
       usage: response.usage,
     };
+    if (parsed.publicGoodsScore !== undefined) {
+      result.publicGoodsScore = Number(parsed.publicGoodsScore);
+    }
+    return result;
   }
 
   // Fallback: extract decision from text

@@ -325,6 +325,21 @@ This is not "call an API and post the result." It's a multi-agent private reason
 - 10 tests covering principal isolation, yield accrual, permission enforcement, pause, emergency
 - Agent integration: `agent/src/lido.ts` — sustainability ratio logged each cycle
 
+### Octant — Public Goods Evaluation ($3,000) · `32de074327bd4f6d935798d285becdfb`
+
+Public goods perspective agents evaluate every proposal for ecosystem impact, funding fairness, and builder benefit.
+
+- `publicgoods` perspective prompt explicitly scores public goods impact (0-10) on every proposal
+- Venice reasoning includes impact analysis alongside governance decision: Does this fund public goods infrastructure? What is the expected ecosystem impact? Is the funding mechanism fair and transparent?
+- Real proposals from Tally/Snapshot include actual public goods grants (Uniswap grants, ENS working groups, Gitcoin rounds)
+
+**Sub-tracks:**
+- Mechanism Design for Public Goods Evaluation: `32de074327bd4f6d935798d285becdfb`
+- Agents for Public Goods Data Analysis for Project Evaluation: `4026705215f3401db4f2092f7219561b`
+- Agents for Public Goods Data Collection for Project Evaluation: `db41ba89c2214fc18ef707331645d3fe`
+
+---
+
 ### Status Network — Go Gasless· `877cd61516a14ad9a199bf48defec1c1`
 
 **Gasless governance agent deployment on Status Network Sepolia (gasPrice=0).**

@@ -12,6 +12,7 @@
 
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
+import { pinAgentLog } from "./ipfs.js";
 
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
 
@@ -114,6 +115,7 @@ const DEFAULT_METRICS: Metrics = {
 };
 
 let log: AgentLog | null = null;
+let logEntryCount = 0;
 
 function initLog(): AgentLog {
   if (log) return log;
@@ -226,6 +228,22 @@ export function logAction(entry: Omit<LogEntry, "timestamp">) {
   }
 
   persist(l);
+
+  // Pin to IPFS every 10th log entry (fire and forget)
+  logEntryCount++;
+  if (logEntryCount % 10 === 0) {
+    pinAgentLog()
+      .then((cid) => {
+        if (log) {
+          (log.metrics as any).latestIPFSCid = cid;
+          persist(log);
+        }
+        console.log(`[IPFS] Agent log pinned (entry #${logEntryCount}): ${cid}`);
+      })
+      .catch((err) => {
+        console.warn(`[IPFS] Background pin failed: ${err?.message?.slice(0, 80) || "unknown"}`);
+      });
+  }
 }
 
 function buildDetails(entry: Omit<LogEntry, "timestamp">): string {

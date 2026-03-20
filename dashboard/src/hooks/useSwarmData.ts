@@ -30,78 +30,77 @@ export function useSwarmData() {
   const fetchData = useCallback(async () => {
     const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
     try {
-      // Fetch ALL children (active + terminated) via childCount + getChild(id)
-      const totalCount = await client.readContract({
+      // Step 1: Get active children via getActiveChildren() — single RPC call
+      const activeRaw = (await client.readContract({
         address: contracts.SpawnFactory.address,
         abi: contracts.SpawnFactory.abi,
-        functionName: "childCount",
-      });
+        functionName: "getActiveChildren",
+      })) as any[];
 
-      const count = Math.min(Number(totalCount), 120); // cap to avoid RPC overload
-      // Batch in groups of 20 to avoid RPC rate limits
-      const rawChildren: any[] = [];
-      for (let start = 0; start < count; start += 20) {
-        const batchSize = Math.min(20, count - start);
-        const batch = await Promise.all(
-          Array.from({ length: batchSize }, (_, i) =>
-            client.readContract({
-              address: contracts.SpawnFactory.address,
-              abi: contracts.SpawnFactory.abi,
-              functionName: "getChild",
-              args: [BigInt(start + i + 1)],
-            })
-          )
-        );
-        rawChildren.push(...batch);
-      }
-
-      const enriched: ChildInfo[] = await Promise.all(
-        rawChildren.map(async (child) => {
+      // Step 2: Enrich ONLY active children with alignment/vote data (9 agents × 3 calls = 27 calls)
+      const activeEnriched: ChildInfo[] = await Promise.all(
+        activeRaw.map(async (child) => {
           let alignmentScore = BigInt(0);
           let voteCount = BigInt(0);
           let lastVoteTimestamp = BigInt(0);
-
           try {
-            const [score, count, history] = await Promise.all([
-              client.readContract({
-                address: child.childAddr,
-                abi: ChildGovernorABI,
-                functionName: "alignmentScore",
-              }),
-              client.readContract({
-                address: child.childAddr,
-                abi: ChildGovernorABI,
-                functionName: "getVoteCount",
-              }),
-              client.readContract({
-                address: child.childAddr,
-                abi: ChildGovernorABI,
-                functionName: "getVotingHistory",
-              }),
+            const [score, cnt, history] = await Promise.all([
+              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
+              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount" }),
+              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVotingHistory" }),
             ]);
             alignmentScore = score;
-            voteCount = count;
-            if (history.length > 0) {
-              lastVoteTimestamp = history[history.length - 1].timestamp;
-            }
-          } catch {
-            // child contract not accessible, use defaults
-          }
-
-          return {
-            id: child.id,
-            childAddr: child.childAddr,
-            governance: child.governance,
-            budget: child.budget,
-            maxGasPerVote: child.maxGasPerVote,
-            ensLabel: child.ensLabel,
-            active: child.active,
-            alignmentScore,
-            voteCount,
-            lastVoteTimestamp,
-          };
+            voteCount = cnt;
+            if (history.length > 0) lastVoteTimestamp = history[history.length - 1].timestamp;
+          } catch {}
+          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: true, alignmentScore, voteCount, lastVoteTimestamp };
         })
       );
+
+      // Step 3: Fetch recent terminated children (last 40 by ID, lightweight — no enrichment needed for most)
+      const totalCount = Number(await client.readContract({
+        address: contracts.SpawnFactory.address,
+        abi: contracts.SpawnFactory.abi,
+        functionName: "childCount",
+      }));
+
+      const activeIds = new Set(activeRaw.map((c: any) => Number(c.id)));
+      const terminatedStart = Math.max(1, totalCount - 60); // only check last 60
+      const terminatedBatch: ChildInfo[] = [];
+
+      for (let start = terminatedStart; start <= totalCount; start += 20) {
+        const batchSize = Math.min(20, totalCount - start + 1);
+        const batch = await Promise.all(
+          Array.from({ length: batchSize }, (_, i) => {
+            const childId = start + i;
+            if (activeIds.has(childId)) return null; // skip active ones
+            return client.readContract({
+              address: contracts.SpawnFactory.address,
+              abi: contracts.SpawnFactory.abi,
+              functionName: "getChild",
+              args: [BigInt(childId)],
+            }).catch(() => null);
+          })
+        );
+
+        for (const child of batch) {
+          if (!child || activeIds.has(Number(child.id))) continue;
+          let alignmentScore = BigInt(0);
+          let voteCount = BigInt(0);
+          let lastVoteTimestamp = BigInt(0);
+          try {
+            const [score, cnt] = await Promise.all([
+              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
+              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount" }),
+            ]);
+            alignmentScore = score;
+            voteCount = cnt;
+          } catch {}
+          terminatedBatch.push({ id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: child.active, alignmentScore, voteCount, lastVoteTimestamp });
+        }
+      }
+
+      const enriched = [...activeEnriched, ...terminatedBatch];
 
       // Detect which children just had their vote count increase
       const newlyVoted = new Set<string>();
