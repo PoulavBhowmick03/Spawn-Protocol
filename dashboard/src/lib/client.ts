@@ -12,7 +12,7 @@ export const celoSepolia = defineChain({
 
 export const baseSepoliaClient = createPublicClient({
   chain: baseSepolia,
-  transport: http("https://sepolia.base.org"),
+  transport: http("https://base-sepolia-rpc.publicnode.com"),
 });
 
 export const celoSepoliaClient = createPublicClient({

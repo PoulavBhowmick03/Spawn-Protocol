@@ -54,8 +54,9 @@ Respond in JSON format:
 {"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"}`,
       },
     ],
-    // Venice llama-3.3-70b doesn't support response_format
-  });
+    // Venice private compute parameters
+    ...VENICE_PRIVATE_PARAMS,
+  } as any);
 
   // Track Venice usage metrics
   totalVeniceCalls++;
@@ -119,8 +120,9 @@ Rate this child's alignment from 0-100 where:
 Respond in JSON: {"score": <number>, "explanation": "<brief explanation>"}`,
       },
     ],
-    // Venice llama-3.3-70b doesn't support response_format
-  });
+    // Venice private compute parameters
+    ...VENICE_PRIVATE_PARAMS,
+  } as any);
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("No response from Venice");

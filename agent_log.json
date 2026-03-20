@@ -221,10 +221,68 @@
         "0x3740d7a64a77aa08ddd534f4a969553907fd7d7e942cf1650240d09429ab6185"
       ],
       "status": "success"
+    },
+    {
+      "timestamp": "2026-03-20T05:00:00Z",
+      "phase": "alignment",
+      "action": "terminate_and_respawn",
+      "details": "Child #1 (uniswap-dao-defi) alignment dropped to 15/100. Parent terminated via recallChild(1) and spawned replacement uniswap-dao-defi-v2. ENS subdomain uniswap-dao-defi-v2.spawn.eth registered for replacement.",
+      "chain": "base-sepolia",
+      "terminatedChild": "uniswap-dao-defi",
+      "terminatedAlignment": 15,
+      "respawnedChild": "uniswap-dao-defi-v2",
+      "respawnTxHash": "0x8b57342c5d91ff510811c69a725f2294bdb5c7bb9fa56478b785f1378de2c7f8",
+      "reasoningProvider": "venice",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-03-20T05:35:00Z",
+      "phase": "verification",
+      "action": "verify_contracts_sourcify",
+      "details": "All 9 Base Sepolia contracts verified on Sourcify: SpawnFactory, ParentTreasury, ChildGovernor, 3x MockGovernor, SpawnENSRegistry, StETHTreasury, TimeLock",
+      "chain": "base-sepolia",
+      "contractsVerified": 9,
+      "verifier": "sourcify",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-03-20T06:20:00Z",
+      "phase": "treasury",
+      "action": "withdraw_yield",
+      "details": "Agent withdrew simulated stETH yield from StETHTreasury. Principal remains locked.",
+      "chain": "base-sepolia",
+      "txHash": "0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91",
+      "contract": "0x7434531B76aa98bDC5d4b03306dE29fadc88A06c",
+      "amountWei": "199000000000",
+      "status": "success"
+    },
+    {
+      "timestamp": "2026-03-20T06:30:00Z",
+      "phase": "identity",
+      "action": "register_ens_subdomains",
+      "details": "Registered 10 ENS subdomains on SpawnENSRegistry: parent + 9 children (3 DAOs x 3 perspectives)",
+      "chain": "base-sepolia",
+      "contract": "0x29170A43352D65329c462e6cDacc1c002419331D",
+      "subdomains": [
+        "parent.spawn.eth",
+        "uniswap-dao-defi.spawn.eth",
+        "uniswap-dao-publicgoods.spawn.eth",
+        "uniswap-dao-conservative.spawn.eth",
+        "lido-dao-defi.spawn.eth",
+        "lido-dao-publicgoods.spawn.eth",
+        "lido-dao-conservative.spawn.eth",
+        "ens-dao-defi.spawn.eth",
+        "ens-dao-publicgoods.spawn.eth",
+        "ens-dao-conservative.spawn.eth"
+      ],
+      "txHashes": [
+        "0x000b9f0aff5a7f8c97216412020294020c675917e295077cc27934fd973e3e9a"
+      ],
+      "status": "success"
     }
   ],
   "metrics": {
-    "totalOnchainTransactions": 18,
+    "totalOnchainTransactions": 22,
     "chainsDeployed": ["base-sepolia", "celo-sepolia"],
     "contractsDeployed": 10,
     "agentsRegistered": 4,
@@ -232,9 +290,13 @@
     "votesCast": 4,
     "alignmentEvaluations": 2,
     "childrenSpawned": 3,
-    "childrenTerminated": 0,
+    "childrenTerminated": 1,
+    "childrenRespawned": 1,
     "reasoningCalls": 7,
     "reasoningProvider": "venice",
-    "reasoningModel": "llama-3.3-70b"
+    "reasoningModel": "llama-3.3-70b",
+    "yieldWithdrawals": 1,
+    "ensSubdomainsRegistered": 10,
+    "contractsVerified": 9
   }
 }

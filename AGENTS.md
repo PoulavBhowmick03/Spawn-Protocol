@@ -117,7 +117,38 @@ Old names didn't match actual function names in `venice.ts`. Fixed:
 }
 ```
 
-**Also update metrics to include:** `"yieldWithdrawals": 1, "ensSubdomainsRegistered": 10`
+**Kill/respawn cycle (Protocol Labs bounty evidence):**
+```json
+{
+  "timestamp": "2026-03-20T05:00:00Z",
+  "phase": "alignment",
+  "action": "terminate_and_respawn",
+  "details": "Child #1 (uniswap-dao-defi) alignment dropped to 15/100. Parent terminated via recallChild(1) and spawned replacement uniswap-dao-defi-v2. ENS subdomain uniswap-dao-defi-v2.spawn.eth registered for replacement.",
+  "chain": "base-sepolia",
+  "terminatedChild": "uniswap-dao-defi",
+  "terminatedAlignment": 15,
+  "respawnedChild": "uniswap-dao-defi-v2",
+  "respawnTxHash": "0x8b57342c5d91ff510811c69a725f2294bdb5c7bb9fa56478b785f1378de2c7f8",
+  "reasoningProvider": "venice",
+  "status": "success"
+}
+```
+
+**Contract verification (all 9 contracts verified on Sourcify):**
+```json
+{
+  "timestamp": "2026-03-20T05:35:00Z",
+  "phase": "verification",
+  "action": "verify_contracts_sourcify",
+  "details": "All 9 Base Sepolia contracts verified on Sourcify: SpawnFactory, ParentTreasury, ChildGovernor, 3x MockGovernor, SpawnENSRegistry, StETHTreasury, TimeLock",
+  "chain": "base-sepolia",
+  "contractsVerified": 9,
+  "verifier": "sourcify",
+  "status": "success"
+}
+```
+
+**Also update metrics to include:** `"yieldWithdrawals": 1, "ensSubdomainsRegistered": 10, "childrenTerminated": 1, "childrenRespawned": 1, "contractsVerified": 9`
 
 **Fixes completed by Agent 2 (from judge feedback):**
 1. ✅ Fixed castVote selector in delegation.ts (0x160cbed7 → 0x9d36475b)
