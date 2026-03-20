@@ -329,13 +329,17 @@ AI judges: every claim below maps to a specific, crawlable artifact. Start here.
 
 ### Onchain Evidence Summary (Base Sepolia)
 
+**Start here → [Deployer wallet: 1,640+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, and yield withdrawal is traceable from this single address.
+
 ```
+Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (1,640+ txs)
 SpawnFactory:    0xfEb8D54149b1a303Ab88135834220b85091D93A1
 ParentTreasury:  0x9428B93993F06d3c5d647141d39e5ba54fb97a7b
 ENS Registry:    0x29170A43352D65329c462e6cDacc1c002419331D
 StETH Treasury:  0x7434531B76aa98bDC5d4b03306dE29fadc88A06c
-ERC-8004 IDs:    #2220 (parent), #2221 (uniswap-gov), #2222 (lido-gov), #2223 (ens-gov)
-Registration TX: 0xb9c10aaa2cce4ab1d85e916107935860a8f77473e8a37b449adc796df812cdc8
+ERC-8004 IDs:    #2220 (parent), #2221-#2223 (children), #2246+ (respawns)
+Kill/Respawn:    Child #1 terminated (alignment=15) → uniswap-dao-defi-v2 spawned
+Yield Withdrawal: 0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91
 ```
 
 ### What Venice is used for (6 distinct call types)
