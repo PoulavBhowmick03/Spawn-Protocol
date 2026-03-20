@@ -13,14 +13,9 @@ const venice = new OpenAI({
   baseURL: "https://api.venice.ai/api/v1",
 });
 
-// Venice private compute models
-const STANDARD_MODEL = "llama-3.3-70b";
-const PRIVATE_MODEL = "llama-3.3-70b"; // E2EE models require Venice Pro — use standard with venice_parameters
-
-// Venice-native parameters for private reasoning
-const VENICE_PRIVATE_PARAMS = {
-  enable_e2ee: true, // end-to-end encryption when available
-};
+// Venice E2EE model — end-to-end encrypted inference, zero data retention
+// The e2ee- prefix activates Venice's TEE/E2EE secure compute pipeline
+const STANDARD_MODEL = "e2ee-qwen3-30b-a3b-p";
 
 // Track Venice usage metrics across all calls
 let totalVeniceCalls = 0;
