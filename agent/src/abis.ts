@@ -434,6 +434,13 @@ export const ChildGovernorABI = [
   },
   {
     type: "function",
+    name: "operator",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "getVotingHistory",
     inputs: [],
     outputs: [
