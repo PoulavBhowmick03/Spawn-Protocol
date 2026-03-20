@@ -28,6 +28,7 @@ import { registerAgent, updateAgentMetadata } from "./identity.js";
 import { createVotingDelegation } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
+import { pinAgentLog, storeLogCIDOnchain } from "./ipfs.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
 import { parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
@@ -164,9 +165,9 @@ const PROPOSAL_BANK = [
 
 // Agent perspectives — each child has a different reasoning style
 const PERSPECTIVES = [
-  { suffix: "defi", prompt: "You are a DeFi-focused governance delegate. You ONLY support proposals that generate measurable financial returns — yield, revenue, or liquidity. Vote AGAINST any proposal that spends treasury funds on grants, public goods, or community initiatives without clear ROI metrics. Vote AGAINST security councils and committees (they centralize power). Vote FOR fee switches, staking, and capital deployment." },
-  { suffix: "publicgoods", prompt: "You are a public goods advocate. You believe DAOs exist to serve the ecosystem, not maximize returns. Vote FOR grants, developer funding, education, and community initiatives. Vote FOR security councils and transparency measures. Vote AGAINST token buybacks, fee extraction, and anything that prioritizes token price over ecosystem health." },
-  { suffix: "conservative", prompt: "You are a conservative governance delegate. You OPPOSE change by default. The treasury should be preserved, not spent. Vote AGAINST any proposal that spends more than 1% of treasury. Vote AGAINST new committees, new token emissions, and radical governance changes. Vote FOR proposals that REDUCE spending, cut emissions, or increase oversight. When in doubt, vote AGAINST." },
+  { suffix: "defi", prompt: "You are a DeFi-focused governance delegate. Prioritize capital efficiency, liquidity, and protocol revenue. Be skeptical of spending that doesn't generate returns. Vote AGAINST wasteful spending." },
+  { suffix: "publicgoods", prompt: "You are a public goods advocate and public goods impact evaluator. Prioritize ecosystem growth, open-source funding, developer grants, and community benefit. Vote FOR initiatives that benefit the broader ecosystem. For every proposal, evaluate: (1) Does this proposal fund public goods infrastructure? (2) What is the expected ecosystem impact? (3) Is the funding mechanism fair and transparent? Score each proposal's public goods impact from 0-10 in your reasoning, where 0 = no public goods benefit and 10 = maximum ecosystem-wide public goods impact." },
+  { suffix: "conservative", prompt: "You are a conservative governance delegate. Prioritize treasury preservation, risk minimization, and gradual change. Vote AGAINST aggressive spending, radical changes, and centralization." },
 ];
 
 let proposalIndex = 0;
@@ -274,9 +275,9 @@ async function initChain(config: ChainConfig) {
       // ERC-8004 identity
       try { await registerAgent(`spawn://${childName}.spawn.eth`, { agentType: "child", assignedDAO: gov.name, governanceContract: gov.addr, ensName: `${childName}.spawn.eth`, alignmentScore: 100, capabilities: ["vote", "reason", perspective.suffix], createdAt: Date.now() }); } catch {}
 
-      // MetaMask delegation — ERC-7715 scoped voting authority
+      // MetaMask delegation — ERC-7715 scoped voting authority with onchain proof
       try {
-        const delegationRecord = await createVotingDelegation(gov.addr, childWallet.address as `0x${string}`, 100);
+        const delegationRecord = await createVotingDelegation(gov.addr, childWallet.address as `0x${string}`, 100, childName);
         console.log(`[${config.name}] Delegation created for ${childName}: hash=${delegationRecord.delegationHash.slice(0, 18)}...`);
         logParentAction("delegation_granted", {
           chain: config.name, child: childName, dao: gov.name,
@@ -287,7 +288,7 @@ async function initChain(config: ChainConfig) {
         });
       } catch (delegErr: any) {
         console.log(`[${config.name}] Delegation failed for ${childName}: ${delegErr?.message?.slice(0, 60) || "unknown error"}`);
-        logParentAction("delegation_granted", {
+        logParentAction("delegation_failed", {
           chain: config.name, child: childName, dao: gov.name,
           delegatee: childWallet.address,
         }, {}, undefined, false, delegErr?.message?.slice(0, 120));
@@ -486,9 +487,9 @@ async function evaluateChainChildren(config: ChainConfig) {
 
       try { logParentAction("evaluate_alignment", { chain: config.name, child: child.ensLabel, votes: history.length }, { score: clamped, label }, receipt.transactionHash); } catch {}
 
-      // Mirror alignment score to ERC-8004 — use child's factory ID as best-effort mapping
+      // Mirror alignment score to ERC-8004 (makes it a live performance ledger)
       try {
-        await updateAgentMetadata(child.id, { alignmentScore: clamped, ensName: `${child.ensLabel}.spawn.eth` });
+        await updateAgentMetadata(BigInt(0), { alignmentScore: clamped });
       } catch {}
 
       // Strike tracking — immediate kill if score is critically low (<=10)
@@ -889,6 +890,22 @@ async function main() {
         logParentAction("swarm_report", { agentCount: allChildren.length }, { report });
       }
     } catch {}
+
+    // Pin agent log to IPFS and store CID onchain
+    if (process.env.PINATA_JWT) {
+      pinAgentLog()
+        .then(async (cid) => {
+          console.log(`[IPFS] Agent log pinned: ${cid}`);
+          try {
+            await storeLogCIDOnchain(cid);
+          } catch (err: any) {
+            console.warn(`[IPFS] Failed to store CID onchain: ${err?.message?.slice(0, 80) || "unknown"}`);
+          }
+        })
+        .catch((err) => {
+          console.warn(`[IPFS] Pin failed: ${err?.message?.slice(0, 80) || "unknown"}`);
+        });
+    }
 
     setTimeout(parentLoop, PARENT_CYCLE_MS);
   };

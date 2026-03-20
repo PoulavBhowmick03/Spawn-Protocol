@@ -1,13 +1,55 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useSwarmData } from "@/hooks/useSwarmData";
 import { AgentCard } from "@/components/AgentCard";
 import { CONTRACTS, CELO_CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
 import { useChainContext } from "@/context/ChainContext";
 
+// ENS Registry for reading IPFS CID and delegation hashes
+const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
+const ENS_REGISTRY_ABI = [
+  { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+] as const;
+
 export default function SwarmPage() {
   const { children, loading, error, justVotedSet } = useSwarmData();
-  const { chainId, explorerBase } = useChainContext();
+  const { client, chainId, explorerBase } = useChainContext();
+  const [ipfsCid, setIpfsCid] = useState<string | null>(null);
+  const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
+
+  // Fetch IPFS CID from ENS text record
+  useEffect(() => {
+    if (chainId !== "base") return;
+    client.readContract({
+      address: ENS_REGISTRY,
+      abi: ENS_REGISTRY_ABI,
+      functionName: "getTextRecord",
+      args: ["parent", "ipfs.agent_log"],
+    }).then((cid) => { if (cid) setIpfsCid(cid as string); }).catch(() => {});
+  }, [client, chainId]);
+
+  // Fetch delegation hashes for active children
+  useEffect(() => {
+    if (chainId !== "base") return;
+    const active = children.filter(c => c.active);
+    const fetchDelegations = async () => {
+      const map = new Map<string, string>();
+      for (const child of active) {
+        try {
+          const hash = await client.readContract({
+            address: ENS_REGISTRY,
+            abi: ENS_REGISTRY_ABI,
+            functionName: "getTextRecord",
+            args: [child.ensLabel, "erc7715.delegation"],
+          });
+          if (hash) map.set(child.ensLabel, hash as string);
+        } catch {}
+      }
+      if (map.size > 0) setDelegationHashes(map);
+    };
+    if (active.length > 0) fetchDelegations();
+  }, [children, client, chainId]);
   const activeContracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
   const chainLabel = chainId === "base" ? "Base Sepolia" : "Celo Sepolia";
 
@@ -81,6 +123,32 @@ export default function SwarmPage() {
         </div>
       </div>
 
+      {/* IPFS + Delegation Status Bar */}
+      {chainId === "base" && (ipfsCid || delegationHashes.size > 0) && (
+        <div className="flex flex-wrap gap-3 mb-6">
+          {ipfsCid && (
+            <a
+              href={`https://gateway.pinata.cloud/ipfs/${ipfsCid}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 border border-purple-400/30 bg-purple-400/5 rounded-lg px-4 py-2 hover:bg-purple-400/10 transition-all"
+            >
+              <span className="text-purple-400 text-sm">IPFS</span>
+              <span className="text-xs font-mono text-purple-300">Agent Log Pinned</span>
+              <span className="text-[10px] font-mono text-purple-400/60">{ipfsCid.slice(0, 12)}...</span>
+              <span className="text-purple-400 text-xs">↗</span>
+            </a>
+          )}
+          {delegationHashes.size > 0 && (
+            <div className="flex items-center gap-2 border border-orange-400/30 bg-orange-400/5 rounded-lg px-4 py-2">
+              <span className="text-orange-400 text-sm">ERC-7715</span>
+              <span className="text-xs font-mono text-orange-300">{delegationHashes.size} MetaMask Delegations Active</span>
+              <span className="text-[10px] font-mono text-orange-400/60">castVote() scoped</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="mb-6 border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
           <p className="text-red-400 text-sm font-mono">Error: {error}</p>
@@ -118,24 +186,33 @@ export default function SwarmPage() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {children.filter((c) => c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} />
+                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} delegationHash={delegationHashes.get(child.ensLabel)} />
                 ))}
               </div>
             </div>
           )}
           {children.filter((c) => !c.active).length > 0 && (
             <div>
-              <div className="flex items-center gap-3 mb-3">
-                <h2 className="text-xs font-mono text-red-500/70 uppercase tracking-widest">
-                  Terminated Agents ({children.filter((c) => !c.active).length})
-                </h2>
-                <div className="flex-1 h-px bg-red-500/20" />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 opacity-50">
-                {children.filter((c) => !c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} justVoted={false} />
-                ))}
-              </div>
+              <details className="group">
+                <summary className="flex items-center gap-3 mb-3 cursor-pointer list-none">
+                  <h2 className="text-xs font-mono text-red-500/70 uppercase tracking-widest">
+                    Terminated Agents ({children.filter((c) => !c.active).length})
+                  </h2>
+                  <div className="flex-1 h-px bg-red-500/20" />
+                  <span className="text-xs text-gray-600 font-mono group-open:hidden">Show</span>
+                  <span className="text-xs text-gray-600 font-mono hidden group-open:inline">Hide</span>
+                </summary>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 opacity-40">
+                  {children.filter((c) => !c.active).slice(0, 12).map((child) => (
+                    <AgentCard key={child.childAddr} child={child} justVoted={false} />
+                  ))}
+                </div>
+                {children.filter((c) => !c.active).length > 12 && (
+                  <p className="text-xs text-gray-700 font-mono mt-2 text-center">
+                    + {children.filter((c) => !c.active).length - 12} more terminated agents
+                  </p>
+                )}
+              </details>
             </div>
           )}
         </>

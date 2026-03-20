@@ -8,9 +8,10 @@ import type { ChildInfo } from "@/hooks/useSwarmData";
 interface AgentCardProps {
   child: ChildInfo;
   justVoted?: boolean;
+  delegationHash?: string;
 }
 
-export function AgentCard({ child, justVoted = false }: AgentCardProps) {
+export function AgentCard({ child, justVoted = false, delegationHash }: AgentCardProps) {
   const score = Number(child.alignmentScore);
   const isActive = child.active;
 
@@ -69,6 +70,11 @@ export function AgentCard({ child, justVoted = false }: AgentCardProps) {
             {ensName(child.ensLabel) && (
               <span className="text-[9px] border border-green-500/30 bg-green-500/10 text-green-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap">
                 ENS
+              </span>
+            )}
+            {delegationHash && (
+              <span className="text-[9px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap" title={delegationHash}>
+                7715
               </span>
             )}
           </div>

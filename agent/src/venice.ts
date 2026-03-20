@@ -95,7 +95,8 @@ export async function reasonAboutProposal(
   proposalDescription: string,
   governanceValues: string,
   childSystemPrompt: string
-): Promise<{ decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; usage?: any }> {
+): Promise<{ decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; publicGoodsScore?: number; usage?: any }> {
+  const isPublicGoodsPerspective = childSystemPrompt.includes("public goods impact evaluator");
   const response = await callWithRetry((model) =>
     venice.chat.completions.create({
       model,
@@ -103,16 +104,14 @@ export async function reasonAboutProposal(
         { role: "system", content: childSystemPrompt },
         {
           role: "user",
-          content: `Your governance perspective and owner's values:
+          content: `You are a governance agent. Your owner's values are:
 ${governanceValues}
 
-Evaluate this proposal and decide how to vote. Your perspective MUST influence your decision — if your perspective says to vote AGAINST certain types of proposals, you MUST vote AGAINST them. Do not default to FOR.
-
-Proposal:
+Please evaluate this proposal and decide how to vote:
 ${proposalDescription}
 
 Respond in JSON format:
-{"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning explaining why your perspective leads to this specific vote"}`,
+{"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"${isPublicGoodsPerspective ? ', "publicGoodsScore": <0-10 integer rating of public goods impact>' : ''}}`,
         },
       ],
     })
@@ -123,11 +122,15 @@ Respond in JSON format:
 
   const parsed = parseJsonFromText(content);
   if (parsed?.decision) {
-    return {
+    const result: { decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; publicGoodsScore?: number; usage?: any } = {
       decision: String(parsed.decision).toUpperCase() as "FOR" | "AGAINST" | "ABSTAIN",
       reasoning: (parsed.reasoning || content) as string,
       usage: response.usage,
     };
+    if (parsed.publicGoodsScore !== undefined) {
+      result.publicGoodsScore = Number(parsed.publicGoodsScore);
+    }
+    return result;
   }
 
   // Fallback: extract decision from text
