@@ -459,6 +459,136 @@ async function evaluateChainChildren(config: ChainConfig) {
   }
 }
 
+// ── Dynamic Scaling ──
+// The parent autonomously adjusts the swarm size based on:
+// 1. New governance targets discovered → spawn children
+// 2. Idle children (no active proposals) → recall to save gas
+// 3. Budget check → don't spawn if ETH is low
+
+const MIN_ETH_TO_SPAWN = BigInt(5e15); // 0.005 ETH minimum to spawn a new child
+const IDLE_CYCLES_TO_RECALL = 5; // recall child if no votes for 5 cycles
+const idleCycleCount = new Map<string, number>(); // track idle cycles per child
+
+async function dynamicScaling(config: ChainConfig) {
+  console.log(`\n[Scaling] Checking swarm health on ${config.name}...`);
+
+  const children = (await config.readClient.readContract({
+    address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+  })) as any[];
+
+  const parentBalance = await (config.readClient as any).getBalance({ address: account.address });
+
+  // Check which governors have children assigned
+  const coveredGovernors = new Set<string>();
+  for (const child of children) {
+    coveredGovernors.add((child.governance as string).toLowerCase());
+  }
+
+  // Spawn children for uncovered governors (if budget allows)
+  for (const gov of config.governors) {
+    if (!coveredGovernors.has(gov.addr.toLowerCase())) {
+      if (parentBalance < MIN_ETH_TO_SPAWN) {
+        console.log(`[Scaling] Skipping spawn for ${gov.name} — low ETH (${parentBalance})`);
+        continue;
+      }
+
+      console.log(`[Scaling] No agent covering ${gov.name} — spawning one`);
+      try {
+        const childId = nextChildId++;
+        const childWallet = deriveChildWallet(childId);
+
+        // Fund wallet
+        try {
+          const isBase = config.name === "base-sepolia";
+          const wc = isBase ? walletClient : celoWalletClient;
+          const fundHash = await (wc as any).sendTransaction({
+            to: childWallet.address,
+            value: parseEther("0.001"),
+          });
+          await config.readClient.waitForTransactionReceipt({ hash: fundHash });
+        } catch {}
+
+        childWalletKeys.set(`${gov.name}-auto`, childWallet.privateKey);
+
+        await config.sendTx({
+          address: config.factory,
+          abi: SpawnFactoryABI,
+          functionName: "spawnChildWithOperator",
+          args: [`${gov.name}-auto`, gov.addr, 0n, 200000n, childWallet.address],
+        });
+
+        // Register ENS + launch process
+        try { await registerSubdomain(`${gov.name}-auto`, childWallet.address); } catch {}
+        spawnChildProcess(childWallet.address, gov.addr, `${gov.name}-auto`, config.treasury, childWallet.privateKey, config.name);
+
+        console.log(`[Scaling] Spawned ${gov.name}-auto (wallet: ${childWallet.address})`);
+        logParentAction("dynamic_spawn", { chain: config.name, dao: gov.name, reason: "uncovered_governor" }, { childWallet: childWallet.address });
+      } catch (err: any) {
+        console.log(`[Scaling] Spawn failed for ${gov.name}: ${err?.message?.slice(0, 40)}`);
+      }
+    }
+  }
+
+  // Track idle children — recall if no votes for too many cycles
+  for (const child of children) {
+    const key = `${config.name}:${child.id}`;
+    try {
+      const voteCount = Number(await config.readClient.readContract({
+        address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount",
+      }));
+
+      const prevCount = idleCycleCount.get(`${key}:votes`) || 0;
+      if (voteCount === prevCount) {
+        // No new votes since last check
+        const idle = (idleCycleCount.get(key) || 0) + 1;
+        idleCycleCount.set(key, idle);
+
+        if (idle >= IDLE_CYCLES_TO_RECALL) {
+          // Check if governor still has active proposals before recalling
+          const govAddr = child.governance as `0x${string}`;
+          const proposalCount = Number(await config.readClient.readContract({
+            address: govAddr, abi: MockGovernorABI, functionName: "proposalCount",
+          }));
+
+          let hasActiveProposals = false;
+          for (let p = proposalCount; p > Math.max(0, proposalCount - 3); p--) {
+            const state = Number(await config.readClient.readContract({
+              address: govAddr, abi: MockGovernorABI, functionName: "state", args: [BigInt(p)],
+            }));
+            if (state === 1) { hasActiveProposals = true; break; }
+          }
+
+          if (!hasActiveProposals) {
+            console.log(`[Scaling] ${child.ensLabel} idle for ${idle} cycles with no active proposals — recalling`);
+            try {
+              const proc = childProcesses.get(child.ensLabel);
+              if (proc) proc.kill();
+
+              await config.sendTx({
+                address: config.factory, abi: SpawnFactoryABI,
+                functionName: "recallChild", args: [child.id],
+              });
+              try { await deregisterSubdomain(child.ensLabel); } catch {}
+
+              logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, {});
+              idleCycleCount.delete(key);
+            } catch (err: any) {
+              console.log(`[Scaling] Recall failed: ${err?.message?.slice(0, 40)}`);
+            }
+          }
+        } else {
+          console.log(`  ${child.ensLabel}: idle cycle ${idle}/${IDLE_CYCLES_TO_RECALL}`);
+        }
+      } else {
+        idleCycleCount.set(key, 0); // reset idle counter
+      }
+      idleCycleCount.set(`${key}:votes`, voteCount);
+    } catch {}
+  }
+
+  console.log(`[Scaling] Active: ${children.length} children | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
+}
+
 // ── Main ──
 async function main() {
   console.log("╔══════════════════════════════════════════════════════╗");
@@ -539,6 +669,13 @@ async function main() {
       console.log(`\n[Yield]`);
       await logYieldStatus();
     } catch {}
+
+    // Dynamic scaling — auto-spawn/recall based on conditions
+    try {
+      await dynamicScaling(BASE_CONFIG);
+    } catch (err: any) {
+      console.log(`[Scaling] Error: ${err?.message?.slice(0, 50)}`);
+    }
 
     // Venice usage metrics
     const veniceMetrics = getVeniceMetrics();
