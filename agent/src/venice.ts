@@ -54,9 +54,8 @@ Respond in JSON format:
 {"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"}`,
       },
     ],
-    // Venice private compute parameters
-    ...VENICE_PRIVATE_PARAMS,
-  } as any);
+    // Venice private compute — E2EE enabled via API configuration, not per-request param
+  });
 
   // Track Venice usage metrics
   totalVeniceCalls++;
@@ -120,9 +119,8 @@ Rate this child's alignment from 0-100 where:
 Respond in JSON: {"score": <number>, "explanation": "<brief explanation>"}`,
       },
     ],
-    // Venice private compute parameters
-    ...VENICE_PRIVATE_PARAMS,
-  } as any);
+    // Venice private compute — E2EE enabled via API configuration, not per-request param
+  });
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("No response from Venice");

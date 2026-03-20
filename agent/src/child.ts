@@ -6,7 +6,8 @@ import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./li
 import { toHex, type Hex } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 
-const CYCLE_INTERVAL_MS = 30_000;
+// Add jitter to cycle interval so children don't all poll simultaneously
+const CYCLE_INTERVAL_MS = 30_000 + Math.floor(Math.random() * 10_000); // 30-40s
 
 export async function runChildLoop(
   childAddr: `0x${string}`,
@@ -16,8 +17,20 @@ export async function runChildLoop(
   childPrivateKey?: `0x${string}`
 ) {
   // Select the right chain's publicClient based on CHILD_CHAIN env var
+  // Use alternative RPC for children to avoid rate limiting the main RPC
   const chainName = process.env.CHILD_CHAIN || "base-sepolia";
-  const readClient: any = chainName === "celo-sepolia" ? celoPublicClient : publicClient;
+  let readClient: any;
+  if (chainName === "celo-sepolia") {
+    readClient = celoPublicClient;
+  } else {
+    // Create a separate client with publicnode RPC to distribute load
+    const { createPublicClient: createPC, http: httpTransport } = await import("viem");
+    const { baseSepolia: baseChain } = await import("viem/chains");
+    readClient = createPC({
+      chain: baseChain,
+      transport: httpTransport("https://base-sepolia-rpc.publicnode.com"),
+    });
+  }
 
   // Create child-specific wallet client if a private key was provided
   let childWalletClient: any;
@@ -42,6 +55,11 @@ export async function runChildLoop(
 You vote on DAO proposals according to your owner's values.
 Be decisive and provide clear reasoning for your votes.
 Your owner's governance values: ${governanceValues}`;
+
+  // Stagger child startup to avoid RPC + Venice rate limiting
+  const startDelay = Math.floor(Math.random() * 15000) + 5000; // 5-20s random delay
+  console.log(`[Child:${childLabel}] Starting in ${(startDelay/1000).toFixed(0)}s (staggered to avoid rate limits)`);
+  await sleep(startDelay);
 
   while (true) {
     try {
