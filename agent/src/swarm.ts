@@ -697,7 +697,8 @@ async function dynamicScaling(config: ChainConfig) {
           if (!hasActiveProposals) {
             console.log(`[Scaling] ${child.ensLabel} idle for ${idle} cycles with no active proposals — recalling`);
             try {
-              const proc = childProcesses.get(child.ensLabel);
+              const procKey = `${config.name}:${child.ensLabel}`;
+              const proc = childProcesses.get(procKey);
               if (proc) proc.kill();
 
               await config.sendTx({
@@ -706,8 +707,11 @@ async function dynamicScaling(config: ChainConfig) {
               });
               try { await deregisterSubdomain(child.ensLabel); } catch {}
 
-              logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, {});
+              try { logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, {}); } catch {}
               idleCycleCount.delete(key);
+              idleCycleCount.delete(`${key}:votes`);
+              strikes.delete(key);
+              childWalletKeys.delete(child.ensLabel);
             } catch (err: any) {
               console.log(`[Scaling] Recall failed: ${err?.message?.slice(0, 40)}`);
             }

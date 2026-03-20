@@ -11,11 +11,12 @@ if (!VENICE_API_KEY) {
 const venice = new OpenAI({
   apiKey: VENICE_API_KEY,
   baseURL: "https://api.venice.ai/api/v1",
+  timeout: 30_000, // 30s hard timeout — prevents infinite hangs
 });
 
 // Venice enables E2EE (enable_e2ee: true) on ALL models automatically.
-// Using llama-3.3-70b which is faster and still runs through Venice's E2EE pipeline.
 const STANDARD_MODEL = "llama-3.3-70b";
+const FALLBACK_MODEL = "llama-3.1-8b"; // lighter model if primary is unavailable
 
 // Track Venice usage metrics across all calls
 let totalVeniceCalls = 0;
@@ -25,21 +26,84 @@ export function getVeniceMetrics() {
   return { totalCalls: totalVeniceCalls, totalTokens: totalTokensUsed };
 }
 
+/**
+ * Call Venice with retry on rate limits (429) and transient errors (500/502/503).
+ * Exponential backoff: 2s, 4s, 8s.
+ */
+async function callWithRetry<T>(
+  fn: (model: string) => Promise<T>,
+  maxRetries: number = 3
+): Promise<T> {
+  let lastError: any;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn(STANDARD_MODEL);
+    } catch (err: any) {
+      lastError = err;
+      const status = err?.status || err?.response?.status || 0;
+      const isRetryable = status === 429 || status >= 500 || err?.code === "ETIMEDOUT" || err?.code === "ECONNRESET";
+
+      if (isRetryable && attempt < maxRetries - 1) {
+        const delay = Math.pow(2, attempt + 1) * 1000 + Math.random() * 1000;
+        console.log(`[Venice] ${status || err?.code || "error"} — retry ${attempt + 1}/${maxRetries} in ${(delay / 1000).toFixed(1)}s`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      // On last retry, try fallback model for non-429 errors
+      if (attempt === maxRetries - 1 && status !== 429) {
+        try {
+          console.log(`[Venice] Trying fallback model: ${FALLBACK_MODEL}`);
+          return await fn(FALLBACK_MODEL);
+        } catch {
+          // Fall through to throw lastError
+        }
+      }
+    }
+  }
+  throw lastError;
+}
+
+function trackUsage(functionName: string, response: any) {
+  totalVeniceCalls++;
+  if (response.usage?.total_tokens) {
+    totalTokensUsed += response.usage.total_tokens;
+    console.log(`[Venice] ${functionName}: ${response.usage.total_tokens} tokens (total: ${totalTokensUsed})`);
+  }
+}
+
+function extractContent(response: any): string {
+  if (!response.choices || response.choices.length === 0) {
+    throw new Error("Venice returned empty choices array");
+  }
+  const content = response.choices[0]?.message?.content;
+  if (!content) throw new Error("Venice returned no message content");
+  return content;
+}
+
+function parseJsonFromText(text: string): any | null {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return null;
+  }
+}
+
 export async function reasonAboutProposal(
   proposalDescription: string,
   governanceValues: string,
   childSystemPrompt: string
 ): Promise<{ decision: "FOR" | "AGAINST" | "ABSTAIN"; reasoning: string; usage?: any }> {
-  const response = await venice.chat.completions.create({
-    model: STANDARD_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: childSystemPrompt,
-      },
-      {
-        role: "user",
-        content: `You are a governance agent. Your owner's values are:
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: childSystemPrompt },
+        {
+          role: "user",
+          content: `You are a governance agent. Your owner's values are:
 ${governanceValues}
 
 Please evaluate this proposal and decide how to vote:
@@ -47,59 +111,44 @@ ${proposalDescription}
 
 Respond in JSON format:
 {"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"}`,
-      },
-    ],
-    // Venice private compute — E2EE enabled via API configuration, not per-request param
-  });
+        },
+      ],
+    })
+  );
 
-  // Track Venice usage metrics
-  totalVeniceCalls++;
-  if (response.usage) {
-    totalTokensUsed += response.usage.total_tokens || 0;
-    console.log(`[Venice] reasonAboutProposal: ${response.usage.total_tokens} tokens (total: ${totalTokensUsed})`);
-  }
+  trackUsage("reasonAboutProposal", response);
+  const content = extractContent(response);
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error("No response from Venice");
-
-  // Extract JSON from response (may have markdown wrapping)
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    const upper = content.toUpperCase();
-    const decision = upper.includes("AGAINST") ? "AGAINST" : upper.includes("ABSTAIN") ? "ABSTAIN" : "FOR";
-    return { decision, reasoning: content, usage: response.usage };
-  }
-
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
+  const parsed = parseJsonFromText(content);
+  if (parsed?.decision) {
     return {
-      decision: (parsed.decision || "FOR").toUpperCase() as "FOR" | "AGAINST" | "ABSTAIN",
+      decision: String(parsed.decision).toUpperCase() as "FOR" | "AGAINST" | "ABSTAIN",
       reasoning: (parsed.reasoning || content) as string,
       usage: response.usage,
     };
-  } catch {
-    // JSON extraction failed, fallback to text parsing
-    const upper = content.toUpperCase();
-    const decision = upper.includes("AGAINST") ? "AGAINST" : upper.includes("ABSTAIN") ? "ABSTAIN" : "FOR";
-    return { decision, reasoning: content };
   }
+
+  // Fallback: extract decision from text
+  const upper = content.toUpperCase();
+  const decision = upper.includes("AGAINST") ? "AGAINST" : upper.includes("ABSTAIN") ? "ABSTAIN" : "FOR";
+  return { decision, reasoning: content, usage: response.usage };
 }
 
 export async function evaluateAlignment(
   governanceValues: string,
   votingHistory: { proposalId: string; support: number; reasoning?: string }[]
 ): Promise<number> {
-  const response = await venice.chat.completions.create({
-    model: STANDARD_MODEL,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are an alignment evaluator for a governance agent swarm. Evaluate how well a child agent's voting record aligns with the owner's stated values.",
-      },
-      {
-        role: "user",
-        content: `Owner's governance values:
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "You are an alignment evaluator for a governance agent swarm. Evaluate how well a child agent's voting record aligns with the owner's stated values.",
+        },
+        {
+          role: "user",
+          content: `Owner's governance values:
 ${governanceValues}
 
 Child agent's recent voting record:
@@ -112,132 +161,125 @@ Rate this child's alignment from 0-100 where:
 - 0-39: Misaligned, should be terminated
 
 Respond in JSON: {"score": <number>, "explanation": "<brief explanation>"}`,
-      },
-    ],
-    // Venice private compute — E2EE enabled via API configuration, not per-request param
-  });
+        },
+      ],
+    })
+  );
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) throw new Error("No response from Venice");
-
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    // Fallback: return moderate alignment
-    return 75;
-  }
+  trackUsage("evaluateAlignment", response);
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    return (parsed.score ?? 75) as number;
+    const content = extractContent(response);
+    const parsed = parseJsonFromText(content);
+    if (parsed?.score !== undefined) return parsed.score as number;
+  } catch {}
+
+  return 75; // Safe fallback
+}
+
+export async function summarizeProposal(proposalDescription: string): Promise<string> {
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: "You are a governance analyst. Summarize proposals concisely." },
+        {
+          role: "user",
+          content: `Summarize this governance proposal in 2-3 bullet points. Focus on: what changes, who benefits, what risks exist.\n\n${proposalDescription}`,
+        },
+      ],
+    })
+  );
+
+  trackUsage("summarizeProposal", response);
+  try {
+    return extractContent(response);
   } catch {
-    return 75;
+    return proposalDescription.slice(0, 200);
   }
 }
 
-/**
- * Summarize a proposal into key points before voting.
- * Shows Venice as the reasoning backbone, not just a decision machine.
- */
-export async function summarizeProposal(
-  proposalDescription: string
-): Promise<string> {
-  const response = await venice.chat.completions.create({
-    model: STANDARD_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: "You are a governance analyst. Summarize proposals concisely.",
-      },
-      {
-        role: "user",
-        content: `Summarize this governance proposal in 2-3 bullet points. Focus on: what changes, who benefits, what risks exist.\n\n${proposalDescription}`,
-      },
-    ],
-  });
-  return response.choices[0]?.message?.content || proposalDescription;
-}
-
-/**
- * Assess risk level of a proposal before voting.
- * Separate Venice call shows deeper reasoning workflow.
- */
 export async function assessProposalRisk(
   proposalDescription: string,
   governanceValues: string
 ): Promise<{ riskLevel: "low" | "medium" | "high" | "critical"; factors: string }> {
-  const response = await venice.chat.completions.create({
-    model: STANDARD_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: "You are a governance risk assessor. Evaluate proposals for treasury risk, centralization risk, and alignment risk.",
-      },
-      {
-        role: "user",
-        content: `Governance values: ${governanceValues}\n\nProposal: ${proposalDescription}\n\nRespond in JSON: {"riskLevel": "low"|"medium"|"high"|"critical", "factors": "brief risk factors"}`,
-      },
-    ],
-  });
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: "You are a governance risk assessor. Evaluate proposals for treasury risk, centralization risk, and alignment risk." },
+        {
+          role: "user",
+          content: `Governance values: ${governanceValues}\n\nProposal: ${proposalDescription}\n\nRespond in JSON: {"riskLevel": "low"|"medium"|"high"|"critical", "factors": "brief risk factors"}`,
+        },
+      ],
+    })
+  );
 
-  const content = response.choices[0]?.message?.content || "";
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return { riskLevel: parsed.riskLevel || "medium", factors: parsed.factors || content };
-    } catch {}
+  trackUsage("assessProposalRisk", response);
+
+  try {
+    const content = extractContent(response);
+    const parsed = parseJsonFromText(content);
+    if (parsed?.riskLevel) {
+      return { riskLevel: parsed.riskLevel, factors: parsed.factors || content };
+    }
+    return { riskLevel: "medium", factors: content };
+  } catch {
+    return { riskLevel: "medium", factors: "Risk assessment unavailable" };
   }
-  return { riskLevel: "medium", factors: content };
 }
 
-/**
- * Generate a swarm activity report after each evaluation cycle.
- * Shows Venice generating narrative outputs, not just classifications.
- */
 export async function generateSwarmReport(
   childrenStatus: { name: string; score: number; votes: number }[],
   governanceValues: string
 ): Promise<string> {
-  const response = await venice.chat.completions.create({
-    model: STANDARD_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: "You are a governance swarm reporter. Write concise status reports.",
-      },
-      {
-        role: "user",
-        content: `Write a 3-sentence swarm status report.\n\nOwner values: ${governanceValues}\n\nAgent status:\n${childrenStatus.map((c) => `${c.name}: alignment ${c.score}/100, ${c.votes} votes cast`).join("\n")}\n\nInclude: overall health, any concerns, recommendation.`,
-      },
-    ],
-  });
-  return response.choices[0]?.message?.content || "Report generation failed.";
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: "You are a governance swarm reporter. Write concise status reports." },
+        {
+          role: "user",
+          content: `Write a 3-sentence swarm status report.\n\nOwner values: ${governanceValues}\n\nAgent status:\n${childrenStatus.map((c) => `${c.name}: alignment ${c.score}/100, ${c.votes} votes cast`).join("\n")}\n\nInclude: overall health, any concerns, recommendation.`,
+        },
+      ],
+    })
+  );
+
+  trackUsage("generateSwarmReport", response);
+  try {
+    return extractContent(response);
+  } catch {
+    return "Report generation failed.";
+  }
 }
 
-/**
- * Generate termination post-mortem when a child is killed.
- * Explains what went wrong for transparency and audit trail.
- */
 export async function generateTerminationReport(
   childName: string,
   votingHistory: { proposalId: string; support: number }[],
   governanceValues: string,
   finalScore: number
 ): Promise<string> {
-  const response = await venice.chat.completions.create({
-    model: STANDARD_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: "You are a governance audit agent. Write termination post-mortems.",
-      },
-      {
-        role: "user",
-        content: `Agent "${childName}" was terminated with alignment score ${finalScore}/100.\n\nOwner values: ${governanceValues}\n\nVoting record: ${JSON.stringify(votingHistory)}\n\nWrite a 2-sentence explanation of why this agent was misaligned and what the replacement should do differently.`,
-      },
-    ],
-  });
-  return response.choices[0]?.message?.content || "Termination report unavailable.";
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: "You are a governance audit agent. Write termination post-mortems." },
+        {
+          role: "user",
+          content: `Agent "${childName}" was terminated with alignment score ${finalScore}/100.\n\nOwner values: ${governanceValues}\n\nVoting record: ${JSON.stringify(votingHistory)}\n\nWrite a 2-sentence explanation of why this agent was misaligned and what the replacement should do differently.`,
+        },
+      ],
+    })
+  );
+
+  trackUsage("generateTerminationReport", response);
+  try {
+    return extractContent(response);
+  } catch {
+    return "Termination report unavailable.";
+  }
 }
 
 export { venice };

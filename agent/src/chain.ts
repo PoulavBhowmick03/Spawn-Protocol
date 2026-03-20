@@ -21,24 +21,26 @@ if (!PRIVATE_KEY) {
 export const account = privateKeyToAccount(PRIVATE_KEY);
 
 // ── Base Sepolia (primary) ──
+const baseRpc = process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org";
 export const publicClient = createPublicClient({
   chain: baseSepolia,
-  transport: http(process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"),
+  transport: http(baseRpc),
 });
 
 export const walletClient = createWalletClient({
   account,
   chain: baseSepolia,
-  transport: http(process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"),
+  transport: http(baseRpc),
 });
 
 // ── Celo Sepolia (secondary) ──
+const celoRpc = process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org";
 export const celoSepolia = defineChain({
   id: 11142220,
   name: "Celo Sepolia",
   nativeCurrency: { name: "CELO", symbol: "CELO", decimals: 18 },
   rpcUrls: {
-    default: { http: [process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org"] },
+    default: { http: [celoRpc] },
   },
   blockExplorers: {
     default: { name: "Celoscan", url: "https://celo-sepolia.celoscan.io" },
@@ -47,58 +49,90 @@ export const celoSepolia = defineChain({
 
 export const celoPublicClient = createPublicClient({
   chain: celoSepolia,
-  transport: http(process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org"),
+  transport: http(celoRpc),
 });
 
 export const celoWalletClient = createWalletClient({
   account,
   chain: celoSepolia,
-  transport: http(process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org"),
+  transport: http(celoRpc),
 });
 
+// Tx receipt timeout — prevents indefinite hangs
+const TX_RECEIPT_TIMEOUT = 120_000; // 2 minutes
+
 /**
- * Send a contract write tx with retry on nonce errors.
+ * Send a contract write tx with retry on transient errors.
+ * Retries on: nonce issues, underpriced, rate limits, timeouts, connection errors.
  */
 export async function sendTxAndWait(params: any, retries = 5) {
+  const errors: string[] = [];
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const hash = await walletClient.writeContract(params);
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash,
+        timeout: TX_RECEIPT_TIMEOUT,
+      });
       return receipt;
     } catch (err: any) {
       const msg = err?.details || err?.message || "";
-      const isRetryable = msg.includes("nonce") || msg.includes("underpriced") || msg.includes("already known");
+      errors.push(`#${attempt + 1}: ${msg.slice(0, 60)}`);
+      const isRetryable =
+        msg.includes("nonce") ||
+        msg.includes("underpriced") ||
+        msg.includes("already known") ||
+        msg.includes("rate limit") ||
+        msg.includes("timeout") ||
+        msg.includes("ECONNREFUSED") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("ETIMEDOUT") ||
+        msg.includes("429");
       if (isRetryable && attempt < retries - 1) {
-        const delay = 5000 + attempt * 2000;
-        console.log(`  [tx] ${msg.slice(0, 40)}... retrying in ${delay/1000}s (${attempt + 2}/${retries})`);
+        const delay = 3000 + attempt * 3000;
+        console.log(`  [tx] ${msg.slice(0, 40)}... retrying in ${delay / 1000}s (${attempt + 2}/${retries})`);
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw err;
     }
   }
-  throw new Error("sendTxAndWait: max retries exceeded");
+  throw new Error(`sendTxAndWait: max retries exceeded [${errors.join(" | ")}]`);
 }
 
 export async function sendTxAndWaitCelo(params: any, retries = 5) {
+  const errors: string[] = [];
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const hash = await celoWalletClient.writeContract(params);
-      const receipt = await celoPublicClient.waitForTransactionReceipt({ hash });
+      const receipt = await celoPublicClient.waitForTransactionReceipt({
+        hash,
+        timeout: TX_RECEIPT_TIMEOUT,
+      });
       return receipt;
     } catch (err: any) {
       const msg = err?.details || err?.message || "";
-      const isRetryable = msg.includes("nonce") || msg.includes("underpriced") || msg.includes("already known");
+      errors.push(`#${attempt + 1}: ${msg.slice(0, 60)}`);
+      const isRetryable =
+        msg.includes("nonce") ||
+        msg.includes("underpriced") ||
+        msg.includes("already known") ||
+        msg.includes("rate limit") ||
+        msg.includes("timeout") ||
+        msg.includes("ECONNREFUSED") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("ETIMEDOUT") ||
+        msg.includes("429");
       if (isRetryable && attempt < retries - 1) {
-        const delay = 5000 + attempt * 2000;
-        console.log(`  [celo-tx] ${msg.slice(0, 40)}... retrying in ${delay/1000}s (${attempt + 2}/${retries})`);
+        const delay = 3000 + attempt * 3000;
+        console.log(`  [celo-tx] ${msg.slice(0, 40)}... retrying in ${delay / 1000}s (${attempt + 2}/${retries})`);
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw err;
     }
   }
-  throw new Error("sendTxAndWaitCelo: max retries exceeded");
+  throw new Error(`sendTxAndWaitCelo: max retries exceeded [${errors.join(" | ")}]`);
 }
 
 export { baseSepolia };

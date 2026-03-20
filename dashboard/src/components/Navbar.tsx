@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Swarm", icon: "⬡" },
   { href: "/graph", label: "Graph", icon: "◎" },
   { href: "/proposals", label: "Proposals", icon: "◈" },
+  { href: "/leaderboard", label: "Leaderboard", icon: "▲" },
   { href: "/timeline", label: "Timeline", icon: "≡" },
   { href: "/logs", label: "Exec Log", icon: "◉" },
   { href: "/settings", label: "Settings", icon: "⚙" },

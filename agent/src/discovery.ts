@@ -42,10 +42,12 @@ export interface DiscoveredDAO {
 
 // ── State (deduplication) ──
 
+const MAX_TRACKED_PROPOSALS = 2000; // cap to prevent unbounded memory growth
 const seenProposals = new Set<string>(); // externalId set for O(1) dedup
-const allProposals: DiscoveredProposal[] = []; // ordered list
+const allProposals: DiscoveredProposal[] = []; // ordered list (capped)
 const discoveredDAOs = new Map<string, DiscoveredDAO>();
 let feedInterval: ReturnType<typeof setInterval> | null = null;
+let isPolling = false; // prevent overlapping polls
 let simulatedIndex = 0;
 
 // ── Tally API ──
@@ -142,7 +144,9 @@ async function fetchFromTally(): Promise<DiscoveredProposal[]> {
 
       // Rate limit: 1 req/sec between orgs
       await sleep(1100);
-    } catch {}
+    } catch (err: any) {
+      console.log(`[Discovery] Tally fetch error for ${org.name}: ${err?.message?.slice(0, 60)}`);
+    }
   }
 
   if (results.length > 0) {
@@ -427,6 +431,12 @@ async function pollOnce(
     await sleep(2000); // space out txs to avoid nonce collisions
   }
 
+  // Cap tracked proposals to prevent unbounded memory growth
+  if (allProposals.length > MAX_TRACKED_PROPOSALS) {
+    const removed = allProposals.splice(0, allProposals.length - MAX_TRACKED_PROPOSALS);
+    for (const r of removed) seenProposals.delete(r.externalId);
+  }
+
   if (newProposals.length > 0) {
     const sources = [...new Set(newProposals.map(p => p.source))];
     console.log(`[Discovery] ${newProposals.length} new proposals (${sources.join("+")}), ${seenProposals.size} total tracked`);
@@ -456,12 +466,16 @@ export async function startProposalFeed(
   // Initial poll
   await pollOnce(governors, sendTxFn);
 
-  // Recurring poll
+  // Recurring poll (with overlap prevention)
   feedInterval = setInterval(async () => {
+    if (isPolling) return; // prevent overlapping polls
+    isPolling = true;
     try {
       await pollOnce(governors, sendTxFn);
     } catch (err: any) {
       console.log(`[Discovery] Poll error: ${err?.message?.slice(0, 60)}`);
+    } finally {
+      isPolling = false;
     }
   }, POLL_INTERVAL_MS);
 

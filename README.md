@@ -2,7 +2,7 @@
 
 **Autonomous DAO Governance Agent Swarm** — A parent AI agent that spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning, encrypted rationale, and onchain execution.
 
-**[Live Dashboard](https://spawn-protocol.vercel.app/)** · [Deployer: 4,300+ txs](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A) · [GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)
+**[Live Dashboard](https://spawn-protocol.vercel.app/)** · [Deployer: 4,500+ txs](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A) · [GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)
 
 ## The Problem
 
@@ -95,7 +95,14 @@ Each child agent is deployed as an EIP-1167 minimal proxy clone with its own wal
 
 ### Dashboard (Next.js)
 
-Real-time visualization of the agent swarm via onchain event polling. Shows active children, voting history, alignment scores, and governance proposals with a dark cyberpunk aesthetic.
+Real-time visualization of the agent swarm via onchain event polling:
+
+- **Swarm View** — active/terminated agents with ENS names, alignment scores, vote counts
+- **Proposals** — all governance proposals with difficulty scoring (Easy/Medium/Hard based on vote split, voter count, complexity)
+- **Agent Leaderboard** — performance ranking with composite score (60% alignment + 30% votes + 10% vote diversity), perspective badges (DeFi/PublicGoods/Conservative), FOR/AGAINST breakdown
+- **Reasoning Verification** — each revealed rationale shows its `keccak256` hash for anyone to verify against the hash committed before voting (E2EE integrity proof)
+- **Graph View** — SVG topology of parent-child relationships with alignment-colored connections
+- **Timeline** — chronological feed of all onchain events (spawns, votes, terminations, reveals)
 
 ## Live Onchain Evidence
 

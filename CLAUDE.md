@@ -123,6 +123,10 @@ const venice = new OpenAI({
 - Real-time view of the agent swarm via onchain event polling
 - Shows: active children with ENS names, assigned DAOs, recent votes
 - Visual: agents spawning (green pulse), voting (blue), getting killed (red)
+- **Leaderboard**: agents ranked by composite score (alignment + votes + diversity)
+- **Proposal difficulty scoring**: Easy/Medium/Hard based on vote split, voter count, complexity
+- **Reasoning verification**: keccak256 hash of revealed rationale shown for E2EE integrity proof
+- **Multi-source proposals**: Tally (9 DAOs) + Snapshot (12 spaces) + simulated
 - Timeline of all governance actions with tx links
 - Owner's stated values alongside child voting patterns + alignment scores
 

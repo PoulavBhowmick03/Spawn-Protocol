@@ -97,6 +97,34 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
     displayDesc = displayDesc.slice(0, 300) + "...";
   }
 
+  // Proposal difficulty scoring (0-100)
+  // Based on: vote split closeness, voter count, description complexity
+  const difficulty = (() => {
+    if (total === 0) return null;
+    // Vote split: 50/50 = max difficulty (100), unanimous = min (0)
+    const majorityPct = Math.max(forPct, againstPct, abstainPct);
+    const splitScore = Math.round((1 - (majorityPct - 50) / 50) * 100);
+    // Voter engagement: more voters = harder (capped at 9)
+    const voterScore = Math.min(proposal.voters.length / 9, 1) * 100;
+    // Description length proxy for complexity
+    const descLen = (proposal.description || "").length;
+    const complexityScore = Math.min(descLen / 1500, 1) * 100;
+    // Weighted: 50% split + 25% voters + 25% complexity
+    return Math.round(splitScore * 0.5 + voterScore * 0.25 + complexityScore * 0.25);
+  })();
+
+  const difficultyLabel = difficulty === null ? null
+    : difficulty >= 75 ? "Hard"
+    : difficulty >= 50 ? "Medium"
+    : difficulty >= 25 ? "Easy"
+    : "Trivial";
+
+  const difficultyColor = difficulty === null ? ""
+    : difficulty >= 75 ? "text-red-400 border-red-400/30 bg-red-400/5"
+    : difficulty >= 50 ? "text-orange-400 border-orange-400/30 bg-orange-400/5"
+    : difficulty >= 25 ? "text-yellow-400 border-yellow-400/30 bg-yellow-400/5"
+    : "text-green-400 border-green-400/30 bg-green-400/5";
+
   // Tally link for source DAO
   const tallySlug = proposal.sourceDaoName ? TALLY_DAO_SLUGS[proposal.sourceDaoName] : null;
   const tallyUrl = tallySlug ? `https://www.tally.xyz/gov/${tallySlug}` : null;
@@ -141,6 +169,11 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
             {isActive && timeRemaining !== null && (
               <span className="text-xs text-blue-400 font-mono animate-pulse">
                 {formatTimeRemaining(timeRemaining)} left
+              </span>
+            )}
+            {difficulty !== null && difficultyLabel && (
+              <span className={`text-[10px] border rounded px-1.5 py-0.5 font-mono ${difficultyColor}`}>
+                {difficultyLabel} ({difficulty})
               </span>
             )}
           </div>

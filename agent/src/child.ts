@@ -155,12 +155,22 @@ async function childCycle(
         console.log(`[Child:${childLabel}] Venice Risk: ${risk.riskLevel} — ${risk.factors.slice(0, 80)}`);
       } catch {}
 
-      // Venice reasoning step 3: Vote decision
-      const { decision, reasoning } = await reasonAboutProposal(
-        proposal.description,
-        governanceValues,
-        systemPrompt
-      );
+      // Venice reasoning step 3: Vote decision (critical — wrapped in try/catch)
+      let decision: "FOR" | "AGAINST" | "ABSTAIN" = "ABSTAIN";
+      let reasoning = "Venice reasoning unavailable — defaulting to ABSTAIN";
+      try {
+        const result = await reasonAboutProposal(
+          proposal.description,
+          governanceValues,
+          systemPrompt
+        );
+        decision = result.decision;
+        reasoning = result.reasoning;
+      } catch (veniceErr: any) {
+        console.error(`[Child:${childLabel}] Venice reasoning failed: ${veniceErr?.message?.slice(0, 80)}`);
+        console.log(`[Child:${childLabel}] Skipping vote on proposal ${i} — will retry next cycle`);
+        continue; // Skip this proposal, try again next cycle
+      }
 
       const support = decision === "FOR" ? 1 : decision === "AGAINST" ? 0 : 2;
       console.log(`[Child:${childLabel}] Decision: ${decision}`);

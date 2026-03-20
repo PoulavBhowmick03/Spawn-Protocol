@@ -174,6 +174,23 @@ export default function AgentDetailPage({ params }: PageProps) {
                     <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
                       <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Rationale</p>
                       <p className="text-sm text-gray-300">{rationale}</p>
+                      {/* Reasoning verification: show keccak256 hash for anyone to verify */}
+                      <div className="mt-2 pt-2 border-t border-gray-800">
+                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
+                        <p className="font-mono text-[10px] text-green-400/60 break-all">
+                          {(() => {
+                            try {
+                              const { keccak256, toBytes } = require("viem");
+                              return keccak256(toBytes(rationale));
+                            } catch {
+                              return "verification unavailable";
+                            }
+                          })()}
+                        </p>
+                        <p className="text-[10px] text-gray-700 mt-0.5">
+                          Compare with reasoning hash committed before vote to verify E2EE integrity
+                        </p>
+                      </div>
                     </div>
                   )}
 
