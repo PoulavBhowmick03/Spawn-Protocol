@@ -37,15 +37,28 @@ export function useTimeline() {
       const currentBlock = await client.getBlockNumber();
       const startBlock = currentBlock > BigInt(9999) ? currentBlock - BigInt(9999) : BigInt(0);
 
-      // First get active children so we can fetch their events
+      // Get ALL child addresses (active + terminated) from ChildSpawned events
+      // This ensures terminated children's VoteCast + AlignmentUpdated events are visible
       let childAddresses: `0x${string}`[] = [];
       try {
-        const rawChildren = await client.readContract({
+        const spawnedForAddrs = await client.getLogs({
           address: contracts.SpawnFactory.address,
-          abi: contracts.SpawnFactory.abi,
-          functionName: "getActiveChildren",
+          event: {
+            type: "event",
+            name: "ChildSpawned",
+            inputs: [
+              { name: "childId", type: "uint256", indexed: true },
+              { name: "childAddr", type: "address", indexed: false },
+              { name: "governance", type: "address", indexed: false },
+              { name: "budget", type: "uint256", indexed: false },
+            ],
+          },
+          fromBlock: startBlock,
+          toBlock: "latest",
         });
-        childAddresses = rawChildren.map((c) => c.childAddr);
+        childAddresses = [
+          ...new Set(spawnedForAddrs.map((l) => l.args?.childAddr).filter(Boolean) as `0x${string}`[]),
+        ];
       } catch {}
 
       const [

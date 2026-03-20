@@ -125,12 +125,15 @@ export default function SwarmPage() {
           )}
           {children.filter((c) => !c.active).length > 0 && (
             <div>
-              <h2 className="text-xs font-mono text-gray-600 uppercase tracking-widest mb-3">
-                Terminated Agents ({children.filter((c) => !c.active).length})
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 opacity-60">
+              <div className="flex items-center gap-3 mb-3">
+                <h2 className="text-xs font-mono text-red-500/70 uppercase tracking-widest">
+                  Terminated Agents ({children.filter((c) => !c.active).length})
+                </h2>
+                <div className="flex-1 h-px bg-red-500/20" />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 opacity-50">
                 {children.filter((c) => !c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} />
+                  <AgentCard key={child.childAddr} child={child} justVoted={false} />
                 ))}
               </div>
             </div>

@@ -15,8 +15,8 @@ const EVENT_STYLES: Record<
   },
   ChildTerminated: {
     color: "text-red-400",
-    bg: "bg-red-400/10 border-red-400/30",
-    label: "TERMINATED",
+    bg: "bg-red-500/15 border-red-500/50",
+    label: "⚠ TERMINATED",
     icon: "✕",
   },
   VoteCast: {
@@ -69,7 +69,7 @@ function formatEventData(event: TimelineEvent): string {
     case "ChildSpawned":
       return `Child #${d.childId} spawned — budget: ${d.budget ? (Number(d.budget) / 1e18).toFixed(4) : "?"} ETH`;
     case "ChildTerminated":
-      return `Child #${d.childId} terminated — ${d.fundsReturned ? (Number(d.fundsReturned) / 1e18).toFixed(4) : "?"} ETH returned`;
+      return `Agent #${d.childId} killed for misalignment — ${d.childAddr ? formatAddress(String(d.childAddr)) : "?"} — ${d.fundsReturned && Number(d.fundsReturned) > 0 ? `${(Number(d.fundsReturned) / 1e18).toFixed(4)} ETH returned` : "funds returned"}`;
     case "FundsReallocated":
       return `Reallocated ${d.amount ? (Number(d.amount) / 1e18).toFixed(4) : "?"} ETH from child #${d.fromId} to #${d.toId}`;
     case "ValuesUpdated":
@@ -101,17 +101,29 @@ export function TimelineItem({ event }: TimelineItemProps) {
     icon: "·",
   };
 
+  const isTermination = event.type === "ChildTerminated";
+
   return (
-    <div className="flex gap-3 items-start">
+    <div className={`flex gap-3 items-start ${isTermination ? "my-1" : ""}`}>
       {/* Icon column */}
-      <div className={`flex-none w-8 h-8 rounded-full border flex items-center justify-center text-sm font-bold ${style.bg} ${style.color}`}>
+      <div
+        className={`flex-none rounded-full border flex items-center justify-center font-bold ${style.bg} ${style.color} ${
+          isTermination ? "w-10 h-10 text-base" : "w-8 h-8 text-sm"
+        }`}
+      >
         {style.icon}
       </div>
 
       {/* Content */}
-      <div className={`flex-1 border rounded-lg px-3 py-2 ${style.bg}`}>
+      <div
+        className={`flex-1 border rounded-lg px-3 ${style.bg} ${
+          isTermination
+            ? "py-3 border-l-4 border-l-red-500"
+            : "py-2"
+        }`}
+      >
         <div className="flex items-center justify-between gap-2 mb-1">
-          <span className={`text-xs font-mono font-bold tracking-wider ${style.color}`}>
+          <span className={`font-mono font-bold tracking-wider ${style.color} ${isTermination ? "text-sm" : "text-xs"}`}>
             {style.label}
           </span>
           <div className="flex items-center gap-2">
@@ -136,7 +148,9 @@ export function TimelineItem({ event }: TimelineItemProps) {
             )}
           </div>
         </div>
-        <p className="text-sm text-gray-300">{formatEventData(event)}</p>
+        <p className={`text-gray-300 ${isTermination ? "text-sm font-medium" : "text-sm"}`}>
+          {formatEventData(event)}
+        </p>
       </div>
     </div>
   );

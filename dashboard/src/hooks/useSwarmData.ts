@@ -30,11 +30,24 @@ export function useSwarmData() {
   const fetchData = useCallback(async () => {
     const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
     try {
-      const rawChildren = await client.readContract({
+      // Fetch ALL children (active + terminated) via childCount + getChild(id)
+      const totalCount = await client.readContract({
         address: contracts.SpawnFactory.address,
         abi: contracts.SpawnFactory.abi,
-        functionName: "getActiveChildren",
+        functionName: "childCount",
       });
+
+      const count = Math.min(Number(totalCount), 60); // cap at 60 to avoid RPC overload
+      const rawChildren = await Promise.all(
+        Array.from({ length: count }, (_, i) =>
+          client.readContract({
+            address: contracts.SpawnFactory.address,
+            abi: contracts.SpawnFactory.abi,
+            functionName: "getChild",
+            args: [BigInt(i + 1)],
+          })
+        )
+      );
 
       const enriched: ChildInfo[] = await Promise.all(
         rawChildren.map(async (child) => {
