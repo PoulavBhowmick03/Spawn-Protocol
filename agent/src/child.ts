@@ -99,11 +99,9 @@ async function childCycle(
     functionName: "proposalCount",
   })) as bigint;
 
-  // Scan backwards from newest — active proposals are always at the end
-  // Stop early once we hit 5 consecutive non-active proposals (they're all old)
+  // ── PASS 1: Vote on active proposals (scan backwards, break early) ──
   let consecutiveInactive = 0;
   for (let i = proposalCount; i >= 1n; i--) {
-    // 2. Check proposal state (1 = Active)
     const state = (await readClient.readContract({
       address: governanceAddr,
       abi: MockGovernorABI,
@@ -113,174 +111,167 @@ async function childCycle(
 
     if (state !== 1) {
       consecutiveInactive++;
-      if (consecutiveInactive >= 5) break; // all older proposals are definitely inactive
+      if (consecutiveInactive >= 5) break;
       continue;
     }
     consecutiveInactive = 0;
 
-    if (state === 1) {
-      // Active
-      // Check if already voted
-      const voteIndex = (await readClient.readContract({
-        address: childAddr,
-        abi: ChildGovernorABI,
-        functionName: "proposalToVoteIndex",
+    // Active — check if already voted
+    const voteIndex = (await readClient.readContract({
+      address: childAddr,
+      abi: ChildGovernorABI,
+      functionName: "proposalToVoteIndex",
+      args: [i],
+    })) as bigint;
+
+    if (voteIndex === 0n) {
+      // Haven't voted yet
+      const proposal = (await readClient.readContract({
+        address: governanceAddr,
+        abi: MockGovernorABI,
+        functionName: "getProposal",
         args: [i],
-      })) as bigint;
+      })) as ProposalInfo;
 
-      if (voteIndex === 0n) {
-        // Haven't voted yet
-        const proposal = (await readClient.readContract({
-          address: governanceAddr,
-          abi: MockGovernorABI,
-          functionName: "getProposal",
-          args: [i],
-        })) as ProposalInfo;
+      console.log(
+        `[Child:${childLabel}] Evaluating proposal ${i}: ${proposal.description}`
+      );
 
-        console.log(
-          `[Child:${childLabel}] Evaluating proposal ${i}: ${proposal.description}`
-        );
+      // Venice reasoning step 1: Summarize proposal
+      try {
+        const summary = await summarizeProposal(proposal.description);
+        console.log(`[Child:${childLabel}] Venice Summary: ${summary.slice(0, 120)}...`);
+      } catch {}
 
-        // Venice reasoning step 1: Summarize proposal
+      // Venice reasoning step 2: Risk assessment
+      try {
+        const risk = await assessProposalRisk(proposal.description, governanceValues);
+        console.log(`[Child:${childLabel}] Venice Risk: ${risk.riskLevel} — ${risk.factors.slice(0, 80)}`);
+      } catch {}
+
+      // Venice reasoning step 3: Vote decision
+      const { decision, reasoning } = await reasonAboutProposal(
+        proposal.description,
+        governanceValues,
+        systemPrompt
+      );
+
+      const support = decision === "FOR" ? 1 : decision === "AGAINST" ? 0 : 2;
+      console.log(`[Child:${childLabel}] Decision: ${decision}`);
+      console.log(`[Child:${childLabel}] Reasoning: ${reasoning.slice(0, 100)}...`);
+
+      // Venice private→public proof: hash reasoning onchain BEFORE vote
+      const { keccak256: k256, toBytes } = await import("viem");
+      const reasoningHash = k256(toBytes(reasoning));
+      console.log(`[Child:${childLabel}] Reasoning hash: ${reasoningHash.slice(0, 18)}...`);
+
+      // Encrypt rationale via Lit Protocol (time-locked to proposal end)
+      let encryptedRationale: `0x${string}`;
+      if (litAvailable) {
         try {
-          const summary = await summarizeProposal(proposal.description);
-          console.log(`[Child:${childLabel}] Venice Summary: ${summary.slice(0, 120)}...`);
-        } catch {}
-
-        // Venice reasoning step 2: Risk assessment
-        try {
-          const risk = await assessProposalRisk(proposal.description, governanceValues);
-          console.log(`[Child:${childLabel}] Venice Risk: ${risk.riskLevel} — ${risk.factors.slice(0, 80)}`);
-        } catch {}
-
-        // Venice reasoning step 3: Vote decision
-        const { decision, reasoning } = await reasonAboutProposal(
-          proposal.description,
-          governanceValues,
-          systemPrompt
-        );
-
-        const support = decision === "FOR" ? 1 : decision === "AGAINST" ? 0 : 2;
-        console.log(`[Child:${childLabel}] Decision: ${decision}`);
-        console.log(`[Child:${childLabel}] Reasoning: ${reasoning.slice(0, 100)}...`);
-
-        // 3.5 Venice private→public proof: hash reasoning onchain BEFORE vote
-        // Commit keccak256(Venice reasoning) to SpawnENSRegistry as text record
-        const { keccak256: k256, toBytes } = await import("viem");
-        const reasoningHash = k256(toBytes(reasoning));
-        console.log(`[Child:${childLabel}] Reasoning hash: ${reasoningHash.slice(0, 18)}...`);
-
-        // Hash is embedded in the vote calldata (encryptedRationale field)
-        // and logged — verifiable by comparing keccak256(revealed rationale) later
-
-        // 4. Encrypt rationale via Lit Protocol (time-locked to proposal end)
-        let encryptedRationale: `0x${string}`;
-        if (litAvailable) {
-          try {
-            const litResult = await encryptRationale(reasoning, proposal.endTime);
-            // Store ciphertext + hash as hex-encoded JSON for later decryption
-            encryptedRationale = toHex(JSON.stringify({
-              ciphertext: litResult.ciphertext,
-              dataToEncryptHash: litResult.dataToEncryptHash,
-              litEncrypted: true,
-            }));
-            console.log(`[Child:${childLabel}] Rationale encrypted via Lit Protocol`);
-          } catch (litErr) {
-            console.warn(`[Child:${childLabel}] Lit encryption failed, using hex fallback:`, litErr);
-            encryptedRationale = toHex(reasoning);
-          }
-        } else {
+          const litResult = await encryptRationale(reasoning, proposal.endTime);
+          encryptedRationale = toHex(JSON.stringify({
+            ciphertext: litResult.ciphertext,
+            dataToEncryptHash: litResult.dataToEncryptHash,
+            litEncrypted: true,
+          }));
+          console.log(`[Child:${childLabel}] Rationale encrypted via Lit Protocol`);
+        } catch (litErr) {
+          console.warn(`[Child:${childLabel}] Lit encryption failed, using hex fallback:`, litErr);
           encryptedRationale = toHex(reasoning);
         }
+      } else {
+        encryptedRationale = toHex(reasoning);
+      }
 
-        // 5. Cast vote onchain using child's own wallet
+      // Cast vote onchain using child's own wallet
+      const hash = await childWalletClient.writeContract({
+        address: childAddr,
+        abi: ChildGovernorABI,
+        functionName: "castVote",
+        args: [i, support, encryptedRationale],
+      });
+
+      const receipt = await readClient.waitForTransactionReceipt({ hash });
+      console.log(
+        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})`
+      );
+    }
+  }
+
+  // ── PASS 2: Reveal rationale for finished proposals we voted on ──
+  // Check our voting history and reveal any unrevealed votes
+  try {
+    const history = (await readClient.readContract({
+      address: childAddr,
+      abi: ChildGovernorABI,
+      functionName: "getVotingHistory",
+    })) as any[];
+
+    for (const record of history) {
+      if (record.revealed) continue; // already revealed
+
+      const proposalId = record.proposalId;
+
+      // Check if this proposal's voting has ended (state >= 2)
+      try {
+        const state = (await readClient.readContract({
+          address: governanceAddr,
+          abi: MockGovernorABI,
+          functionName: "state",
+          args: [proposalId],
+        })) as number;
+
+        if (state < 2) continue; // still active, can't reveal yet
+
+        console.log(`[Child:${childLabel}] Revealing rationale for proposal ${proposalId}`);
+
+        // Decrypt rationale — try Lit Protocol first, fall back to raw hex
+        let decryptedRationaleHex: `0x${string}` = record.encryptedRationale;
+
+        if (litAvailable) {
+          try {
+            const storedStr = Buffer.from(
+              (record.encryptedRationale as string).slice(2),
+              "hex"
+            ).toString("utf-8");
+            const stored = JSON.parse(storedStr);
+
+            if (stored.litEncrypted) {
+              const proposalForReveal = (await readClient.readContract({
+                address: governanceAddr,
+                abi: MockGovernorABI,
+                functionName: "getProposal",
+                args: [proposalId],
+              })) as ProposalInfo;
+
+              const decryptedText = await decryptRationale(
+                stored.ciphertext,
+                stored.dataToEncryptHash,
+                proposalForReveal.endTime
+              );
+              decryptedRationaleHex = toHex(decryptedText);
+              console.log(`[Child:${childLabel}] Rationale decrypted via Lit Protocol`);
+            }
+          } catch {
+            // Keep as raw hex fallback
+          }
+        }
+
         const hash = await childWalletClient.writeContract({
           address: childAddr,
           abi: ChildGovernorABI,
-          functionName: "castVote",
-          args: [i, support, encryptedRationale],
+          functionName: "revealRationale",
+          args: [proposalId, decryptedRationaleHex],
         });
-
-        const receipt = await readClient.waitForTransactionReceipt({ hash });
-        console.log(
-          `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})`
-        );
+        await readClient.waitForTransactionReceipt({ hash });
+        console.log(`[Child:${childLabel}] Rationale revealed for proposal ${proposalId} (tx: ${hash})`);
+      } catch (revealErr: any) {
+        // Non-fatal — will retry next cycle
+        console.log(`[Child:${childLabel}] Reveal failed for proposal ${proposalId}: ${revealErr?.message?.slice(0, 40)}`);
       }
     }
-
-    // Check for proposals where voting ended — reveal rationale
-    if (state >= 2) {
-      // Defeated, Succeeded, or Executed
-      const voteIndex = (await readClient.readContract({
-        address: childAddr,
-        abi: ChildGovernorABI,
-        functionName: "proposalToVoteIndex",
-        args: [i],
-      })) as bigint;
-
-      if (voteIndex > 0n) {
-        const history = (await readClient.readContract({
-          address: childAddr,
-          abi: ChildGovernorABI,
-          functionName: "getVotingHistory",
-        })) as any[];
-
-        const record = history[Number(voteIndex - 1n)];
-        if (!record.revealed) {
-          console.log(
-            `[Child:${childLabel}] Revealing rationale for proposal ${i}`
-          );
-
-          // Decrypt rationale — try Lit Protocol first, fall back to raw hex
-          let decryptedRationaleHex: `0x${string}` = record.encryptedRationale;
-
-          if (litAvailable) {
-            try {
-              // Parse the stored encrypted data to check if it was Lit-encrypted
-              const storedStr = Buffer.from(
-                (record.encryptedRationale as string).slice(2),
-                "hex"
-              ).toString("utf-8");
-              const stored = JSON.parse(storedStr);
-
-              if (stored.litEncrypted) {
-                // Fetch proposal end time for the decryption condition
-                const proposalForReveal = (await readClient.readContract({
-                  address: governanceAddr,
-                  abi: MockGovernorABI,
-                  functionName: "getProposal",
-                  args: [i],
-                })) as ProposalInfo;
-
-                const decryptedText = await decryptRationale(
-                  stored.ciphertext,
-                  stored.dataToEncryptHash,
-                  proposalForReveal.endTime
-                );
-                decryptedRationaleHex = toHex(decryptedText);
-                console.log(`[Child:${childLabel}] Rationale decrypted via Lit Protocol`);
-              }
-            } catch (litErr) {
-              console.warn(
-                `[Child:${childLabel}] Lit decryption failed, using raw rationale:`,
-                litErr
-              );
-              // Keep decryptedRationaleHex as the original encryptedRationale (hex fallback)
-            }
-          }
-
-          const hash = await childWalletClient.writeContract({
-            address: childAddr,
-            abi: ChildGovernorABI,
-            functionName: "revealRationale",
-            args: [i, decryptedRationaleHex],
-          });
-          await readClient.waitForTransactionReceipt({ hash });
-          console.log(`[Child:${childLabel}] Rationale revealed for proposal ${i}`);
-        }
-      }
-    }
-  }
+  } catch {}
 }
 
 function sleep(ms: number) {
