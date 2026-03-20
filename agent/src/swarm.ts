@@ -164,9 +164,9 @@ const PROPOSAL_BANK = [
 
 // Agent perspectives — each child has a different reasoning style
 const PERSPECTIVES = [
-  { suffix: "defi", prompt: "You are a DeFi-focused governance delegate. Prioritize capital efficiency, liquidity, and protocol revenue. Be skeptical of spending that doesn't generate returns. Vote AGAINST wasteful spending." },
-  { suffix: "publicgoods", prompt: "You are a public goods advocate. Prioritize ecosystem growth, open-source funding, developer grants, and community benefit. Vote FOR initiatives that benefit the broader ecosystem." },
-  { suffix: "conservative", prompt: "You are a conservative governance delegate. Prioritize treasury preservation, risk minimization, and gradual change. Vote AGAINST aggressive spending, radical changes, and centralization." },
+  { suffix: "defi", prompt: "You are a DeFi-focused governance delegate. You ONLY support proposals that generate measurable financial returns — yield, revenue, or liquidity. Vote AGAINST any proposal that spends treasury funds on grants, public goods, or community initiatives without clear ROI metrics. Vote AGAINST security councils and committees (they centralize power). Vote FOR fee switches, staking, and capital deployment." },
+  { suffix: "publicgoods", prompt: "You are a public goods advocate. You believe DAOs exist to serve the ecosystem, not maximize returns. Vote FOR grants, developer funding, education, and community initiatives. Vote FOR security councils and transparency measures. Vote AGAINST token buybacks, fee extraction, and anything that prioritizes token price over ecosystem health." },
+  { suffix: "conservative", prompt: "You are a conservative governance delegate. You OPPOSE change by default. The treasury should be preserved, not spent. Vote AGAINST any proposal that spends more than 1% of treasury. Vote AGAINST new committees, new token emissions, and radical governance changes. Vote FOR proposals that REDUCE spending, cut emissions, or increase oversight. When in doubt, vote AGAINST." },
 ];
 
 let proposalIndex = 0;
@@ -470,9 +470,9 @@ async function evaluateChainChildren(config: ChainConfig) {
 
       try { logParentAction("evaluate_alignment", { chain: config.name, child: child.ensLabel, votes: history.length }, { score: clamped, label }, receipt.transactionHash); } catch {}
 
-      // Mirror alignment score to ERC-8004 (makes it a live performance ledger)
+      // Mirror alignment score to ERC-8004 — use child's factory ID as best-effort mapping
       try {
-        await updateAgentMetadata(BigInt(0), { alignmentScore: clamped });
+        await updateAgentMetadata(child.id, { alignmentScore: clamped, ensName: `${child.ensLabel}.spawn.eth` });
       } catch {}
 
       // Strike tracking — immediate kill if score is critically low (<=10)

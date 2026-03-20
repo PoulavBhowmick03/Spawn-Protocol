@@ -103,14 +103,16 @@ export async function reasonAboutProposal(
         { role: "system", content: childSystemPrompt },
         {
           role: "user",
-          content: `You are a governance agent. Your owner's values are:
+          content: `Your governance perspective and owner's values:
 ${governanceValues}
 
-Please evaluate this proposal and decide how to vote:
+Evaluate this proposal and decide how to vote. Your perspective MUST influence your decision — if your perspective says to vote AGAINST certain types of proposals, you MUST vote AGAINST them. Do not default to FOR.
+
+Proposal:
 ${proposalDescription}
 
 Respond in JSON format:
-{"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning"}`,
+{"decision": "FOR" | "AGAINST" | "ABSTAIN", "reasoning": "your detailed reasoning explaining why your perspective leads to this specific vote"}`,
         },
       ],
     })

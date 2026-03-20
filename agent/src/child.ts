@@ -5,9 +5,30 @@ import { reasonAboutProposal, summarizeProposal, assessProposalRisk } from "./ve
 import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./lit.js";
 import { toHex, type Hex } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
+import { logChildAction } from "./logger.js";
 
 // Add jitter to cycle interval so children don't all poll simultaneously
 const CYCLE_INTERVAL_MS = 30_000 + Math.floor(Math.random() * 10_000); // 30-40s
+
+// Lit Protocol: lazy-init on first use (module-level so childCycle can access it)
+let litAvailable = false;
+let litInitAttempted = false;
+async function ensureLit(): Promise<boolean> {
+  if (litInitAttempted) return litAvailable;
+  litInitAttempted = true;
+  try {
+    await Promise.race([
+      initLit(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Lit init timeout")), 15_000)),
+    ]);
+    litAvailable = true;
+    console.log(`[Child] Lit Protocol initialized`);
+  } catch (err: any) {
+    console.log(`[Child] Lit init failed (${err?.message?.slice(0, 40)}), using hex fallback`);
+    litAvailable = false;
+  }
+  return litAvailable;
+}
 
 export async function runChildLoop(
   childAddr: `0x${string}`,
@@ -47,9 +68,7 @@ export async function runChildLoop(
   console.log(`[Child:${childLabel}] Contract: ${childAddr}`);
   console.log(`[Child:${childLabel}] Governance: ${governanceAddr}`);
 
-  // Lit Protocol disabled for swarm mode (blocks child startup for 30s+)
-  // Rationale is hex-encoded instead — Lit integration available via demo.ts
-  const litAvailable = false;
+  // Lit Protocol is lazy-initialized at module scope via ensureLit()
 
   const systemPrompt = `You are an autonomous governance agent named "${childLabel}".
 You vote on DAO proposals according to your owner's values.
@@ -94,7 +113,7 @@ async function childCycle(
   governanceValues: string,
   childLabel: string,
   systemPrompt: string,
-  litAvailable: boolean = false,
+  _litUnused: boolean = false, // litAvailable is now module-level via ensureLit()
   childWalletClient: any = walletClient,
   readClient: any = publicClient
 ) {
@@ -183,6 +202,7 @@ async function childCycle(
 
       // Encrypt rationale via Lit Protocol (time-locked to proposal end)
       let encryptedRationale: `0x${string}`;
+      await ensureLit(); // lazy-init Lit on first vote
       if (litAvailable) {
         try {
           const litResult = await encryptRationale(reasoning, proposal.endTime);
@@ -212,6 +232,7 @@ async function childCycle(
       console.log(
         `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})`
       );
+      try { logChildAction(childLabel, "cast_vote", { proposalId: Number(i), decision, litEncrypted: litAvailable }, { txHash: receipt.transactionHash, reasoningHash: reasoningHash.slice(0, 18) }, receipt.transactionHash); } catch {}
     }
   }
 
@@ -282,6 +303,7 @@ async function childCycle(
         });
         await readClient.waitForTransactionReceipt({ hash });
         console.log(`[Child:${childLabel}] Rationale revealed for proposal ${proposalId} (tx: ${hash})`);
+        try { logChildAction(childLabel, "reveal_rationale", { proposalId: Number(proposalId) }, { txHash: hash }, hash); } catch {}
       } catch (revealErr: any) {
         // Non-fatal — will retry next cycle
         console.log(`[Child:${childLabel}] Reveal failed for proposal ${proposalId}: ${revealErr?.message?.slice(0, 40)}`);
