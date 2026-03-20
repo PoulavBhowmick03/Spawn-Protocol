@@ -151,10 +151,14 @@ The system demonstrates genuine autonomy at multiple levels:
 
 1. **Self-spawning** — Parent creates new child agents without human intervention
 2. **Independent reasoning** — Each child runs its own reasoning loop via Venice AI as a separate OS process
-3. **Self-correcting** — Parent evaluates alignment and terminates drifting children
-4. **Self-sustaining** — Treasury earns yield via Lido stETH to cover operating costs
-5. **Privacy-preserving** — Vote rationale encrypted until after voting closes
-6. **Multi-agent coordination** — Parent-child hierarchy with autonomous spawn/kill/respawn lifecycle
+3. **Self-correcting** — Parent evaluates alignment and terminates drifting children, respawns replacements with new wallets + ENS + ERC-8004 identity
+4. **Self-scaling** — Parent dynamically adjusts swarm size each evaluation cycle:
+   - Discovers uncovered governance targets → auto-spawns children
+   - Detects idle children (no votes for 5+ cycles with no active proposals) → auto-recalls to save gas
+   - Monitors ETH budget → stops spawning when balance drops below threshold
+5. **Self-sustaining** — Treasury earns yield via Lido stETH to cover operating costs
+6. **Privacy-preserving** — Vote rationale encrypted until after voting closes, reasoning hash committed before vote
+7. **Multi-agent coordination** — Parent-child hierarchy with fully autonomous spawn/evaluate/kill/respawn/scale lifecycle
 
 ## Guardrails & Safety
 
@@ -205,12 +209,13 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ### Protocol Labs "Let the Agent Cook"· `10bd47fac07e4f85bda33ba482695b24`
 
-**Maximum autonomy: full discover → reason → execute → evaluate → correct loop with zero human steps.**
+**Maximum autonomy: full discover → reason → execute → evaluate → correct → scale loop with zero human steps.**
 
 - Parent discovers proposals via Tally API (`agent/src/discovery.ts`)
 - Children spawn as separate OS processes (`fork()` in `agent/src/swarm.ts`) — genuinely independent reasoning
-- Parent evaluates alignment every 90s, terminates children scoring <40 for 2+ cycles, respawns with recalibrated Venice prompt
-- Compute budget enforced: `maxGasPerVote` per child, Lido yield tracks operating cost sustainability
+- Parent evaluates alignment every 90s, terminates children scoring <60, respawns with new wallet + ENS + operator atomically
+- **Dynamic scaling:** parent auto-spawns children for uncovered governors, auto-recalls idle children (5+ cycles without votes), respects ETH budget threshold
+- Compute budget enforced: `maxGasPerVote` per child, Lido yield tracks operating cost sustainability, swarm contracts when budget is low
 - ERC-8004 identity on every agent — autonomy with receipts
 - Full execution log: `agent_log.json` (root of repo)
 - ERC-8004 parent registration tx: [`0x464bac...`](https://sepolia.basescan.org/tx/0x464bacc3f2fb6608dd8d4810773537dec7db79997aae5b019ca208582d189e19)

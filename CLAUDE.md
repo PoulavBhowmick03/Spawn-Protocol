@@ -68,11 +68,15 @@ Uses `viem` for chain interaction. Uses `openai` npm package with Venice base UR
 while (true) {
   1. Read owner's governance values from ParentTreasury contract
   2. Get list of active children from SpawnFactory
-  3. For each child: fetch recent votes from ChildGovernor events
-  4. Send to Venice: evaluate alignment score 0-100
-  5. If alignment < 40 for 2+ cycles: recallChild() → spawnChild()
+  3. For each child: resolve ENS name, fetch votes, evaluate alignment via Venice (0-100)
+  4. If alignment < 60: terminate → deregister ENS → Venice post-mortem → respawn with operator + ENS + process
+  5. Dynamic scaling:
+     - Check if any governor lacks a child → auto-spawn
+     - Check if any child is idle (0 new votes for 5 cycles + no active proposals) → auto-recall
+     - Check ETH budget → stop spawning if below 0.005 ETH threshold
   6. Generate swarm status report via Venice
-  7. Sleep 90 seconds
+  7. Log Venice usage metrics (calls + tokens)
+  8. Sleep 90 seconds
 }
 ```
 
