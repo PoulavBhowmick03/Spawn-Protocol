@@ -29,8 +29,7 @@ export default function GraphPage() {
   const { children, loading, justVotedSet } = useSwarmData();
 
   const active = children.filter((c) => c.active);
-  const terminated = children.filter((c) => !c.active);
-  const allNodes = [...active, ...terminated];
+  const allNodes = active; // only show active agents
 
   const childPositions = allNodes.map((_, i) => {
     const total = allNodes.length || 1;
@@ -54,12 +53,6 @@ export default function GraphPage() {
             <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
             {active.length} active
           </span>
-          {terminated.length > 0 && (
-            <span className="flex items-center gap-1.5 text-gray-500">
-              <span className="w-2 h-2 rounded-full bg-gray-600" />
-              {terminated.length} terminated
-            </span>
-          )}
         </div>
       </div>
 
