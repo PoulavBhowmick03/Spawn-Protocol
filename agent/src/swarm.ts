@@ -438,6 +438,16 @@ async function evaluateChainChildren(config: ChainConfig) {
 
           logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {});
 
+          // Launch child process for the respawned agent
+          const newChildren = (await config.readClient.readContract({
+            address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+          })) as any[];
+          const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
+          if (respawned) {
+            spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name);
+            console.log(`  ↻ Child process launched for ${newLabel}`);
+          }
+
           strikes.delete(key);
         }
       } else {
