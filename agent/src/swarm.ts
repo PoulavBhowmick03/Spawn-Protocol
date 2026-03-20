@@ -241,7 +241,30 @@ async function initChain(config: ChainConfig) {
   for (const child of children) {
     const key = `${config.name}:${child.ensLabel}`;
     if (!childProcesses.has(key)) {
-      const childKey = childWalletKeys.get(child.ensLabel);
+      let childKey = childWalletKeys.get(child.ensLabel);
+
+      // If no key in map, try to find it by deriving wallets and matching the operator
+      if (!childKey) {
+        try {
+          const operator = await config.readClient.readContract({
+            address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
+          }) as `0x${string}`;
+
+          if (operator && operator !== "0x0000000000000000000000000000000000000000") {
+            // Search derived wallets to find matching key
+            for (let id = 0; id < 100; id++) {
+              const w = deriveChildWallet(id);
+              if (w.address.toLowerCase() === operator.toLowerCase()) {
+                childKey = w.privateKey;
+                childWalletKeys.set(child.ensLabel, childKey);
+                console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
+                break;
+              }
+            }
+          }
+        } catch {}
+      }
+
       spawnChildProcess(child.childAddr, child.governance, child.ensLabel, config.treasury, childKey, config.name);
     }
   }
