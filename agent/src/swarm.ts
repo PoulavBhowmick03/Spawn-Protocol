@@ -353,6 +353,22 @@ async function initChain(config: ChainConfig) {
         } catch {}
       }
 
+      // Create delegation for recovered child BEFORE spawning so the file is ready
+      try {
+        const { getDelegationsForChild, createVotingDelegation } = await import("./delegation.js");
+        const existing = getDelegationsForChild(child.childAddr);
+        const hasForThisGov = existing.some(
+          (d) => d.governanceContract.toLowerCase() === child.governance.toLowerCase()
+        );
+        if (!hasForThisGov && childKey) {
+          const { privateKeyToAccount } = await import("viem/accounts");
+          const childAccount = privateKeyToAccount(childKey);
+          console.log(`  ${child.ensLabel}: creating delegation (recovered child)`);
+          await createVotingDelegation(child.governance, childAccount.address as `0x${string}`, 100, child.ensLabel)
+            .catch((e: any) => console.log(`  ${child.ensLabel}: delegation creation failed: ${e?.message?.slice(0, 60)}`));
+        }
+      } catch {}
+
       spawnChildProcess(child.childAddr, child.governance, child.ensLabel, config.treasury, childKey, config.name);
     }
   }

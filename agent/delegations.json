@@ -1,0 +1,386 @@
+{
+  "0xb507ce05c63ae0ca04bb3a11f6246fd1da09e27a_0xb4e46e107fbd9b616b145adb91a5ffe0f5a2c42c": {
+    "delegation": {
+      "delegate": "0xB507cE05C63ae0cA04bb3A11F6246fD1da09e27a",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0xc4201b0e728e61a5b6316f48bc2addc77ed9b176e8cd48b97c9b198a7b56756c05641990fb831fbed03e36afcf2ac9082061e805ba47fbc358b6d92d0841e4611c"
+    },
+    "signature": "0xc4201b0e728e61a5b6316f48bc2addc77ed9b176e8cd48b97c9b198a7b56756c05641990fb831fbed03e36afcf2ac9082061e805ba47fbc358b6d92d0841e4611c",
+    "delegationHash": "0xeebaab53a2d5da28deb91b433aebf3b3666632f818c2f6761b7d5312dc36cc1d",
+    "governanceContract": "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C",
+    "delegatee": "0xB507cE05C63ae0cA04bb3A11F6246fD1da09e27a",
+    "maxVotes": 100,
+    "createdAt": 1774104873731
+  },
+  "0xb507ce05c63ae0ca04bb3a11f6246fd1da09e27a_0x40bae6f7d75c2600d724b4cc194e20e66f6386ac": {
+    "delegation": {
+      "delegate": "0xB507cE05C63ae0cA04bb3A11F6246fD1da09e27a",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0xffe522ce691b9f9bcfc085d4a1ca0cd854e96e9a6e3fa853dd47f52f2d3209736d49763bb409b42dd623cc66102305c99fc0f636ee92ec1dae127488137ba5281b"
+    },
+    "signature": "0xffe522ce691b9f9bcfc085d4a1ca0cd854e96e9a6e3fa853dd47f52f2d3209736d49763bb409b42dd623cc66102305c99fc0f636ee92ec1dae127488137ba5281b",
+    "delegationHash": "0xeebaab53a2d5da28deb91b433aebf3b3666632f818c2f6761b7d5312dc36cc1d",
+    "governanceContract": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+    "delegatee": "0xB507cE05C63ae0cA04bb3A11F6246fD1da09e27a",
+    "maxVotes": 100,
+    "createdAt": 1774104877668
+  },
+  "0xa537ec185d022692261457e073962ad596c8edb7_0x40bae6f7d75c2600d724b4cc194e20e66f6386ac": {
+    "delegation": {
+      "delegate": "0xA537Ec185D022692261457e073962Ad596C8EDb7",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0x75052638be7907c4bf7c59a244f8b3e1367fbc0614974f16b42e525d094e5469188822603cc20c5405b8baba1a025be12dfe307260200fa6ef41dbde36f93ddf1c"
+    },
+    "signature": "0x75052638be7907c4bf7c59a244f8b3e1367fbc0614974f16b42e525d094e5469188822603cc20c5405b8baba1a025be12dfe307260200fa6ef41dbde36f93ddf1c",
+    "delegationHash": "0x1b67d4b01b713d39e474caec4a92c3f47d13d63e790fabe9189ac2b7c2036196",
+    "governanceContract": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+    "delegatee": "0xA537Ec185D022692261457e073962Ad596C8EDb7",
+    "maxVotes": 100,
+    "createdAt": 1774101110946
+  },
+  "0xb507ce05c63ae0ca04bb3a11f6246fd1da09e27a_0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": {
+    "delegation": {
+      "delegate": "0xB507cE05C63ae0cA04bb3A11F6246fD1da09e27a",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0xe14b14524d7d28ebd81373d4516bb42a470174c70a21fef44098637f94b642b110ba1bfb9c2ec29de63f2f06da6b9b956e4d88a6a6fbe8aaa17605e4c54f12231b"
+    },
+    "signature": "0xe14b14524d7d28ebd81373d4516bb42a470174c70a21fef44098637f94b642b110ba1bfb9c2ec29de63f2f06da6b9b956e4d88a6a6fbe8aaa17605e4c54f12231b",
+    "delegationHash": "0xeebaab53a2d5da28deb91b433aebf3b3666632f818c2f6761b7d5312dc36cc1d",
+    "governanceContract": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+    "delegatee": "0xB507cE05C63ae0cA04bb3A11F6246fD1da09e27a",
+    "maxVotes": 100,
+    "createdAt": 1774101125324
+  },
+  "0x7a735b3d88b2e54d7500fe861fc232b4c549ce9e_0xb4e46e107fbd9b616b145adb91a5ffe0f5a2c42c": {
+    "delegation": {
+      "delegate": "0x7A735b3D88b2e54D7500FE861fc232B4c549CE9e",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0xcfca3a4ae1d7062c6188bba343399adbb857a7f808af7736f8c9e2cd3ddbe2432cc03a48377d48520792b617b0076b8e78ac7731e84c622fb2b39161da4c36c81b"
+    },
+    "signature": "0xcfca3a4ae1d7062c6188bba343399adbb857a7f808af7736f8c9e2cd3ddbe2432cc03a48377d48520792b617b0076b8e78ac7731e84c622fb2b39161da4c36c81b",
+    "delegationHash": "0x1fc35e24ba099e591b77d9157fada8e6070f592528632f9e7ce0fd83e7f64d97",
+    "governanceContract": "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C",
+    "delegatee": "0x7A735b3D88b2e54D7500FE861fc232B4c549CE9e",
+    "maxVotes": 100,
+    "createdAt": 1774104902176
+  },
+  "0x9ed588803a2df81fff2598acf91e2f5940f3cf21_0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": {
+    "delegation": {
+      "delegate": "0x9ED588803a2df81FFf2598aCf91e2F5940F3CF21",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0xbaceccf9410bf797905e67006064144dfcfd69a1012bb7799e0cd50be2405f02171c3b7ede04b06579577515688cadbee23b7898c6c42160f9f67809358f48871c"
+    },
+    "signature": "0xbaceccf9410bf797905e67006064144dfcfd69a1012bb7799e0cd50be2405f02171c3b7ede04b06579577515688cadbee23b7898c6c42160f9f67809358f48871c",
+    "delegationHash": "0x5ae0e1ac527423f65a07a905390d10de81a0b46fee8681c39c24f77a84d1b247",
+    "governanceContract": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+    "delegatee": "0x9ED588803a2df81FFf2598aCf91e2F5940F3CF21",
+    "maxVotes": 100,
+    "createdAt": 1774104923912
+  },
+  "0x8e3ee14574022e55eeb8d6af29fa96c65c0b3abd_0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": {
+    "delegation": {
+      "delegate": "0x8e3Ee14574022E55EEb8D6AF29FA96C65c0B3ABD",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0x37af33dc7d04ac0bb6f84a8edab04bf9f6a980714a789efc2112ccfaf00a3808056fce5d10c9f63766866604b815eab20fe58fbda3d71a42cb7220df40c414b71c"
+    },
+    "signature": "0x37af33dc7d04ac0bb6f84a8edab04bf9f6a980714a789efc2112ccfaf00a3808056fce5d10c9f63766866604b815eab20fe58fbda3d71a42cb7220df40c414b71c",
+    "delegationHash": "0x0390af340daf2c7d4c8a46019ea7bdc6919821d6dfe5873e275d7cb8ecdc5eb5",
+    "governanceContract": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+    "delegatee": "0x8e3Ee14574022E55EEb8D6AF29FA96C65c0B3ABD",
+    "maxVotes": 100,
+    "createdAt": 1774101133437
+  },
+  "0x0e37c8fcb7beacb47e671da64a24440372b52295_0xb4e46e107fbd9b616b145adb91a5ffe0f5a2c42c": {
+    "delegation": {
+      "delegate": "0x0e37c8FCb7BEACB47e671DA64a24440372b52295",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0x050caf3929ea0941b6dbe9899002057d504169df38b99a46d6a13f7fd57acab51204c566949d6a58ac00d8471d8c620b6ff78b7bd0c68c3955ffe1d8c8f829121c"
+    },
+    "signature": "0x050caf3929ea0941b6dbe9899002057d504169df38b99a46d6a13f7fd57acab51204c566949d6a58ac00d8471d8c620b6ff78b7bd0c68c3955ffe1d8c8f829121c",
+    "delegationHash": "0x3c04a7f095f46c5dd35eaa35cb583acc6806d3756d206733e8ab11c096222126",
+    "governanceContract": "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C",
+    "delegatee": "0x0e37c8FCb7BEACB47e671DA64a24440372b52295",
+    "maxVotes": 100,
+    "createdAt": 1774104897840
+  },
+  "0xd2228126e641c1311ee8208d5d3c323ffb25e286_0x40bae6f7d75c2600d724b4cc194e20e66f6386ac": {
+    "delegation": {
+      "delegate": "0xD2228126e641c1311Ee8208d5D3c323fFb25E286",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0xbd498bc2ba362a50f99254c17e29d62fc57323c5d392f61d8ab946771945f3d233aee4d365d7ad280cb56472ad58dd20a268043d5d06d22002035bf6889e45651b"
+    },
+    "signature": "0xbd498bc2ba362a50f99254c17e29d62fc57323c5d392f61d8ab946771945f3d233aee4d365d7ad280cb56472ad58dd20a268043d5d06d22002035bf6889e45651b",
+    "delegationHash": "0xc2b018f31f899bd50fa87b39795c9a862d91e6631d57fcc5041806c0c16476a9",
+    "governanceContract": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+    "delegatee": "0xD2228126e641c1311Ee8208d5D3c323fFb25E286",
+    "maxVotes": 100,
+    "createdAt": 1774104919588
+  },
+  "0x319620c6ef62550a266e042af1c4685ef04170e8_0x40bae6f7d75c2600d724b4cc194e20e66f6386ac": {
+    "delegation": {
+      "delegate": "0x319620c6EF62550a266e042Af1C4685ef04170e8",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0x67091554707ecf067ab14f7f28d2f28091060215378822607c3c09cbfbbbcc7b532a239b472130fd81ff997afa5c904132faa36bf555f26dc49bf98b8067ded91b"
+    },
+    "signature": "0x67091554707ecf067ab14f7f28d2f28091060215378822607c3c09cbfbbbcc7b532a239b472130fd81ff997afa5c904132faa36bf555f26dc49bf98b8067ded91b",
+    "delegationHash": "0x527e1959bd7165b5803d9065d9ea9eecdabff028957177bf95c79c1a67a8c02b",
+    "governanceContract": "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC",
+    "delegatee": "0x319620c6EF62550a266e042Af1C4685ef04170e8",
+    "maxVotes": 100,
+    "createdAt": 1774104881685
+  },
+  "0xb08376a5343b5f80f430d17edbfcaad089b1fa76_0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": {
+    "delegation": {
+      "delegate": "0xb08376a5343B5F80f430d17edbFcAaD089B1fA76",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0x4b22e71b8a7ae4726701d3c23c8f95cffcac8ed43ed3e435f8addd12852b997b1716297b0f598720e59b626d18f91c9b928c29d62057d720f63242f76de681521c"
+    },
+    "signature": "0x4b22e71b8a7ae4726701d3c23c8f95cffcac8ed43ed3e435f8addd12852b997b1716297b0f598720e59b626d18f91c9b928c29d62057d720f63242f76de681521c",
+    "delegationHash": "0xf403717ced6531ca497234ed70b855cec48a140c45efd4afb583a124a688ca66",
+    "governanceContract": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+    "delegatee": "0xb08376a5343B5F80f430d17edbFcAaD089B1fA76",
+    "maxVotes": 100,
+    "createdAt": 1774104927776
+  },
+  "0xb70c8ef4aabca437000f94e2b9dbef0e23d3f5d0_0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": {
+    "delegation": {
+      "delegate": "0xB70C8ef4AaBca437000F94e2b9dbEF0e23D3F5D0",
+      "delegator": "0x1fa9c867439AF413DEE0629bB00215431057468e",
+      "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "caveats": [
+        {
+          "enforcer": "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB",
+          "terms": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+          "args": "0x"
+        },
+        {
+          "enforcer": "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5",
+          "terms": "0x56781388",
+          "args": "0x"
+        },
+        {
+          "args": "0x",
+          "enforcer": "0x04658B29F6b82ed55274221a06Fc97D318E25416",
+          "terms": "0x0000000000000000000000000000000000000000000000000000000000000064"
+        }
+      ],
+      "salt": "0x",
+      "signature": "0x951641ecbead68841a62a3d1e9a7c041323629a6df3515b19aedbf3ccd191bef28336b0dbdccafdf22b7db0930abc15c3d073251d747e2342adaf59509954f4c1b"
+    },
+    "signature": "0x951641ecbead68841a62a3d1e9a7c041323629a6df3515b19aedbf3ccd191bef28336b0dbdccafdf22b7db0930abc15c3d073251d747e2342adaf59509954f4c1b",
+    "delegationHash": "0xbee5d53265187f5ff4d9e39bd75e302a32220c77ed3b1170bff4a5cb49728672",
+    "governanceContract": "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9",
+    "delegatee": "0xB70C8ef4AaBca437000F94e2b9dbEF0e23D3F5D0",
+    "maxVotes": 100,
+    "createdAt": 1774104931513
+  }
+}

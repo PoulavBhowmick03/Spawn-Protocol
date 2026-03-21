@@ -19,12 +19,50 @@ import {
 } from "@metamask/delegation-toolkit";
 import { encodeAbiParameters, encodeFunctionData, keccak256, toHex, type Address, type Hex } from "viem";
 import { account, baseSepolia, walletClient, publicClient } from "./chain.js";
-import { ChildGovernorABI } from "./abis.js";
+import { MockGovernorABI } from "./abis.js";
 import { setChildTextRecord } from "./ens.js";
 import { logParentAction } from "./logger.js";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join } from "path";
 
-// ChildGovernor castVote selector: castVote(uint256,uint8,bytes)
-const CAST_VOTE_SELECTOR = "0x9d36475b" as Hex; // castVote(uint256,uint8,bytes)
+// File path for persisting delegations across parent/child process boundaries
+const DELEGATION_FILE = join(process.cwd(), "delegations.json");
+
+function saveDelegationToFile(record: DelegationRecord): void {
+  try {
+    let stored: Record<string, any> = {};
+    if (existsSync(DELEGATION_FILE)) {
+      try { stored = JSON.parse(readFileSync(DELEGATION_FILE, "utf-8")); } catch {}
+    }
+    // Key by delegatee+governance so multiple DAOs sharing a wallet don't overwrite each other
+    const fileKey = `${record.delegatee.toLowerCase()}_${record.governanceContract.toLowerCase()}`;
+    stored[fileKey] = record;
+    writeFileSync(DELEGATION_FILE, JSON.stringify(stored, null, 2));
+  } catch (err: any) {
+    console.log(`[Delegation] File save failed: ${err?.message?.slice(0, 60)}`);
+  }
+}
+
+export function loadDelegationsFromFile(): void {
+  try {
+    if (!existsSync(DELEGATION_FILE)) return;
+    const stored: Record<string, DelegationRecord> = JSON.parse(readFileSync(DELEGATION_FILE, "utf-8"));
+    let count = 0;
+    for (const record of Object.values(stored)) {
+      const mapKey = `${record.delegatee.toLowerCase()}_${record.governanceContract.toLowerCase()}`;
+      activeDelegations.set(mapKey, record);
+      count++;
+    }
+    if (count > 0) console.log(`[Delegation] Loaded ${count} delegation(s) from file`);
+  } catch (err: any) {
+    console.log(`[Delegation] File load failed: ${err?.message?.slice(0, 60)}`);
+  }
+}
+
+// MockGovernor castVote selector: castVote(uint256,uint8)
+// The delegation executes directly on MockGovernor (ERC-7710 enforcement path).
+// ChildGovernor.castVote is still used for the direct (non-delegation) path.
+const CAST_VOTE_SELECTOR = "0x56781388" as Hex; // castVote(uint256,uint8)
 
 // Get the DeleGator environment for Base Sepolia (includes enforcer addresses)
 const environment = getDeleGatorEnvironment(baseSepolia.id);
@@ -50,11 +88,42 @@ export async function initDeleGatorAccount(): Promise<Address | null> {
       environment,
     });
     smartAccountAddress = parentSmartAccount.address as Address;
-    console.log(`[Delegation] DeleGator smart account: ${smartAccountAddress}`);
+    console.log(`[Delegation] DeleGator smart account address: ${smartAccountAddress}`);
+
+    // Deploy the smart account onchain if not already deployed.
+    // getFactoryArgs() returns undefined values once the account is live.
+    const alreadyDeployed = await (parentSmartAccount as any).isDeployed();
+    if (!alreadyDeployed) {
+      console.log(`[Delegation] DeleGator not yet deployed — deploying via factory...`);
+      const { factory, factoryData } = await (parentSmartAccount as any).getFactoryArgs();
+      if (factory && factoryData) {
+        const deployTxHash = await walletClient.sendTransaction({
+          to: factory as Address,
+          data: factoryData as Hex,
+          value: 0n,
+        });
+        const deployReceipt = await publicClient.waitForTransactionReceipt({
+          hash: deployTxHash,
+          timeout: 120_000,
+        });
+        console.log(`[Delegation] DeleGator deployed at ${smartAccountAddress} (tx: ${deployReceipt.transactionHash})`);
+        logParentAction(
+          "deploy_delegator",
+          { type: "DeleGator", implementation: "Hybrid", address: smartAccountAddress },
+          { txHash: deployReceipt.transactionHash },
+          deployReceipt.transactionHash
+        );
+      } else {
+        console.log(`[Delegation] getFactoryArgs returned empty — account may already be deployed`);
+      }
+    } else {
+      console.log(`[Delegation] DeleGator already deployed at ${smartAccountAddress}`);
+    }
+
     logParentAction("init_delegator_account", { type: "DeleGator", implementation: "Hybrid" }, { address: smartAccountAddress });
     return smartAccountAddress;
   } catch (err: any) {
-    console.log(`[Delegation] DeleGator init failed: ${err?.message?.slice(0, 80)} — using EOA fallback`);
+    console.log(`[Delegation] DeleGator init failed: ${err?.message?.slice(0, 80)} — delegations will use EOA as delegator`);
     return null;
   }
 }
@@ -148,7 +217,10 @@ export async function createVotingDelegation(
     createdAt: Date.now(),
   };
 
-  activeDelegations.set(delegationHash, record);
+  // Key by delegatee+governance so multiple DAOs sharing a wallet don't collide in the Map
+  const mapKey = `${childAddress.toLowerCase()}_${governanceContract.toLowerCase()}`;
+  activeDelegations.set(mapKey, record);
+  saveDelegationToFile(record); // persist across process boundaries
 
   console.log(
     `[Delegation] Created voting delegation for ${childAddress}`,
@@ -358,18 +430,16 @@ export function verifyDelegation(record: DelegationRecord): {
  * This is the intent-based delegation lifecycle: create → enforce → revoke on drift.
  */
 export async function revokeDelegation(delegationHash: Hex, childLabel?: string, reason?: string): Promise<boolean> {
-  const record = activeDelegations.get(delegationHash);
-  if (!record) {
-    // Try to find by child label
-    for (const [hash, r] of activeDelegations) {
-      if (childLabel && r.delegatee) {
-        activeDelegations.delete(hash);
-        break;
-      }
+  // activeDelegations is now keyed by delegatee_governance composite key
+  // Find by delegationHash value, then delete by composite key
+  let foundKey: string | null = null;
+  for (const [key, r] of activeDelegations) {
+    if (r.delegationHash === delegationHash || (childLabel && r.delegatee)) {
+      foundKey = key;
+      break;
     }
-  } else {
-    activeDelegations.delete(delegationHash);
   }
+  if (foundKey) activeDelegations.delete(foundKey);
 
   // Store revocation onchain as ENS text record
   if (childLabel) {
@@ -460,11 +530,13 @@ export async function redeemVoteDelegation(
   support: number,
   encryptedRationale: Hex
 ): Promise<`0x${string}`> {
-  // 1. Encode the castVote calldata
+  // 1. Encode the castVote calldata for MockGovernor (ERC-7710 enforcement path)
+  // The delegation targets MockGovernor directly; DelegationManager verifies
+  // AllowedTargets + AllowedMethods + LimitedCalls caveats before executing.
   const castVoteCalldata = encodeFunctionData({
-    abi: ChildGovernorABI,
+    abi: MockGovernorABI,
     functionName: "castVote",
-    args: [proposalId, support, encryptedRationale],
+    args: [proposalId, support],
   });
 
   // 2. Build the execution targeting the ChildGovernor contract

@@ -222,54 +222,46 @@ async function childCycle(
         console.log(`[Child:${childLabel}] Rationale hex-encoded (Lit unavailable — disabled for swarm mode)`);
       }
 
-      // Cast vote onchain — try delegation redemption first, fall back to direct call
+      // Cast vote onchain.
+      // If a delegation exists for this child+governance pair, it MUST go through
+      // the DelegationManager (hard ERC-7710 enforcement — caveats verified onchain).
+      // Only fall back to direct writeContract when no delegation exists at all.
       let hash: `0x${string}`;
       const childAccount = childWalletClient.account;
       const childAddress = childAccount?.address as Address | undefined;
 
-      // Try to vote via DelegationManager redemption (ERC-7715 enforced onchain)
-      let usedDelegation = false;
-      if (childAddress) {
-        const delegations = getDelegationsForChild(childAddress);
-        const matchingDelegation = delegations.find(
-          (d) => d.governanceContract.toLowerCase() === governanceAddr.toLowerCase()
+      const activeDelegations = childAddress ? getDelegationsForChild(childAddress) : [];
+      const matchingDelegation = activeDelegations.find(
+        (d) => d.governanceContract.toLowerCase() === governanceAddr.toLowerCase()
+      );
+
+      if (matchingDelegation) {
+        // Delegation path — enforced by DelegationManager (ERC-7710).
+        // Caveats (AllowedTargets + AllowedMethods + LimitedCalls) are verified onchain.
+        hash = await redeemVoteDelegation(
+          childWalletClient,
+          readClient,
+          matchingDelegation,
+          governanceAddr as Address, // MockGovernor — matches delegation's AllowedTargets scope
+          i,
+          support,
+          encryptedRationale
         );
-
-        if (matchingDelegation) {
-          try {
-            hash = await redeemVoteDelegation(
-              childWalletClient,
-              readClient,
-              matchingDelegation,
-              childAddr as Address,
-              i,
-              support,
-              encryptedRationale
-            );
-            usedDelegation = true;
-            console.log(`[Child:${childLabel}] Voted via DelegationManager redemption`);
-          } catch (delegationErr: any) {
-            console.log(
-              `[Child:${childLabel}] Delegation redemption failed: ${delegationErr?.message?.slice(0, 80)}`,
-              `\n  Falling back to direct writeContract`
-            );
-          }
-        }
-      }
-
-      // Fallback: direct writeContract call using child's own wallet
-      if (!usedDelegation) {
+        console.log(`[Child:${childLabel}] Voted via DelegationManager [ERC-7710 enforced]`);
+      } else {
+        // No delegation found — child acts on its own authority (direct call).
         hash = await childWalletClient.writeContract({
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "castVote",
           args: [i, support, encryptedRationale],
         });
+        console.log(`[Child:${childLabel}] Voted directly (no delegation for this governance contract)`);
       }
 
       const receipt = await readClient.waitForTransactionReceipt({ hash: hash! });
       console.log(
-        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${usedDelegation ? " [via delegation]" : ""}`
+        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${matchingDelegation ? " [ERC-7710]" : ""}`
       );
       try { logChildAction(childLabel, "cast_vote", { proposalId: Number(i), decision, litEncrypted: litAvailable }, { txHash: receipt.transactionHash, reasoningHash: reasoningHash.slice(0, 18) }, receipt.transactionHash); } catch {}
     }

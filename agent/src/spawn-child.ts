@@ -13,6 +13,10 @@
 import { publicClient } from "./chain.js";
 import { ParentTreasuryABI } from "./abis.js";
 import { runChildLoop } from "./child.js";
+import { loadDelegationsFromFile } from "./delegation.js";
+
+// Load persisted delegations so this child process can use DelegationManager path
+loadDelegationsFromFile();
 
 const [childAddr, governanceAddr, label, treasuryAddr] = process.argv.slice(2);
 
