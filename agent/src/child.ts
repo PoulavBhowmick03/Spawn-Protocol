@@ -3,7 +3,8 @@ import { createWalletClientFromKey } from "./wallet-manager.js";
 import { ChildGovernorABI, MockGovernorABI } from "./abis.js";
 import { reasonAboutProposal, summarizeProposal, assessProposalRisk } from "./venice.js";
 import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./lit.js";
-import { toHex, type Hex } from "viem";
+import { getDelegationsForChild, redeemVoteDelegation } from "./delegation.js";
+import { toHex, type Hex, type Address } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 import { logChildAction } from "./logger.js";
 
@@ -221,17 +222,54 @@ async function childCycle(
         console.log(`[Child:${childLabel}] Rationale hex-encoded (Lit unavailable — disabled for swarm mode)`);
       }
 
-      // Cast vote onchain using child's own wallet
-      const hash = await childWalletClient.writeContract({
-        address: childAddr,
-        abi: ChildGovernorABI,
-        functionName: "castVote",
-        args: [i, support, encryptedRationale],
-      });
+      // Cast vote onchain — try delegation redemption first, fall back to direct call
+      let hash: `0x${string}`;
+      const childAccount = childWalletClient.account;
+      const childAddress = childAccount?.address as Address | undefined;
 
-      const receipt = await readClient.waitForTransactionReceipt({ hash });
+      // Try to vote via DelegationManager redemption (ERC-7715 enforced onchain)
+      let usedDelegation = false;
+      if (childAddress) {
+        const delegations = getDelegationsForChild(childAddress);
+        const matchingDelegation = delegations.find(
+          (d) => d.governanceContract.toLowerCase() === governanceAddr.toLowerCase()
+        );
+
+        if (matchingDelegation) {
+          try {
+            hash = await redeemVoteDelegation(
+              childWalletClient,
+              readClient,
+              matchingDelegation,
+              childAddr as Address,
+              i,
+              support,
+              encryptedRationale
+            );
+            usedDelegation = true;
+            console.log(`[Child:${childLabel}] Voted via DelegationManager redemption`);
+          } catch (delegationErr: any) {
+            console.log(
+              `[Child:${childLabel}] Delegation redemption failed: ${delegationErr?.message?.slice(0, 80)}`,
+              `\n  Falling back to direct writeContract`
+            );
+          }
+        }
+      }
+
+      // Fallback: direct writeContract call using child's own wallet
+      if (!usedDelegation) {
+        hash = await childWalletClient.writeContract({
+          address: childAddr,
+          abi: ChildGovernorABI,
+          functionName: "castVote",
+          args: [i, support, encryptedRationale],
+        });
+      }
+
+      const receipt = await readClient.waitForTransactionReceipt({ hash: hash! });
       console.log(
-        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})`
+        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${usedDelegation ? " [via delegation]" : ""}`
       );
       try { logChildAction(childLabel, "cast_vote", { proposalId: Number(i), decision, litEncrypted: litAvailable }, { txHash: receipt.transactionHash, reasoningHash: reasoningHash.slice(0, 18) }, receipt.transactionHash); } catch {}
     }

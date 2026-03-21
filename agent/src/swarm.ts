@@ -25,7 +25,7 @@ import { evaluateAlignment, generateSwarmReport, generateTerminationReport, getV
 import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild } from "./ens.js";
 import { deriveChildWallet } from "./wallet-manager.js";
 import { registerAgent, updateAgentMetadata } from "./identity.js";
-import { createVotingDelegation } from "./delegation.js";
+import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
 import { pinAgentLog, storeLogCIDOnchain } from "./ipfs.js";
@@ -38,7 +38,7 @@ import { dirname, join } from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const ALIGNMENT_THRESHOLD = 45; // Terminate misaligned children — lowered to keep more agents alive
+const ALIGNMENT_THRESHOLD = 55; // Balance between keeping agents alive and demonstrating lifecycle
 const STRIKES_TO_KILL = 1; // Kill on first misalignment for visible lifecycle demo
 const PARENT_CYCLE_MS = 90_000; // evaluate every 90s
 const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
@@ -504,7 +504,9 @@ async function evaluateChainChildren(config: ChainConfig) {
           const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
           if (proc) proc.kill();
 
-          // Step 1: Recall onchain (non-blocking)
+          // Step 1: Revoke delegation FIRST (needs ENS subdomain to still exist)
+          try { await revokeAllForChild(child.childAddr, child.ensLabel, `alignment_drift_score_${clamped}`); } catch {}
+          // Step 2: Recall onchain
           try {
             await config.sendTx({
               address: config.factory, abi: SpawnFactoryABI,
@@ -514,6 +516,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           } catch (recallErr: any) {
             console.log(`  ${child.ensLabel}: recallChild failed (${recallErr?.message?.slice(0, 40)}), continuing to respawn`);
           }
+          // Step 3: Deregister ENS
           try { await deregisterSubdomain(child.ensLabel); } catch {}
           try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "alignment_below_threshold" }, { finalScore: clamped }); } catch {}
 
@@ -547,6 +550,8 @@ async function evaluateChainChildren(config: ChainConfig) {
             if (respawned) {
               spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name);
               console.log(`  ↻ Child process launched for ${newLabel}`);
+              // Create fresh ERC-7715 delegation for the respawned child
+              try { await createVotingDelegation(child.governance, newChildWallet.address as `0x${string}`, 100, newLabel); } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
             }
             try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
           } catch (spawnErr: any) {
@@ -571,7 +576,9 @@ async function evaluateChainChildren(config: ChainConfig) {
           const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
           if (proc) proc.kill();
 
-          // Step 1: Recall child onchain (non-blocking — respawn even if this fails)
+          // Step 1: Revoke delegation FIRST (needs ENS subdomain)
+          try { await revokeAllForChild(child.childAddr, child.ensLabel, `onchain_score_${onchainScore}`); } catch {}
+          // Step 2: Recall child onchain
           try {
             await config.sendTx({
               address: config.factory, abi: SpawnFactoryABI,
@@ -608,6 +615,7 @@ async function evaluateChainChildren(config: ChainConfig) {
             if (respawned) {
               spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name);
               console.log(`  ↻ Respawned ${newLabel} with process`);
+              try { await createVotingDelegation(child.governance, newChildWallet.address as `0x${string}`, 100, newLabel); } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
             }
             try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
           } catch (spawnErr: any) {
@@ -793,9 +801,17 @@ async function main() {
     });
   } catch {}
 
+  // Initialize DeleGator smart account for onchain delegation enforcement
+  const deleGatorAddr = await initDeleGatorAccount();
+  if (deleGatorAddr) {
+    console.log(`[DeleGator] Parent smart account: ${deleGatorAddr}`);
+  }
+
   // Initialize both chains
   await initChain(BASE_CONFIG);
-  await initChain(CELO_CONFIG);
+  try { await initChain(CELO_CONFIG); } catch (err: any) {
+    console.log(`[Celo] Init failed: ${err?.message?.slice(0, 60)} — continuing without Celo`);
+  }
 
   // Start multi-source discovery feed — Tally + Snapshot + simulated
   console.log("\n── Starting proposal discovery feed ──");

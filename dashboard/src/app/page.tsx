@@ -29,14 +29,14 @@ export default function SwarmPage() {
     }).then((cid) => { if (cid) setIpfsCid(cid as string); }).catch(() => {});
   }, [client, chainId]);
 
-  // Fetch delegation hashes for active children
+  // Fetch delegation hashes + revocation status for all children
   useEffect(() => {
     if (chainId !== "base") return;
-    const active = children.filter(c => c.active);
     const fetchDelegations = async () => {
       const map = new Map<string, string>();
-      for (const child of active) {
+      for (const child of children) {
         try {
+          // Check for active delegation
           const hash = await client.readContract({
             address: ENS_REGISTRY,
             abi: ENS_REGISTRY_ABI,
@@ -45,10 +45,20 @@ export default function SwarmPage() {
           });
           if (hash) map.set(child.ensLabel, hash as string);
         } catch {}
+        try {
+          // Check for revoked delegation
+          const revoked = await client.readContract({
+            address: ENS_REGISTRY,
+            abi: ENS_REGISTRY_ABI,
+            functionName: "getTextRecord",
+            args: [child.ensLabel, "erc7715.delegation.revoked"],
+          });
+          if (revoked) map.set(`${child.ensLabel}:revoked`, revoked as string);
+        } catch {}
       }
       if (map.size > 0) setDelegationHashes(map);
     };
-    if (active.length > 0) fetchDelegations();
+    if (children.length > 0) fetchDelegations();
   }, [children, client, chainId]);
   const activeContracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
   const chainLabel = chainId === "base" ? "Base Sepolia" : "Celo Sepolia";
@@ -123,8 +133,8 @@ export default function SwarmPage() {
         </div>
       </div>
 
-      {/* IPFS + Delegation Status Bar */}
-      {chainId === "base" && (ipfsCid || delegationHashes.size > 0) && (
+      {/* IPFS + Delegation Status Bar — always visible on Base */}
+      {chainId === "base" && !loading && (
         <div className="flex flex-wrap gap-3 mb-6">
           {ipfsCid && (
             <a
@@ -139,13 +149,22 @@ export default function SwarmPage() {
               <span className="text-purple-400 text-xs">↗</span>
             </a>
           )}
-          {delegationHashes.size > 0 && (
-            <div className="flex items-center gap-2 border border-orange-400/30 bg-orange-400/5 rounded-lg px-4 py-2">
-              <span className="text-orange-400 text-sm">ERC-7715</span>
-              <span className="text-xs font-mono text-orange-300">{delegationHashes.size} MetaMask Delegations Active</span>
-              <span className="text-[10px] font-mono text-orange-400/60">castVote() scoped</span>
-            </div>
-          )}
+          {(() => {
+            const activeDels = Array.from(delegationHashes.keys()).filter(k => !k.includes(":revoked")).length;
+            const revokedDels = Array.from(delegationHashes.keys()).filter(k => k.includes(":revoked")).length;
+            return (
+              <div className="flex items-center gap-2 border border-orange-400/30 bg-orange-400/5 rounded-lg px-4 py-2">
+                <span className="text-orange-400 text-sm">ERC-7715</span>
+                <span className="text-xs font-mono text-orange-300">
+                  {activeDels > 0 ? `${activeDels} Active` : "Intent-Based Delegations"}
+                </span>
+                {revokedDels > 0 && (
+                  <span className="text-[10px] font-mono text-red-400/80 border border-red-400/20 bg-red-400/5 px-1.5 py-0.5 rounded">{revokedDels} Revoked</span>
+                )}
+                <span className="text-[10px] font-mono text-orange-400/60">castVote() scoped</span>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -204,7 +223,7 @@ export default function SwarmPage() {
                 </summary>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 opacity-40">
                   {children.filter((c) => !c.active).slice(0, 12).map((child) => (
-                    <AgentCard key={child.childAddr} child={child} justVoted={false} />
+                    <AgentCard key={child.childAddr} child={child} justVoted={false} delegationHash={delegationHashes.get(`${child.ensLabel}:revoked`) ? "REVOKED" : delegationHashes.get(child.ensLabel)} />
                   ))}
                 </div>
                 {children.filter((c) => !c.active).length > 12 && (

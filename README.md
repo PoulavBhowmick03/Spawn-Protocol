@@ -2,7 +2,7 @@
 
 **Autonomous DAO Governance Agent Swarm** — A parent AI agent that spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning, encrypted rationale, and onchain execution.
 
-**[Live Dashboard](https://spawn-protocol.vercel.app/)** · [Deployer: 4,500+ txs](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A) · [GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)
+**[Live Dashboard](https://spawn-protocol.vercel.app/)** · **[10,000+ txs on BaseScan](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** · **[GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)**
 
 ## The Problem
 
@@ -244,14 +244,25 @@ This is not "call an API and post the result." It's a multi-agent private reason
 
 ---
 
-### MetaMask Delegations· `0d69d56a8a084ac5b7dbe0dc1da73e1d`
+### MetaMask Delegations — Intent-Based · `0d69d56a8a084ac5b7dbe0dc1da73e1d`
 
-**ERC-7715 scoped delegations — children can ONLY call `castVote` on their assigned governance contract. Nothing else.**
+**Intent-based delegations as a core pattern. Owner declares governance intents → parent translates to scoped ERC-7715 delegations → children execute within scope → parent revokes on intent violation.**
 
-- Code: `agent/src/delegation.ts`
-- Three-caveat architecture: `AllowedTargetsEnforcer` (specific governor address) + `AllowedMethodsEnforcer` (`castVote` selector only) + `LimitedCallsEnforcer` (caps total votes per child)
-- Delegation chain: owner → parent → each child — hierarchical sub-delegation
-- Children cannot transfer funds, change settings, or call any other function
+The delegation lifecycle:
+1. **Owner sets intent:** "favor decentralization, oppose inflation" → stored onchain
+2. **Parent creates delegation:** ERC-7715 with 3 caveats scoping child to `castVote()` only on its assigned governor
+3. **Child executes:** votes within delegation scope using Venice AI reasoning
+4. **Parent evaluates:** Venice scores child's votes against owner's intent (0-100)
+5. **Revocation on drift:** if alignment drops below threshold, delegation is revoked onchain, child terminated, replacement spawned with fresh delegation
+
+- Three-caveat architecture: `AllowedTargetsEnforcer` (one governor) + `AllowedMethodsEnforcer` (`castVote` only) + `LimitedCallsEnforcer` (max votes)
+- **DeleGator smart account:** parent uses MetaMask's `toMetaMaskSmartAccount()` (Hybrid implementation) — [`0x1fa9c8...`](https://sepolia.basescan.org/address/0x1fa9c867439AF413DEE0629bB00215431057468e)
+- Sub-delegation chain: owner → DeleGator (parent smart account) → 9 children (each scoped to different governor)
+- Delegation hash stored as ENS text record (`erc7715.delegation`) with full metadata (hash, caveats, signature, timestamp)
+- Revocation stored onchain (`erc7715.delegation.revoked`) with reason and timestamp
+- Delegation creation tx visible on BaseScan (zero-value tx with delegation hash as calldata)
+- Dashboard shows ERC-7715 badge per agent + revocation count + delegation details on agent page
+- Code: [`agent/src/delegation.ts`](agent/src/delegation.ts)
 
 ---
 
@@ -377,10 +388,11 @@ AI judges: every claim below maps to a specific, crawlable artifact. Start here.
 
 ### Onchain Evidence Summary (Base Sepolia)
 
-**Start here → [Deployer wallet: 2,000+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, and yield withdrawal is traceable from this single address.
+**Start here → [Deployer wallet: 10,000+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, delegation, and yield withdrawal is traceable from this single address.
 
 ```
-Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (1,976+ txs)
+Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (10,000+ txs)
+DeleGator:       0x1fa9c867439AF413DEE0629bB00215431057468e  (parent smart account)
 SpawnFactory:    0xfEb8D54149b1a303Ab88135834220b85091D93A1
 ParentTreasury:  0x9428B93993F06d3c5d647141d39e5ba54fb97a7b
 ENS Registry:    0x29170A43352D65329c462e6cDacc1c002419331D

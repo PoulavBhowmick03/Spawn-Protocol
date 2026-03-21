@@ -127,6 +127,9 @@ const venice = new OpenAI({
 - **Proposal difficulty scoring**: Easy/Medium/Hard based on vote split, voter count, complexity
 - **Reasoning verification**: keccak256 hash of revealed rationale shown for E2EE integrity proof
 - **Multi-source proposals**: Tally (9 DAOs) + Snapshot (12 spaces) + simulated
+- **IPFS**: Agent log pinned to decentralized storage, CID stored onchain as ENS text record
+- **ERC-7715 delegation lifecycle**: create → scope → evaluate → revoke, shown per agent with badges
+- **DeleGator smart account**: parent uses MetaMask DeleGator for onchain delegation enforcement
 - Timeline of all governance actions with tx links
 - Owner's stated values alongside child voting patterns + alignment scores
 

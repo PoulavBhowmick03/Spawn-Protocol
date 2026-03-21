@@ -3,13 +3,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { explorerTx } from "@/lib/contracts";
 
-// Support both old format (agent_log.json) and new runtime format (logger.ts)
 interface LogEntry {
   timestamp: string;
-  // Old format fields
-  phase?: string;
+  phase: string;
   action: string;
-  details?: string;
+  details: string;
   chain?: string;
   txHash?: string;
   txHashes?: string[];
@@ -22,27 +20,16 @@ interface LogEntry {
   erc8004AgentId?: number;
   uri?: string;
   ensLabel?: string;
-  status?: string;
+  status: string;
   verifyIn?: string;
-  // New format fields (from logger.ts)
-  agentId?: string;
-  agentType?: "parent" | "child";
-  inputs?: Record<string, any>;
-  outputs?: Record<string, any>;
-  success?: boolean;
-  error?: string;
 }
 
 interface AgentLog {
-  // Old format
-  agentName?: string;
-  name?: string;
+  agentName: string;
   version: string;
   note?: string;
-  executionLogs?: LogEntry[];
-  entries?: LogEntry[];
-  startedAt?: string;
-  metrics?: {
+  executionLogs: LogEntry[];
+  metrics: {
     totalOnchainTransactions: number;
     chainsDeployed: string[];
     contractsDeployed: number;
@@ -52,31 +39,10 @@ interface AgentLog {
     alignmentEvaluations: number;
     childrenSpawned: number;
     childrenTerminated: number;
-    childrenRespawned?: number;
     reasoningCalls: number;
     reasoningProvider: string;
     reasoningModel: string;
-    e2eeEnabled?: boolean;
-    yieldWithdrawals?: number;
-    ensSubdomainsRegistered?: number;
-    contractsVerified?: number;
   };
-}
-
-// Map action names to phases for color coding
-function actionToPhase(action: string): string {
-  if (action.includes("deploy") || action.includes("register_parent")) return "initialization";
-  if (action.includes("spawn") || action.includes("dynamic_spawn")) return "spawn";
-  if (action.includes("proposal") || action.includes("create_proposal") || action.includes("mirror")) return "governance";
-  if (action.includes("vote") || action.includes("cast_vote")) return "voting";
-  if (action.includes("align") || action.includes("evaluate")) return "alignment";
-  if (action.includes("terminat") || action.includes("recall") || action.includes("kill")) return "termination";
-  if (action.includes("reveal")) return "voting";
-  if (action.includes("respawn")) return "spawn";
-  if (action.includes("ens") || action.includes("subdomain")) return "initialization";
-  if (action.includes("yield") || action.includes("treasury")) return "deployment";
-  if (action.includes("discovery") || action.includes("feed")) return "governance";
-  return "governance";
 }
 
 const PHASE_COLORS: Record<string, string> = {
@@ -99,44 +65,18 @@ const PHASE_ICONS: Record<string, string> = {
   deployment:     "◆",
 };
 
-const PAGE_SIZE = 25;
-const REFRESH_INTERVAL = 15_000; // refresh every 15s
+const PAGE_SIZE = 20;
 
 function formatTime(ts: string) {
-  return new Date(ts).toLocaleString();
+  return new Date(ts).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: true,
+  });
 }
 
 function shortHash(hash: string) {
   return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
-}
-
-// Normalize entries from both old and new format into a consistent shape
-function normalizeEntry(entry: LogEntry): LogEntry & { _phase: string; _details: string; _status: string } {
-  const phase = entry.phase || actionToPhase(entry.action);
-
-  // Build details string from either old `details` field or new `inputs`/`outputs`
-  let details = entry.details || "";
-  if (!details && entry.inputs) {
-    const parts: string[] = [];
-    if (entry.inputs.child) parts.push(`child: ${entry.inputs.child}`);
-    if (entry.inputs.chain) parts.push(`chain: ${entry.inputs.chain}`);
-    if (entry.inputs.dao) parts.push(`dao: ${entry.inputs.dao}`);
-    if (entry.inputs.proposalId) parts.push(`proposal: ${entry.inputs.proposalId}`);
-    if (entry.inputs.decision) parts.push(`decision: ${entry.inputs.decision}`);
-    if (entry.inputs.reason) parts.push(`reason: ${entry.inputs.reason}`);
-    if (entry.inputs.description) parts.push(entry.inputs.description.slice(0, 100));
-    if (entry.inputs.newLabel) parts.push(`respawned as: ${entry.inputs.newLabel}`);
-    if (entry.inputs.score !== undefined) parts.push(`score: ${entry.inputs.score}`);
-    details = parts.join(" | ");
-  }
-
-  // Status
-  const status = entry.status || (entry.success === false ? "failed" : entry.success === true ? "success" : "unknown");
-
-  // Extract txHash from outputs if not in top-level
-  const txHash = entry.txHash || entry.outputs?.txHash;
-
-  return { ...entry, _phase: phase, _details: details, _status: status, txHash };
 }
 
 export default function LogsPage() {
@@ -146,56 +86,74 @@ export default function LogsPage() {
   const [phase, setPhase] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [lastRefresh, setLastRefresh] = useState(Date.now());
 
-  const fetchLog = () => {
-    fetch("https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((data) => { setLog(data); setError(null); setLastRefresh(Date.now()); })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { fetchLog(); }, []);
-
-  // Auto-refresh
+  // Fetch log: try IPFS (live, pinned every ~90s) first, fall back to GitHub
   useEffect(() => {
-    const interval = setInterval(fetchLog, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
+    const GITHUB_URL = "https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json";
+    const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
+
+    async function fetchLog() {
+      // Try reading IPFS CID from onchain ENS text record
+      try {
+        const { createPublicClient, http } = await import("viem");
+        const { baseSepolia } = await import("viem/chains");
+        const pc = createPublicClient({ chain: baseSepolia, transport: http("https://base-sepolia-rpc.publicnode.com") });
+        const cid = await pc.readContract({
+          address: ENS_REGISTRY,
+          abi: [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const,
+          functionName: "getTextRecord",
+          args: ["parent", "ipfs.agent_log"],
+        });
+        if (cid) {
+          const ipfsRes = await fetch(`https://gateway.pinata.cloud/ipfs/${cid}`, { signal: AbortSignal.timeout(10_000) });
+          if (ipfsRes.ok) {
+            const data = await ipfsRes.json();
+            setLog(data);
+            setError(null);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {}
+
+      // Fallback to GitHub
+      try {
+        const res = await fetch(GITHUB_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setLog(data);
+        setError(null);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchLog();
   }, []);
 
-  // Merge old + new format entries, sort latest first
-  const allEntries = useMemo(() => {
-    if (!log) return [];
-    const old = log.executionLogs || [];
-    const newEntries = log.entries || [];
-    const merged = [...old, ...newEntries].map(normalizeEntry);
-    // Sort by timestamp, newest first
-    merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    return merged;
-  }, [log]);
-
-  const phases = useMemo(() => {
-    const set = new Set(allEntries.map(e => e._phase));
-    return ["all", ...Array.from(set).sort()];
-  }, [allEntries]);
+  const phases = log
+    ? ["all", ...new Set(log.executionLogs.map((e) => e.phase))]
+    : ["all"];
 
   const filtered = useMemo(() => {
-    let entries = allEntries;
-    if (phase !== "all") entries = entries.filter((e) => e._phase === phase);
+    let entries = log?.executionLogs ?? [];
+    // Sort latest first
+    entries = [...entries].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    if (phase !== "all") entries = entries.filter((e) => e.phase === phase);
     if (search.trim()) {
       const q = search.toLowerCase();
       entries = entries.filter(
         (e) =>
           e.action.toLowerCase().includes(q) ||
-          (e._details).toLowerCase().includes(q) ||
+          e.details.toLowerCase().includes(q) ||
           (e.ensLabel ?? "").toLowerCase().includes(q) ||
-          (e.agentId ?? "").toLowerCase().includes(q) ||
           (e.chain ?? "").toLowerCase().includes(q)
       );
     }
     return entries;
-  }, [allEntries, phase, search]);
+  }, [log, phase, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -203,68 +161,83 @@ export default function LogsPage() {
   // Reset to page 1 on filter/search change
   useEffect(() => { setPage(1); }, [phase, search]);
 
-  // Compute live metrics from entries
-  const liveMetrics = useMemo(() => {
-    const votes = allEntries.filter(e => e.action.includes("vote") || e.action.includes("cast_vote")).length;
-    const spawns = allEntries.filter(e => e.action.includes("spawn")).length;
-    const terminations = allEntries.filter(e => e.action.includes("terminat") || e.action.includes("recall")).length;
-    const alignEvals = allEntries.filter(e => e.action.includes("alignment") || e.action.includes("evaluate")).length;
-    const reveals = allEntries.filter(e => e.action.includes("reveal")).length;
-    const proposals = allEntries.filter(e => e.action.includes("proposal") || e.action.includes("mirror")).length;
-    return { votes, spawns, terminations, alignEvals, reveals, proposals, total: allEntries.length };
-  }, [allEntries]);
-
   return (
-    <div className="p-4 md:p-8">
+    <div className="p-8">
       {/* Header */}
-      <div className="mb-8 flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+      <div className="mb-8 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-mono font-bold text-orange-400 tracking-tight">
             Execution Log
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Real-time autonomous execution evidence — every vote, spawn, kill, and reveal
+            Autonomous execution evidence — Protocol Labs "Agents With Receipts" + "Let the Agent Cook"
           </p>
         </div>
-        <div className="sm:text-right text-xs font-mono text-gray-600 shrink-0">
-          <div className="text-gray-400">{log?.agentName || log?.name || "Spawn Protocol"} v{log?.version || "1.0"}</div>
-          <div className="mt-0.5">{allEntries.length} total entries (latest first)</div>
-          <div className="mt-0.5 text-gray-700">
-            Refreshed {Math.round((Date.now() - lastRefresh) / 1000)}s ago
+        {log && (
+          <div className="text-right text-xs font-mono text-gray-600">
+            <div className="text-gray-400">{log.agentName} v{log.version}</div>
+            <div className="mt-0.5">{log.executionLogs.length} total entries</div>
+          </div>
+        )}
+      </div>
+
+      {/* IPFS Verification Banner */}
+      {log && (log.metrics as any).latestIPFSCid && (
+        <div className="mb-4 flex flex-wrap gap-3">
+          <a
+            href={`https://gateway.pinata.cloud/ipfs/${(log.metrics as any).latestIPFSCid}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 border border-purple-400/30 bg-purple-400/5 rounded-lg px-4 py-2.5 hover:bg-purple-400/10 transition-all"
+          >
+            <span className="text-purple-400 font-bold text-sm">IPFS</span>
+            <span className="text-xs font-mono text-purple-300">Execution log pinned to decentralized storage</span>
+            <span className="text-[10px] font-mono text-purple-400/60 bg-purple-400/10 px-2 py-0.5 rounded">{((log.metrics as any).latestIPFSCid as string).slice(0, 16)}...</span>
+            <span className="text-purple-400">↗</span>
+          </a>
+          <div className="flex items-center gap-2 border border-green-400/30 bg-green-400/5 rounded-lg px-4 py-2.5">
+            <span className="text-green-400 text-sm">Onchain</span>
+            <span className="text-xs font-mono text-green-300">CID stored as ENS text record — parent.spawn.eth</span>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Live metrics from entries */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-        {[
-          { label: "Total Entries", value: liveMetrics.total, color: "text-orange-400" },
-          { label: "Votes Cast",    value: liveMetrics.votes, color: "text-cyan-400" },
-          { label: "Agents Spawned", value: liveMetrics.spawns, color: "text-green-400" },
-          { label: "Terminations",  value: liveMetrics.terminations, color: "text-red-400" },
-        ].map((m) => (
-          <div key={m.label} className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14]">
-            <div className={`text-3xl font-mono font-bold ${m.color}`}>{m.value}</div>
-            <div className="text-xs text-gray-500 uppercase tracking-wider mt-1">{m.label}</div>
-          </div>
-        ))}
-      </div>
+      {/* Primary metrics */}
+      {log && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          {[
+            { label: "Onchain Txs",        value: log.metrics.totalOnchainTransactions, color: "text-green-400" },
+            { label: "Votes Cast",          value: log.metrics.votesCast,                color: "text-cyan-400" },
+            { label: "Venice Calls",        value: log.metrics.reasoningCalls,           color: "text-yellow-400" },
+            { label: "Agents Registered",   value: log.metrics.agentsRegistered,         color: "text-purple-400" },
+          ].map((m) => (
+            <div key={m.label} className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14]">
+              <div className={`text-3xl font-mono font-bold ${m.color}`}>{m.value}</div>
+              <div className="text-xs text-gray-500 uppercase tracking-wider mt-1">{m.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6">
-        {[
-          { label: "Align Evals", value: liveMetrics.alignEvals },
-          { label: "Reveals",     value: liveMetrics.reveals },
-          { label: "Proposals",   value: liveMetrics.proposals },
-          { label: "Reasoning",   value: `${log?.metrics?.reasoningProvider || "venice"} / ${log?.metrics?.reasoningModel || "llama-3.3-70b"}` },
-          { label: "E2EE",        value: log?.metrics?.e2eeEnabled ? "enabled" : "yes" },
-          { label: "Chains",      value: log?.metrics?.chainsDeployed?.join(", ") || "base-sepolia" },
-        ].map((m) => (
-          <div key={m.label} className="border border-gray-800 rounded p-3 bg-[#0d0d14]">
-            <div className="text-xs text-gray-300 font-mono truncate">{String(m.value)}</div>
-            <div className="text-[10px] text-gray-600 uppercase tracking-wider mt-0.5">{m.label}</div>
-          </div>
-        ))}
-      </div>
+      {/* Secondary metrics */}
+      {log && (
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
+          {[
+            { label: "Chains",          value: log.metrics.chainsDeployed.join(", ") },
+            { label: "Contracts",       value: log.metrics.contractsDeployed },
+            { label: "Proposals",       value: log.metrics.proposalsCreated },
+            { label: "Spawned",         value: log.metrics.childrenSpawned },
+            { label: "Terminated",      value: log.metrics.childrenTerminated },
+            { label: "Align Evals",     value: log.metrics.alignmentEvaluations },
+            { label: "Reasoning",       value: `${log.metrics.reasoningProvider} / ${log.metrics.reasoningModel}` },
+          ].map((m) => (
+            <div key={m.label} className="border border-gray-800 rounded p-3 bg-[#0d0d14]">
+              <div className="text-xs text-gray-300 font-mono truncate">{String(m.value)}</div>
+              <div className="text-[10px] text-gray-600 uppercase tracking-wider mt-0.5">{m.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Note */}
       {log?.note && (
@@ -276,6 +249,7 @@ export default function LogsPage() {
       {/* Filters + Search */}
       {!loading && (
         <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          {/* Phase tabs */}
           <div className="flex gap-2 flex-wrap">
             {phases.map((p) => (
               <button
@@ -287,13 +261,12 @@ export default function LogsPage() {
                     : "border-gray-700 text-gray-500 hover:border-gray-600 hover:text-gray-400"
                 }`}
               >
-                {p === "all"
-                  ? `All (${allEntries.length})`
-                  : `${PHASE_ICONS[p] ?? "◦"} ${p} (${allEntries.filter(e => e._phase === p).length})`}
+                {p === "all" ? `All (${log?.executionLogs.length ?? 0})` : `${PHASE_ICONS[p] ?? "◦"} ${p}`}
               </button>
             ))}
           </div>
 
+          {/* Search */}
           <div className="relative sm:ml-auto">
             <input
               type="text"
@@ -306,12 +279,13 @@ export default function LogsPage() {
               <button
                 onClick={() => setSearch("")}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 text-xs"
-              >x</button>
+              >✕</button>
             )}
           </div>
         </div>
       )}
 
+      {/* Result count */}
       {!loading && (search || phase !== "all") && (
         <div className="mb-3 text-xs font-mono text-gray-600">
           {filtered.length} result{filtered.length !== 1 ? "s" : ""}
@@ -323,6 +297,13 @@ export default function LogsPage() {
       {error && (
         <div className="mb-6 border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
           <p className="text-red-400 text-sm font-mono">Failed to fetch log: {error}</p>
+          <p className="text-gray-500 text-xs mt-1">
+            Raw:{" "}
+            <a href="https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json"
+              className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer">
+              agent_log.json on GitHub
+            </a>
+          </p>
         </div>
       )}
 
@@ -343,9 +324,9 @@ export default function LogsPage() {
         <>
           <div className="space-y-2">
             {paginated.map((entry, i) => {
-              const phaseClass = PHASE_COLORS[entry._phase] ?? "text-gray-400 border-gray-700 bg-gray-900";
-              const icon = PHASE_ICONS[entry._phase] ?? "◦";
-              const isTermination = entry._phase === "termination";
+              const phaseClass = PHASE_COLORS[entry.phase] ?? "text-gray-400 border-gray-700 bg-gray-900";
+              const icon = PHASE_ICONS[entry.phase] ?? "◦";
+              const isTermination = entry.phase === "termination";
               const allHashes = [
                 ...(entry.txHash ? [entry.txHash] : []),
                 ...(entry.txHashes ?? []),
@@ -353,7 +334,7 @@ export default function LogsPage() {
 
               return (
                 <div
-                  key={`${entry.timestamp}-${i}`}
+                  key={i}
                   className={`border rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all ${
                     isTermination
                       ? "border-red-500/40 border-l-4 border-l-red-500"
@@ -361,65 +342,57 @@ export default function LogsPage() {
                   }`}
                 >
                   <div className="flex items-start gap-3">
+                    {/* Phase badge */}
                     <span className={`text-xs border rounded px-1.5 py-0.5 font-mono shrink-0 mt-0.5 ${phaseClass}`}>
-                      {icon} {entry._phase}
+                      {icon} {entry.phase}
                     </span>
 
-                    <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="flex-1 min-w-0">
+                      {/* Action + status + chain */}
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <span className={`font-mono text-sm font-semibold ${isTermination ? "text-red-300" : "text-gray-200"}`}>
                           {entry.action}
                         </span>
                         <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                          entry._status === "success"
+                          entry.status === "success"
                             ? "text-green-400 bg-green-400/10 border border-green-400/20"
-                            : entry._status === "failed"
-                            ? "text-red-400 bg-red-400/10 border border-red-400/20"
-                            : "text-gray-400 bg-gray-400/10 border border-gray-700"
+                            : "text-red-400 bg-red-400/10 border border-red-400/20"
                         }`}>
-                          {entry._status}
+                          {entry.status}
                         </span>
-                        {(entry.chain || entry.inputs?.chain) && (
+                        {entry.chain && (
                           <span className="text-[10px] font-mono text-gray-600 border border-gray-700 rounded px-1.5 py-0.5">
-                            {entry.chain || entry.inputs?.chain}
-                          </span>
-                        )}
-                        {entry.agentId && (
-                          <span className={`text-[10px] font-mono border rounded px-1.5 py-0.5 ${
-                            entry.agentType === "child"
-                              ? "border-cyan-400/30 text-cyan-400 bg-cyan-400/5"
-                              : "border-purple-400/30 text-purple-400 bg-purple-400/5"
-                          }`}>
-                            {entry.agentId}
+                            {entry.chain}
                           </span>
                         )}
                       </div>
 
+                      {/* Details */}
                       <p className="text-xs text-gray-400 leading-relaxed mb-2">
-                        {entry._details}
+                        {entry.details}
                       </p>
 
                       {/* Tags */}
                       <div className="flex flex-wrap gap-1.5 mb-1">
-                        {(entry.reasoningProvider || entry.inputs?.litEncrypted !== undefined) && (
+                        {entry.reasoningProvider && (
                           <span className="text-[10px] font-mono border border-yellow-400/30 text-yellow-400 bg-yellow-400/5 rounded px-1.5 py-0.5">
-                            Venice {entry.reasoningModel || "E2EE"}
+                            Venice {entry.reasoningModel}
                           </span>
                         )}
-                        {(entry.rationaleEncrypted || entry.inputs?.litEncrypted) && (
+                        {entry.rationaleEncrypted && (
                           <span className="text-[10px] font-mono border border-cyan-400/30 text-cyan-400 bg-cyan-400/5 rounded px-1.5 py-0.5">
-                            {entry.inputs?.litEncrypted ? "Lit encrypted" : "hex encoded"}
+                            Lit encrypted
                           </span>
                         )}
-                        {(entry.decision || entry.inputs?.decision) && (
+                        {entry.decision && (
                           <span className={`text-[10px] font-mono border rounded px-1.5 py-0.5 ${
-                            (entry.decision || entry.inputs?.decision) === "FOR"
+                            entry.decision === "FOR"
                               ? "border-green-400/30 text-green-400 bg-green-400/5"
-                              : (entry.decision || entry.inputs?.decision) === "AGAINST"
+                              : entry.decision === "AGAINST"
                               ? "border-red-400/30 text-red-400 bg-red-400/5"
                               : "border-yellow-400/30 text-yellow-400 bg-yellow-400/5"
                           }`}>
-                            {entry.decision || entry.inputs?.decision}
+                            {entry.decision}
                           </span>
                         )}
                         {entry.erc8004AgentId !== undefined && (
@@ -427,31 +400,12 @@ export default function LogsPage() {
                             ERC-8004 #{entry.erc8004AgentId}
                           </span>
                         )}
-                        {(entry.ensLabel || entry.inputs?.child) && (
+                        {entry.ensLabel && (
                           <span className="text-[10px] font-mono border border-blue-400/30 text-blue-400 bg-blue-400/5 rounded px-1.5 py-0.5">
-                            {(entry.ensLabel || entry.inputs?.child)}.spawn.eth
-                          </span>
-                        )}
-                        {entry.outputs?.reasoningHash && (
-                          <span className="text-[10px] font-mono border border-gray-700 text-gray-500 rounded px-1.5 py-0.5">
-                            hash: {entry.outputs.reasoningHash}
-                          </span>
-                        )}
-                        {entry.outputs?.score !== undefined && (
-                          <span className={`text-[10px] font-mono border rounded px-1.5 py-0.5 ${
-                            entry.outputs.score >= 70 ? "border-green-400/30 text-green-400 bg-green-400/5"
-                            : entry.outputs.score >= 45 ? "border-yellow-400/30 text-yellow-400 bg-yellow-400/5"
-                            : "border-red-400/30 text-red-400 bg-red-400/5"
-                          }`}>
-                            alignment: {entry.outputs.score}/100
+                            {entry.ensLabel}.spawn.eth
                           </span>
                         )}
                       </div>
-
-                      {/* Error message */}
-                      {entry.error && (
-                        <p className="text-[10px] text-red-400/70 font-mono mt-1">{entry.error}</p>
-                      )}
 
                       {/* Tx hashes */}
                       {allHashes.length > 0 && (
@@ -470,12 +424,15 @@ export default function LogsPage() {
                         </div>
                       )}
 
-                      <p className="sm:hidden text-[10px] text-gray-600 font-mono mt-1.5">
-                        {formatTime(entry.timestamp)}
-                      </p>
+                      {entry.verifyIn && (
+                        <p className="text-[10px] text-gray-600 font-mono mt-1.5">
+                          Verify: {entry.verifyIn}
+                        </p>
+                      )}
                     </div>
 
-                    <span className="hidden sm:block text-[10px] text-gray-600 font-mono shrink-0 whitespace-nowrap">
+                    {/* Timestamp */}
+                    <span className="text-[10px] text-gray-600 font-mono shrink-0 whitespace-nowrap">
                       {formatTime(entry.timestamp)}
                     </span>
                   </div>
@@ -492,7 +449,7 @@ export default function LogsPage() {
                 disabled={page === 1}
                 className="px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:border-orange-500 hover:text-orange-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                Prev
+                ← Prev
               </button>
 
               {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => {
@@ -521,7 +478,7 @@ export default function LogsPage() {
                 disabled={page === totalPages}
                 className="px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:border-orange-500 hover:text-orange-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                Next
+                Next →
               </button>
 
               <span className="ml-4 text-gray-600 text-xs">

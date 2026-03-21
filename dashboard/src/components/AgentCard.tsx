@@ -72,9 +72,14 @@ export function AgentCard({ child, justVoted = false, delegationHash }: AgentCar
                 ENS
               </span>
             )}
-            {delegationHash && (
+            {delegationHash && delegationHash !== "REVOKED" && (
               <span className="text-[9px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap" title={delegationHash}>
                 7715
+              </span>
+            )}
+            {delegationHash === "REVOKED" && (
+              <span className="text-[9px] border border-red-400/30 bg-red-400/10 text-red-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap">
+                REVOKED
               </span>
             )}
           </div>
