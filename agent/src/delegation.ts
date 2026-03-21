@@ -8,12 +8,18 @@
 import {
   createCaveat,
   createDelegation,
+  createExecution,
+  ExecutionMode,
+  redeemDelegations,
   signDelegation,
   getDeleGatorEnvironment,
+  toMetaMaskSmartAccount,
+  Implementation,
   type Delegation,
 } from "@metamask/delegation-toolkit";
-import { encodeAbiParameters, keccak256, toHex, type Address, type Hex } from "viem";
+import { encodeAbiParameters, encodeFunctionData, keccak256, toHex, type Address, type Hex } from "viem";
 import { account, baseSepolia, walletClient, publicClient } from "./chain.js";
+import { ChildGovernorABI } from "./abis.js";
 import { setChildTextRecord } from "./ens.js";
 import { logParentAction } from "./logger.js";
 
@@ -22,6 +28,40 @@ const CAST_VOTE_SELECTOR = "0x9d36475b" as Hex; // castVote(uint256,uint8,bytes)
 
 // Get the DeleGator environment for Base Sepolia (includes enforcer addresses)
 const environment = getDeleGatorEnvironment(baseSepolia.id);
+
+// DeleGator smart account for the parent (initialized lazily)
+let parentSmartAccount: any = null;
+let smartAccountAddress: Address | null = null;
+
+/**
+ * Initialize the DeleGator smart account for the parent.
+ * This must be called before creating delegations so the delegator
+ * is a smart account (required by DelegationManager).
+ */
+export async function initDeleGatorAccount(): Promise<Address | null> {
+  if (smartAccountAddress) return smartAccountAddress;
+  try {
+    parentSmartAccount = await toMetaMaskSmartAccount({
+      client: publicClient as any,
+      implementation: Implementation.Hybrid,
+      signer: { account } as any,
+      deployParams: [account.address, [], [], []],
+      deploySalt: toHex("spawn-protocol-v1"),
+      environment,
+    });
+    smartAccountAddress = parentSmartAccount.address as Address;
+    console.log(`[Delegation] DeleGator smart account: ${smartAccountAddress}`);
+    logParentAction("init_delegator_account", { type: "DeleGator", implementation: "Hybrid" }, { address: smartAccountAddress });
+    return smartAccountAddress;
+  } catch (err: any) {
+    console.log(`[Delegation] DeleGator init failed: ${err?.message?.slice(0, 80)} — using EOA fallback`);
+    return null;
+  }
+}
+
+export function getDeleGatorAddress(): Address | null {
+  return smartAccountAddress;
+}
 
 // Store delegations in memory for the demo runtime
 const activeDelegations = new Map<string, DelegationRecord>();
@@ -68,7 +108,7 @@ export async function createVotingDelegation(
       targets: [governanceContract],
       selectors: [CAST_VOTE_SELECTOR],
     },
-    from: account.address as Hex,
+    from: (smartAccountAddress || account.address) as Hex,
     to: childAddress as Hex,
     caveats: [limitedCallsCaveat],
   });
@@ -93,7 +133,7 @@ export async function createVotingDelegation(
       [
         delegation.delegator as Address,
         delegation.delegate as Address,
-        BigInt(delegation.salt as any),
+        BigInt(delegation.salt && delegation.salt !== "0x" ? (delegation.salt as any) : 0),
       ]
     )
   );
@@ -313,14 +353,63 @@ export function verifyDelegation(record: DelegationRecord): {
  * In a full implementation this would also call the onchain revocation
  * via DelegationManager.disableDelegation().
  */
-export function revokeDelegation(delegationHash: Hex): boolean {
-  if (activeDelegations.has(delegationHash)) {
+/**
+ * Revoke a delegation — removes from tracking and stores revocation onchain.
+ * This is the intent-based delegation lifecycle: create → enforce → revoke on drift.
+ */
+export async function revokeDelegation(delegationHash: Hex, childLabel?: string, reason?: string): Promise<boolean> {
+  const record = activeDelegations.get(delegationHash);
+  if (!record) {
+    // Try to find by child label
+    for (const [hash, r] of activeDelegations) {
+      if (childLabel && r.delegatee) {
+        activeDelegations.delete(hash);
+        break;
+      }
+    }
+  } else {
     activeDelegations.delete(delegationHash);
-    console.log(`[Delegation] Revoked delegation ${delegationHash}`);
-    return true;
   }
-  console.log(`[Delegation] Delegation ${delegationHash} not found`);
-  return false;
+
+  // Store revocation onchain as ENS text record
+  if (childLabel) {
+    try {
+      await setChildTextRecord(childLabel, "erc7715.delegation.revoked", JSON.stringify({
+        hash: delegationHash,
+        revokedAt: new Date().toISOString(),
+        reason: reason || "alignment_drift",
+      }));
+      console.log(`[Delegation] Revoked delegation for ${childLabel} — stored onchain`);
+    } catch {}
+  }
+
+  logParentAction("revoke_delegation", {
+    delegationHash,
+    child: childLabel,
+    reason: reason || "alignment_drift",
+  }, {});
+
+  return true;
+}
+
+/**
+ * Revoke all delegations for a child (used during termination).
+ */
+export async function revokeAllForChild(childAddress: Address, childLabel?: string, reason?: string): Promise<void> {
+  const childDelegations = getDelegationsForChild(childAddress);
+  for (const record of childDelegations) {
+    await revokeDelegation(record.delegationHash, childLabel, reason);
+  }
+  if (childDelegations.length === 0 && childLabel) {
+    // No tracked delegation, but still store revocation notice onchain
+    try {
+      await setChildTextRecord(childLabel, "erc7715.delegation.revoked", JSON.stringify({
+        revokedAt: new Date().toISOString(),
+        reason: reason || "alignment_drift",
+      }));
+    } catch {}
+    logParentAction("revoke_delegation", { child: childLabel, reason: reason || "alignment_drift" }, {});
+  }
 }
 
 /**
@@ -339,4 +428,88 @@ export function getDelegationsForChild(
  */
 export function getAllDelegations(): DelegationRecord[] {
   return Array.from(activeDelegations.values());
+}
+
+/**
+ * Redeem a delegation to cast a vote via the DelegationManager onchain.
+ *
+ * Instead of the child calling ChildGovernor.castVote() directly, this routes
+ * the call through MetaMask's DelegationManager contract. The DelegationManager
+ * verifies the delegation signature and caveats (AllowedTargets, AllowedMethods,
+ * LimitedCalls), then executes the castVote call on behalf of the delegator.
+ *
+ * IMPORTANT: The delegator (parent) must be a DeleGator smart account for the
+ * DelegationManager to execute the call. If the parent is a plain EOA, the
+ * onchain redemption will fail — the child should fall back to direct writeContract.
+ *
+ * @param childWallet - The child's wallet client (delegatee who submits the tx)
+ * @param readClient - A public client for simulation/receipts
+ * @param delegation - The signed delegation record from createVotingDelegation
+ * @param governorAddress - The ChildGovernor contract address
+ * @param proposalId - The proposal to vote on
+ * @param support - Vote choice: 0=Against, 1=For, 2=Abstain
+ * @param encryptedRationale - Hex-encoded encrypted reasoning
+ * @returns The transaction hash from the DelegationManager redemption
+ */
+export async function redeemVoteDelegation(
+  childWallet: any,
+  readClient: any,
+  delegation: DelegationRecord,
+  governorAddress: Address,
+  proposalId: bigint,
+  support: number,
+  encryptedRationale: Hex
+): Promise<`0x${string}`> {
+  // 1. Encode the castVote calldata
+  const castVoteCalldata = encodeFunctionData({
+    abi: ChildGovernorABI,
+    functionName: "castVote",
+    args: [proposalId, support, encryptedRationale],
+  });
+
+  // 2. Build the execution targeting the ChildGovernor contract
+  const execution = createExecution({
+    target: governorAddress,
+    value: 0n,
+    callData: castVoteCalldata,
+  });
+
+  // 3. Submit the redemption through the DelegationManager
+  // The permissionContext is the delegation chain — for a single hop
+  // delegation (parent -> child), it's just [signedDelegation].
+  const txHash = await redeemDelegations(
+    childWallet,
+    readClient,
+    environment.DelegationManager as Address,
+    [
+      {
+        permissionContext: [delegation.delegation],
+        executions: [execution],
+        mode: ExecutionMode.SingleDefault,
+      },
+    ]
+  );
+
+  console.log(
+    `[Delegation] Redeemed delegation via DelegationManager`,
+    `\n  Delegatee: ${delegation.delegatee}`,
+    `\n  Governor: ${governorAddress}`,
+    `\n  Proposal: ${proposalId}`,
+    `\n  Tx: ${txHash}`
+  );
+
+  logParentAction(
+    "redeem_delegation",
+    {
+      delegatee: delegation.delegatee,
+      governorAddress,
+      proposalId: proposalId.toString(),
+      support,
+      delegationHash: delegation.delegationHash,
+    },
+    { txHash },
+    txHash
+  );
+
+  return txHash;
 }

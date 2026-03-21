@@ -1,8 +1,9 @@
 "use client";
 
-import { use } from "react";
+import { use, useState, useEffect } from "react";
 import Link from "next/link";
 import { useChildData } from "@/hooks/useSwarmData";
+import { useChainContext } from "@/context/ChainContext";
 import { AlignmentBadge } from "@/components/AlignmentBadge";
 import {
   formatAddress,
@@ -15,6 +16,11 @@ import {
   governorName,
 } from "@/lib/contracts";
 
+const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
+const ENS_REGISTRY_ABI = [
+  { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+] as const;
+
 interface PageProps {
   params: Promise<{ id: string }>;
 }
@@ -22,6 +28,21 @@ interface PageProps {
 export default function AgentDetailPage({ params }: PageProps) {
   const { id } = use(params);
   const { child, voteHistory, loading, error } = useChildData(id);
+  const { client, chainId } = useChainContext();
+  const [delegation, setDelegation] = useState<any>(null);
+  const [revocation, setRevocation] = useState<any>(null);
+
+  // Fetch delegation + revocation from ENS text records
+  useEffect(() => {
+    if (!child || chainId !== "base") return;
+    const label = child.ensLabel;
+    client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation"] })
+      .then(r => { if (r) try { setDelegation(JSON.parse(r as string)); } catch { setDelegation({ raw: r }); } })
+      .catch(() => {});
+    client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation.revoked"] })
+      .then(r => { if (r) try { setRevocation(JSON.parse(r as string)); } catch { setRevocation({ raw: r }); } })
+      .catch(() => {});
+  }, [child, client, chainId]);
 
   if (loading) {
     return (
@@ -76,6 +97,16 @@ export default function AgentDetailPage({ params }: PageProps) {
                   ENS
                 </span>
               )}
+              {delegation && !revocation && (
+                <span className="text-[10px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1.5 py-0.5 font-mono uppercase">
+                  ERC-7715
+                </span>
+              )}
+              {revocation && (
+                <span className="text-[10px] border border-red-400/30 bg-red-400/10 text-red-400 rounded px-1.5 py-0.5 font-mono uppercase">
+                  7715 REVOKED
+                </span>
+              )}
             </h1>
             <a
               href={explorerAddress(child.childAddr)}
@@ -115,6 +146,44 @@ export default function AgentDetailPage({ params }: PageProps) {
           </div>
         </div>
       </div>
+
+      {/* Delegation Details */}
+      {(delegation || revocation) && (
+        <div className="border border-gray-800 rounded-lg p-5 bg-[#0d0d14] mb-6">
+          <h2 className="text-xs font-mono text-orange-400 uppercase tracking-widest mb-3">
+            MetaMask ERC-7715 Delegation
+          </h2>
+          {delegation && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs mb-3">
+              <div>
+                <p className="text-gray-600 uppercase tracking-wider mb-0.5">Scope</p>
+                <p className="font-mono text-orange-300">castVote() only</p>
+              </div>
+              <div>
+                <p className="text-gray-600 uppercase tracking-wider mb-0.5">Caveats</p>
+                <p className="font-mono text-gray-300">{(delegation.caveats || []).join(", ") || "AllowedTargets, AllowedMethods, LimitedCalls"}</p>
+              </div>
+              <div>
+                <p className="text-gray-600 uppercase tracking-wider mb-0.5">Max Votes</p>
+                <p className="font-mono text-gray-300">{delegation.maxVotes || "100"}</p>
+              </div>
+              <div>
+                <p className="text-gray-600 uppercase tracking-wider mb-0.5">Hash</p>
+                <p className="font-mono text-gray-500 truncate" title={delegation.hash}>{(delegation.hash || "").slice(0, 18)}...</p>
+              </div>
+            </div>
+          )}
+          {revocation && (
+            <div className="border-t border-red-500/20 pt-3 mt-2">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] border border-red-400/30 bg-red-400/10 text-red-400 rounded px-1.5 py-0.5 font-mono uppercase">Delegation Revoked</span>
+                <span className="text-[10px] text-gray-600 font-mono">{revocation.revokedAt ? new Date(revocation.revokedAt).toLocaleString() : ""}</span>
+              </div>
+              <p className="text-xs text-red-400/70 font-mono">Reason: {revocation.reason || "alignment_drift"}</p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Vote history */}
       <div>

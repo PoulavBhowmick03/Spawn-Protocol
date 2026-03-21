@@ -68,7 +68,11 @@ const PHASE_ICONS: Record<string, string> = {
 const PAGE_SIZE = 20;
 
 function formatTime(ts: string) {
-  return new Date(ts).toLocaleString();
+  return new Date(ts).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: true,
+  });
 }
 
 function shortHash(hash: string) {
@@ -83,12 +87,50 @@ export default function LogsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
+  // Fetch log: try IPFS (live, pinned every ~90s) first, fall back to GitHub
   useEffect(() => {
-    fetch("https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((data) => { setLog(data); setError(null); })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
+    const GITHUB_URL = "https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json";
+    const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
+
+    async function fetchLog() {
+      // Try reading IPFS CID from onchain ENS text record
+      try {
+        const { createPublicClient, http } = await import("viem");
+        const { baseSepolia } = await import("viem/chains");
+        const pc = createPublicClient({ chain: baseSepolia, transport: http("https://base-sepolia-rpc.publicnode.com") });
+        const cid = await pc.readContract({
+          address: ENS_REGISTRY,
+          abi: [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const,
+          functionName: "getTextRecord",
+          args: ["parent", "ipfs.agent_log"],
+        });
+        if (cid) {
+          const ipfsRes = await fetch(`https://gateway.pinata.cloud/ipfs/${cid}`, { signal: AbortSignal.timeout(10_000) });
+          if (ipfsRes.ok) {
+            const data = await ipfsRes.json();
+            setLog(data);
+            setError(null);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {}
+
+      // Fallback to GitHub
+      try {
+        const res = await fetch(GITHUB_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setLog(data);
+        setError(null);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchLog();
   }, []);
 
   const phases = log
@@ -97,6 +139,8 @@ export default function LogsPage() {
 
   const filtered = useMemo(() => {
     let entries = log?.executionLogs ?? [];
+    // Sort latest first
+    entries = [...entries].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
     if (phase !== "all") entries = entries.filter((e) => e.phase === phase);
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -136,6 +180,27 @@ export default function LogsPage() {
           </div>
         )}
       </div>
+
+      {/* IPFS Verification Banner */}
+      {log && (log.metrics as any).latestIPFSCid && (
+        <div className="mb-4 flex flex-wrap gap-3">
+          <a
+            href={`https://gateway.pinata.cloud/ipfs/${(log.metrics as any).latestIPFSCid}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 border border-purple-400/30 bg-purple-400/5 rounded-lg px-4 py-2.5 hover:bg-purple-400/10 transition-all"
+          >
+            <span className="text-purple-400 font-bold text-sm">IPFS</span>
+            <span className="text-xs font-mono text-purple-300">Execution log pinned to decentralized storage</span>
+            <span className="text-[10px] font-mono text-purple-400/60 bg-purple-400/10 px-2 py-0.5 rounded">{((log.metrics as any).latestIPFSCid as string).slice(0, 16)}...</span>
+            <span className="text-purple-400">↗</span>
+          </a>
+          <div className="flex items-center gap-2 border border-green-400/30 bg-green-400/5 rounded-lg px-4 py-2.5">
+            <span className="text-green-400 text-sm">Onchain</span>
+            <span className="text-xs font-mono text-green-300">CID stored as ENS text record — parent.spawn.eth</span>
+          </div>
+        </div>
+      )}
 
       {/* Primary metrics */}
       {log && (
