@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSwarmData } from "@/hooks/useSwarmData";
 import { AgentCard } from "@/components/AgentCard";
-import { CONTRACTS, CELO_CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
+import { CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
 import { useChainContext } from "@/context/ChainContext";
 
 // ENS Registry for reading IPFS CID and delegation hashes
@@ -14,54 +14,44 @@ const ENS_REGISTRY_ABI = [
 
 export default function SwarmPage() {
   const { children, loading, error, justVotedSet } = useSwarmData();
-  const { client, chainId, explorerBase } = useChainContext();
+  const { client, explorerBase } = useChainContext();
   const [ipfsCid, setIpfsCid] = useState<string | null>(null);
   const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
 
   // Fetch IPFS CID from ENS text record
   useEffect(() => {
-    if (chainId !== "base") return;
     client.readContract({
       address: ENS_REGISTRY,
       abi: ENS_REGISTRY_ABI,
       functionName: "getTextRecord",
       args: ["parent", "ipfs.agent_log"],
     }).then((cid) => { if (cid) setIpfsCid(cid as string); }).catch(() => {});
-  }, [client, chainId]);
+  }, [client]);
 
-  // Fetch delegation hashes + revocation status for all children
+  // Fetch delegation hashes + revocation status for all children (parallel)
   useEffect(() => {
-    if (chainId !== "base") return;
     const fetchDelegations = async () => {
       const map = new Map<string, string>();
-      for (const child of children) {
-        try {
-          // Check for active delegation
-          const hash = await client.readContract({
+      await Promise.all(
+        children.flatMap((child) => [
+          client.readContract({
             address: ENS_REGISTRY,
             abi: ENS_REGISTRY_ABI,
             functionName: "getTextRecord",
             args: [child.ensLabel, "erc7715.delegation"],
-          });
-          if (hash) map.set(child.ensLabel, hash as string);
-        } catch {}
-        try {
-          // Check for revoked delegation
-          const revoked = await client.readContract({
+          }).then((hash) => { if (hash) map.set(child.ensLabel, hash as string); }).catch(() => {}),
+          client.readContract({
             address: ENS_REGISTRY,
             abi: ENS_REGISTRY_ABI,
             functionName: "getTextRecord",
             args: [child.ensLabel, "erc7715.delegation.revoked"],
-          });
-          if (revoked) map.set(`${child.ensLabel}:revoked`, revoked as string);
-        } catch {}
-      }
+          }).then((revoked) => { if (revoked) map.set(`${child.ensLabel}:revoked`, revoked as string); }).catch(() => {}),
+        ])
+      );
       if (map.size > 0) setDelegationHashes(map);
     };
     if (children.length > 0) fetchDelegations();
-  }, [children, client, chainId]);
-  const activeContracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
-  const chainLabel = chainId === "base" ? "Base Sepolia" : "Celo Sepolia";
+  }, [children, client]);
 
   const activeCount = children.filter((c) => c.active).length;
   const totalCount = children.length;
@@ -79,7 +69,7 @@ export default function SwarmPage() {
               Agent Swarm
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              Autonomous DAO governance agents — {chainLabel}
+              Autonomous DAO governance agents — Base Sepolia
             </p>
           </div>
           <div className="flex gap-6 text-center">
@@ -112,29 +102,27 @@ export default function SwarmPage() {
         <div className="flex gap-4 text-xs font-mono text-gray-600 mt-4 flex-wrap">
           <span>
             SpawnFactory:{" "}
-            <a href={`${explorerBase}/address/${activeContracts.SpawnFactory.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
-              {formatAddress(activeContracts.SpawnFactory.address)}
+            <a href={`${explorerBase}/address/${CONTRACTS.SpawnFactory.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+              {formatAddress(CONTRACTS.SpawnFactory.address)}
             </a>
           </span>
-          {chainId === "base" && (
-            <span>
-              MockGovernor:{" "}
-              <a href={explorerAddress(CONTRACTS.MockGovernor.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
-                {formatAddress(CONTRACTS.MockGovernor.address)}
-              </a>
-            </span>
-          )}
+          <span>
+            MockGovernor:{" "}
+            <a href={explorerAddress(CONTRACTS.MockGovernor.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+              {formatAddress(CONTRACTS.MockGovernor.address)}
+            </a>
+          </span>
           <span>
             ParentTreasury:{" "}
-            <a href={`${explorerBase}/address/${activeContracts.ParentTreasury.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
-              {formatAddress(activeContracts.ParentTreasury.address)}
+            <a href={`${explorerBase}/address/${CONTRACTS.ParentTreasury.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+              {formatAddress(CONTRACTS.ParentTreasury.address)}
             </a>
           </span>
         </div>
       </div>
 
-      {/* IPFS + Delegation Status Bar — always visible on Base */}
-      {chainId === "base" && !loading && (
+      {/* IPFS + Delegation Status Bar */}
+      {!loading && (
         <div className="flex flex-wrap gap-3 mb-6">
           {ipfsCid && (
             <a
@@ -192,7 +180,7 @@ export default function SwarmPage() {
           <div className="text-4xl mb-4">⬡</div>
           <h2 className="font-mono text-lg text-gray-400 mb-2">No agents spawned yet</h2>
           <p className="text-sm text-gray-600">The parent agent will spawn children when proposals are detected.</p>
-          <p className="text-xs font-mono text-gray-700 mt-4">Polling SpawnFactory @ {formatAddress(activeContracts.SpawnFactory.address)}</p>
+          <p className="text-xs font-mono text-gray-700 mt-4">Polling SpawnFactory @ {formatAddress(CONTRACTS.SpawnFactory.address)}</p>
         </div>
       )}
 
@@ -239,7 +227,7 @@ export default function SwarmPage() {
 
       <div className="fixed bottom-6 right-6 flex items-center gap-2 bg-[#0d0d14] border border-gray-800 rounded-full px-3 py-1.5">
         <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-ping" style={{ animationDuration: "2s" }} />
-        <span className="text-xs font-mono text-gray-500">Live — 10s</span>
+        <span className="text-xs font-mono text-gray-500">Live — 15s</span>
       </div>
     </div>
   );

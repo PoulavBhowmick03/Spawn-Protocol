@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { publicClient } from "@/lib/client";
 import { explorerTx } from "@/lib/contracts";
 
 interface LogEntry {
@@ -95,23 +96,30 @@ export default function LogsPage() {
     async function fetchLog() {
       // Try reading IPFS CID from onchain ENS text record
       try {
-        const { createPublicClient, http } = await import("viem");
-        const { baseSepolia } = await import("viem/chains");
-        const pc = createPublicClient({ chain: baseSepolia, transport: http("https://base-sepolia-rpc.publicnode.com") });
-        const cid = await pc.readContract({
+        const cid = await publicClient.readContract({
           address: ENS_REGISTRY,
           abi: [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const,
           functionName: "getTextRecord",
           args: ["parent", "ipfs.agent_log"],
         });
         if (cid) {
-          const ipfsRes = await fetch(`https://gateway.pinata.cloud/ipfs/${cid}`, { signal: AbortSignal.timeout(10_000) });
-          if (ipfsRes.ok) {
-            const data = await ipfsRes.json();
-            setLog(data);
-            setError(null);
-            setLoading(false);
-            return;
+          const gateways = [
+            `https://ipfs.io/ipfs/${cid}`,
+            `https://cloudflare-ipfs.com/ipfs/${cid}`,
+            `https://gateway.pinata.cloud/ipfs/${cid}`,
+            `https://dweb.link/ipfs/${cid}`,
+          ];
+          for (const url of gateways) {
+            try {
+              const ipfsRes = await fetch(url, { signal: AbortSignal.timeout(6000) });
+              if (ipfsRes.ok) {
+                const data = await ipfsRes.json();
+                setLog(data);
+                setError(null);
+                setLoading(false);
+                return;
+              }
+            } catch {}
           }
         }
       } catch {}

@@ -77,3 +77,32 @@ export async function pinAgentLog(): Promise<string> {
 export async function storeLogCIDOnchain(cid: string): Promise<void> {
   await setChildTextRecord("parent", "ipfs.agent_log", cid);
 }
+
+/**
+ * Pin a termination memory record to IPFS for lineage persistence.
+ * Returns the CID on success, null on failure.
+ */
+export async function pinTerminationMemory(report: {
+  lineageKey: string;
+  generation: number;
+  reason: string;
+  score: number;
+  childLabel: string;
+  // Structured Venice analysis
+  summary?: string;
+  lessons?: string[];
+  avoidPatterns?: string[];
+  recommendedFocus?: string;
+  // Actual voting record that triggered termination
+  votingHistory?: Array<{ proposalId: string; support: number; description?: string }>;
+  ownerValues?: string;
+}): Promise<string | null> {
+  try {
+    return await pinToIPFS({
+      ...report,
+      type: 'termination_memory',
+      project: 'spawn-protocol',
+      pinnedAt: new Date().toISOString(),
+    });
+  } catch { return null; }
+}

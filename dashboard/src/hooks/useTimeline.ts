@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useChainContext } from "@/context/ChainContext";
-import { CONTRACTS, CELO_CONTRACTS } from "@/lib/contracts";
+import { CONTRACTS } from "@/lib/contracts";
 import type { Address } from "viem";
 
 export type EventType =
@@ -24,43 +24,24 @@ export interface TimelineEvent {
   data: Record<string, unknown>;
 }
 
+
 export function useTimeline() {
-  const { client, chainId } = useChainContext();
+  const { client } = useChainContext();
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Cache block timestamps across polls
+  const blockTimestampCache = useRef<Map<bigint, bigint>>(new Map());
+
   const fetchData = useCallback(async () => {
-    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
+    const contracts = CONTRACTS;
     try {
-      // Get a safe fromBlock — public RPCs limit getLogs to 10k block range
       const currentBlock = await client.getBlockNumber();
       const startBlock = currentBlock > BigInt(9999) ? currentBlock - BigInt(9999) : BigInt(0);
 
-      // Get ALL child addresses (active + terminated) from ChildSpawned events
-      // This ensures terminated children's VoteCast + AlignmentUpdated events are visible
-      let childAddresses: `0x${string}`[] = [];
-      try {
-        const spawnedForAddrs = await client.getLogs({
-          address: contracts.SpawnFactory.address,
-          event: {
-            type: "event",
-            name: "ChildSpawned",
-            inputs: [
-              { name: "childId", type: "uint256", indexed: true },
-              { name: "childAddr", type: "address", indexed: false },
-              { name: "governance", type: "address", indexed: false },
-              { name: "budget", type: "uint256", indexed: false },
-            ],
-          },
-          fromBlock: startBlock,
-          toBlock: "latest",
-        });
-        childAddresses = [
-          ...new Set(spawnedForAddrs.map((l) => l.args?.childAddr).filter(Boolean) as `0x${string}`[]),
-        ];
-      } catch {}
-
+      // Fetch ALL logs in parallel — single batch of getLogs calls
+      // Reuse ChildSpawned results for both event list AND child address extraction
       const [
         spawnedLogs,
         terminatedLogs,
@@ -136,43 +117,53 @@ export function useTimeline() {
         }),
       ]);
 
-      // Fetch VoteCast + AlignmentUpdated from each child contract
-      const voteCastLogs: typeof spawnedLogs = [];
-      const alignmentLogs: typeof spawnedLogs = [];
-      for (const addr of childAddresses) {
-        try {
-          const [votes, aligns] = await Promise.all([
-            client.getLogs({
-              address: addr,
-              event: {
-                type: "event",
-                name: "VoteCast",
-                inputs: [
-                  { name: "proposalId", type: "uint256", indexed: true },
-                  { name: "support", type: "uint8", indexed: false },
-                  { name: "encryptedRationale", type: "bytes", indexed: false },
-                ],
-              },
-              fromBlock: startBlock,
-              toBlock: "latest",
-            }),
-            client.getLogs({
-              address: addr,
-              event: {
-                type: "event",
-                name: "AlignmentUpdated",
-                inputs: [
-                  { name: "newScore", type: "uint256", indexed: false },
-                ],
-              },
-              fromBlock: startBlock,
-              toBlock: "latest",
-            }),
-          ]);
-          voteCastLogs.push(...(votes as any[]));
-          alignmentLogs.push(...(aligns as any[]));
-        } catch {}
-      }
+      // Extract child addresses from the spawned logs we already fetched (no duplicate RPC)
+      const childAddresses = [
+        ...new Set(
+          spawnedLogs
+            .map((l) => (l.args as any)?.childAddr)
+            .filter(Boolean) as `0x${string}`[]
+        ),
+      ];
+
+      // Fetch VoteCast + AlignmentUpdated from all children in parallel
+      const childLogResults = await Promise.all(
+        childAddresses.map(async (addr) => {
+          try {
+            const [votes, aligns] = await Promise.all([
+              client.getLogs({
+                address: addr,
+                event: {
+                  type: "event",
+                  name: "VoteCast",
+                  inputs: [
+                    { name: "proposalId", type: "uint256", indexed: true },
+                    { name: "support", type: "uint8", indexed: false },
+                    { name: "encryptedRationale", type: "bytes", indexed: false },
+                  ],
+                },
+                fromBlock: startBlock,
+                toBlock: "latest",
+              }),
+              client.getLogs({
+                address: addr,
+                event: {
+                  type: "event",
+                  name: "AlignmentUpdated",
+                  inputs: [{ name: "newScore", type: "uint256", indexed: false }],
+                },
+                fromBlock: startBlock,
+                toBlock: "latest",
+              }),
+            ]);
+            return { votes: votes as any[], aligns: aligns as any[] };
+          } catch {
+            return { votes: [], aligns: [] };
+          }
+        })
+      );
+      const voteCastLogs = childLogResults.flatMap((r) => r.votes);
+      const alignmentLogs = childLogResults.flatMap((r) => r.aligns);
 
       const allEvents: TimelineEvent[] = [
         ...spawnedLogs.map((log) => ({
@@ -251,21 +242,24 @@ export function useTimeline() {
         })),
       ];
 
-      // Fetch timestamps for unique block numbers (batch, max 20)
-      const uniqueBlocks = [...new Set(allEvents.map((e) => e.blockNumber))].slice(0, 20);
-      const blockTimestamps = new Map<bigint, bigint>();
-      await Promise.all(
-        uniqueBlocks.map(async (bn) => {
-          try {
-            const block = await client.getBlock({ blockNumber: bn });
-            blockTimestamps.set(bn, block.timestamp);
-          } catch {}
-        })
-      );
+      // Fetch timestamps only for blocks we haven't cached yet
+      const uniqueBlocks = [...new Set(allEvents.map((e) => e.blockNumber))];
+      const uncachedBlocks = uniqueBlocks.filter((bn) => !blockTimestampCache.current.has(bn)).slice(0, 20);
 
-      // Attach timestamps
+      if (uncachedBlocks.length > 0) {
+        await Promise.all(
+          uncachedBlocks.map(async (bn) => {
+            try {
+              const block = await client.getBlock({ blockNumber: bn });
+              blockTimestampCache.current.set(bn, block.timestamp);
+            } catch {}
+          })
+        );
+      }
+
+      // Attach timestamps from cache
       for (const event of allEvents) {
-        event.timestamp = blockTimestamps.get(event.blockNumber);
+        event.timestamp = blockTimestampCache.current.get(event.blockNumber);
       }
 
       allEvents.sort((a, b) => {
@@ -281,13 +275,13 @@ export function useTimeline() {
     } finally {
       setLoading(false);
     }
-  }, [client, chainId]);
+  }, [client]);
 
   useEffect(() => {
     setLoading(true);
     setEvents([]);
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -295,7 +289,7 @@ export function useTimeline() {
 }
 
 export function useTreasuryData() {
-  const { client, chainId } = useChainContext();
+  const { client } = useChainContext();
   const [governanceValues, setGovernanceValues] = useState<string>("");
   const [parentAgent, setParentAgent] = useState<Address | null>(null);
   const [maxChildren, setMaxChildren] = useState<bigint>(BigInt(0));
@@ -305,7 +299,7 @@ export function useTreasuryData() {
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
-    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
+    const contracts = CONTRACTS;
     try {
       const [values, agent, maxC, maxB, paused] = await Promise.all([
         client.readContract({
@@ -345,12 +339,12 @@ export function useTreasuryData() {
     } finally {
       setLoading(false);
     }
-  }, [client, chainId]);
+  }, [client]);
 
   useEffect(() => {
     setLoading(true);
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 

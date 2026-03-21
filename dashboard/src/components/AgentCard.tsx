@@ -82,6 +82,14 @@ export function AgentCard({ child, justVoted = false, delegationHash }: AgentCar
                 REVOKED
               </span>
             )}
+            {(() => {
+              const generation = child.ensLabel.match(/-v(\d+)$/)?.[1];
+              return generation && Number(generation) > 1 ? (
+                <span className="text-[9px] border border-cyan-400/30 bg-cyan-400/10 text-cyan-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap">
+                  Gen {generation}
+                </span>
+              ) : null;
+            })()}
           </div>
           <span
             className="font-mono text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"

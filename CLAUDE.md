@@ -69,7 +69,7 @@ while (true) {
   1. Read owner's governance values from ParentTreasury contract
   2. Get list of active children from SpawnFactory
   3. For each child: resolve ENS name, fetch votes, evaluate alignment via Venice (0-100)
-  4. If alignment < 60: terminate → deregister ENS → Venice post-mortem → respawn with operator + ENS + process
+  4. If alignment < 60: terminate → deregister ENS → Venice post-mortem → pin termination report to IPFS → store CID as ENS text record → respawn with operator + ENS + lineage memory (last 3 termination reports) + process
   5. Dynamic scaling:
      - Check if any governor lacks a child → auto-spawn
      - Check if any child is idle (0 new votes for 5 cycles + no active proposals) → auto-recall
@@ -87,7 +87,7 @@ while (active) {
   2. For each unvoted proposal:
      a. Summarize proposal via Venice
      b. Assess risk via Venice
-     c. Decide FOR/AGAINST/ABSTAIN via Venice + owner values
+     c. Decide FOR/AGAINST/ABSTAIN via Venice + owner values + lineage memory (predecessor termination reports)
      d. Encrypt reasoning via Lit Protocol (decrypt after vote ends)
      e. Call castVote() onchain with encrypted rationale
   3. For proposals where voting ended:
@@ -128,6 +128,7 @@ const venice = new OpenAI({
 - **Reasoning verification**: keccak256 hash of revealed rationale shown for E2EE integrity proof
 - **Multi-source proposals**: Tally (9 DAOs) + Snapshot (12 spaces) + simulated
 - **IPFS**: Agent log pinned to decentralized storage, CID stored onchain as ENS text record
+- **Lineage Memory**: termination reports pinned to IPFS, CID stored as ENS text record (`lineage-memory` key), respawned agents inherit last 3 predecessor reports as Venice system prompt context
 - **ERC-7715 delegation lifecycle**: create → scope → evaluate → revoke, shown per agent with badges
 - **DeleGator smart account**: parent uses MetaMask DeleGator for onchain delegation enforcement
 - Timeline of all governance actions with tx links

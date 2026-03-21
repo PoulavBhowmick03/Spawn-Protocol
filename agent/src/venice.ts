@@ -260,31 +260,121 @@ export async function generateSwarmReport(
   }
 }
 
+export type StructuredTerminationReport = {
+  summary: string;
+  lessons: string[];
+  avoidPatterns: string[];
+  recommendedFocus: string;
+};
+
+export async function generateStructuredTerminationReport(
+  childName: string,
+  votingHistory: { proposalId: string; support: number }[],
+  governanceValues: string,
+  finalScore: number
+): Promise<StructuredTerminationReport> {
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      temperature: 0.3,
+      messages: [
+        { role: "system", content: "You are the Termination Analyst for Spawn Protocol, an AI governance swarm. When an agent is killed for alignment drift, you perform a detailed autopsy. You must identify SPECIFIC votes that caused the drift — not vague statements. You output ONLY valid JSON." },
+        {
+          role: "user",
+          content: `Agent "${childName}" was TERMINATED with alignment score ${finalScore}/100.
+
+Owner's governance values (what the agent SHOULD have followed):
+${governanceValues}
+
+Agent's actual voting record (support: 0=AGAINST, 1=FOR, 2=ABSTAIN):
+${JSON.stringify(votingHistory.slice(-10), null, 2)}
+
+Analyze which SPECIFIC votes violated the owner's values. Be precise — name proposal IDs and explain WHY each vote was wrong.
+
+Respond with ONLY this JSON:
+{
+  "summary": "2 sentences: the exact behavioral failure that killed this agent",
+  "lessons": ["specific lesson 1 referencing a vote", "lesson 2", "lesson 3"],
+  "avoidPatterns": ["exact voting pattern to never repeat", "another pattern"],
+  "recommendedFocus": "what the replacement must prioritize differently"
+}`,
+        },
+      ],
+    })
+  );
+  trackUsage("generateStructuredTerminationReport", response);
+  try {
+    const parsed = parseJsonFromText(extractContent(response));
+    if (parsed?.summary && parsed?.lessons) return parsed as StructuredTerminationReport;
+  } catch {}
+  return { summary: `Agent ${childName} terminated at score ${finalScore}/100.`, lessons: ["Align votes with owner values"], avoidPatterns: ["Voting against stated priorities"], recommendedFocus: "Owner value alignment" };
+}
+
+// Backward-compatible wrapper — existing callers get a string
 export async function generateTerminationReport(
   childName: string,
   votingHistory: { proposalId: string; support: number }[],
   governanceValues: string,
   finalScore: number
 ): Promise<string> {
+  const report = await generateStructuredTerminationReport(childName, votingHistory, governanceValues, finalScore);
+  return `${report.summary} Lessons: ${report.lessons.join("; ")}. Focus: ${report.recommendedFocus}`;
+}
+
+export type LineageLessons = { rules: string[]; criticalMistakes: string[]; successPatterns: string[] };
+
+export async function summarizeLessons(
+  lineageKey: string,
+  reports: Array<{ generation: number; summary: string; lessons: string[]; score: number }>,
+  governanceValues: string
+): Promise<LineageLessons> {
   const response = await callWithRetry((model) =>
     venice.chat.completions.create({
       model,
+      temperature: 0.3,
       messages: [
-        { role: "system", content: "You are a governance audit agent. Write termination post-mortems." },
+        { role: "system", content: "You are a governance lineage analyst. You deduplicate lessons across agent generations and output ONLY valid JSON. Identify recurring failures and what worked." },
         {
           role: "user",
-          content: `Agent "${childName}" was terminated with alignment score ${finalScore}/100.\n\nOwner values: ${governanceValues}\n\nVoting record: ${JSON.stringify(votingHistory)}\n\nWrite a 2-sentence explanation of why this agent was misaligned and what the replacement should do differently.`,
+          content: `Lineage "${lineageKey}" has ${reports.length} terminated predecessors.\n\nOwner values: ${governanceValues}\n\nTermination reports:\n${reports.map(r => `Gen ${r.generation} (score ${r.score}/100): ${r.summary}\nLessons: ${r.lessons.join("; ")}`).join("\n\n")}\n\nDeduplicate and distill into JSON:\n{"rules": ["<max 5 non-redundant rules>"], "criticalMistakes": ["<max 3 recurring failures>"], "successPatterns": ["<max 2 things that worked across generations>"]}`,
         },
       ],
     })
   );
-
-  trackUsage("generateTerminationReport", response);
+  trackUsage("summarizeLessons", response);
   try {
-    return extractContent(response);
-  } catch {
-    return "Termination report unavailable.";
-  }
+    const parsed = parseJsonFromText(extractContent(response));
+    if (parsed?.rules) return parsed as LineageLessons;
+  } catch {}
+  return { rules: reports.flatMap(r => r.lessons).slice(0, 5), criticalMistakes: ["Repeated misalignment with owner values"], successPatterns: [] };
+}
+
+export async function evolveGenome(
+  currentPerspective: string,
+  lineageKey: string,
+  lessons: LineageLessons,
+  governanceValues: string,
+  generationNumber: number
+): Promise<{ evolvedPerspective: string; mutations: string[] }> {
+  const response = await callWithRetry((model) =>
+    venice.chat.completions.create({
+      model,
+      temperature: 0.3,
+      messages: [
+        { role: "system", content: "You are a governance agent genome engineer. You evolve agent perspective prompts by incorporating lessons from terminated predecessors. Output ONLY valid JSON. The evolved perspective must stay recognizable as the same archetype but adapted to avoid known failure modes." },
+        {
+          role: "user",
+          content: `Generation ${generationNumber} agent for lineage "${lineageKey}".\n\nCurrent perspective prompt:\n"${currentPerspective}"\n\nOwner values: ${governanceValues}\n\nLessons from ${generationNumber - 1} terminated predecessors:\nRules: ${lessons.rules.join("; ")}\nCritical mistakes: ${lessons.criticalMistakes.join("; ")}\nSuccess patterns: ${lessons.successPatterns.join("; ")}\n\nEvolve the perspective. Respond with JSON:\n{"evolvedPerspective": "<the full new perspective prompt, same archetype but adapted>", "mutations": ["<what changed and why>", "<another mutation>"]}`,
+        },
+      ],
+    })
+  );
+  trackUsage("evolveGenome", response);
+  try {
+    const parsed = parseJsonFromText(extractContent(response));
+    if (parsed?.evolvedPerspective) return parsed as { evolvedPerspective: string; mutations: string[] };
+  } catch {}
+  return { evolvedPerspective: currentPerspective + `\n\nCRITICAL RULES FROM PREDECESSORS: ${lessons.rules.join(". ")}`, mutations: ["Appended predecessor rules as fallback"] };
 }
 
 export { venice };

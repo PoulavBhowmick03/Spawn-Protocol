@@ -1,7 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
 import { useSwarmData } from "@/hooks/useSwarmData";
-import { useProposals } from "@/hooks/useProposals";
 import { useChainContext } from "@/context/ChainContext";
 import { formatAddress } from "@/lib/contracts";
 
@@ -9,64 +9,45 @@ type SortKey = "score" | "votes" | "efficiency" | "streak";
 
 export default function LeaderboardPage() {
   const { children, loading } = useSwarmData();
-  const { proposals } = useProposals();
   const { explorerBase } = useChainContext();
 
-  // Build leaderboard data from active children
+  // Build leaderboard data from active children (vote breakdown already in ChildInfo)
   const activeChildren = children.filter((c) => c.active);
   const terminatedChildren = children.filter((c) => !c.active);
 
-  // Compute per-agent stats
-  const leaderboard = activeChildren.map((child) => {
-    const votes = Number(child.voteCount);
-    const alignment = Number(child.alignmentScore);
+  const { sorted, totalVotes, avgAlignment, totalFor, totalAgainst } = useMemo(() => {
+    const leaderboard = activeChildren.map((child) => {
+      const votes = Number(child.voteCount);
+      const alignment = Number(child.alignmentScore);
+      const diversityScore = votes > 0 ? Math.round(((child.againstVotes + child.abstainVotes) / votes) * 100) : 0;
+      const efficiency = votes > 0 ? Math.round((alignment / 100) * votes) : 0;
+      const perspective = child.ensLabel.split("-").pop() || "general";
 
-    // Find proposals this agent voted on
-    const agentVotes = proposals.flatMap((p) =>
-      p.voters
-        .filter((v) => v.childAddr.toLowerCase() === child.childAddr.toLowerCase())
-        .map((v) => ({ proposalId: p.id, support: v.support, daoName: p.daoName }))
-    );
+      return {
+        ...child,
+        votes,
+        alignment,
+        diversityScore,
+        efficiency,
+        perspective,
+      };
+    });
 
-    // Voting diversity: ratio of AGAINST votes (not just rubber-stamping)
-    const againstVotes = agentVotes.filter((v) => v.support === 0).length;
-    const forVotes = agentVotes.filter((v) => v.support === 1).length;
-    const abstainVotes = agentVotes.filter((v) => v.support === 2).length;
-    const diversityScore = votes > 0 ? Math.round(((againstVotes + abstainVotes) / votes) * 100) : 0;
-
-    // Efficiency: alignment per vote (higher = more efficient governance)
-    const efficiency = votes > 0 ? Math.round((alignment / 100) * votes) : 0;
-
-    // Perspective from label
-    const perspective = child.ensLabel.split("-").pop() || "general";
+    const sorted = [...leaderboard].sort((a, b) => {
+      if (b.alignment !== a.alignment) return b.alignment - a.alignment;
+      return b.votes - a.votes;
+    });
 
     return {
-      ...child,
-      votes,
-      alignment,
-      forVotes,
-      againstVotes,
-      abstainVotes,
-      diversityScore,
-      efficiency,
-      perspective,
+      sorted,
+      totalVotes: sorted.reduce((sum, c) => sum + c.votes, 0),
+      avgAlignment: sorted.length > 0
+        ? Math.round(sorted.reduce((sum, c) => sum + c.alignment, 0) / sorted.length)
+        : 0,
+      totalFor: sorted.reduce((sum, c) => sum + c.forVotes, 0),
+      totalAgainst: sorted.reduce((sum, c) => sum + c.againstVotes, 0),
     };
-  });
-
-  // Sort by alignment score by default
-  const sorted = [...leaderboard].sort((a, b) => {
-    // Primary: alignment score, Secondary: vote count
-    if (b.alignment !== a.alignment) return b.alignment - a.alignment;
-    return b.votes - a.votes;
-  });
-
-  // Compute aggregate stats
-  const totalVotes = sorted.reduce((sum, c) => sum + c.votes, 0);
-  const avgAlignment = sorted.length > 0
-    ? Math.round(sorted.reduce((sum, c) => sum + c.alignment, 0) / sorted.length)
-    : 0;
-  const totalAgainst = sorted.reduce((sum, c) => sum + c.againstVotes, 0);
-  const totalFor = sorted.reduce((sum, c) => sum + c.forVotes, 0);
+  }, [activeChildren]);
 
   return (
     <div className="p-8">
@@ -175,8 +156,8 @@ export default function LeaderboardPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-center text-gray-300">{agent.votes}</td>
-                    <td className="px-4 py-3 text-center text-green-400">{agent.forVotes}</td>
-                    <td className="px-4 py-3 text-center text-red-400">{agent.againstVotes}</td>
+                    <td className="px-4 py-3 text-center text-green-400">{Number(agent.forVotes)}</td>
+                    <td className="px-4 py-3 text-center text-red-400">{Number(agent.againstVotes)}</td>
                     <td className="px-4 py-3 text-center">
                       <span className={`${agent.diversityScore > 20 ? "text-purple-400" : "text-gray-500"}`}>
                         {agent.diversityScore}%

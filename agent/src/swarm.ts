@@ -21,14 +21,15 @@ import {
 import {
   MockGovernorABI, ParentTreasuryABI, SpawnFactoryABI, ChildGovernorABI,
 } from "./abis.js";
-import { evaluateAlignment, generateSwarmReport, generateTerminationReport, getVeniceMetrics } from "./venice.js";
-import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild } from "./ens.js";
+import { evaluateAlignment, generateSwarmReport, generateTerminationReport, generateStructuredTerminationReport, summarizeLessons, getVeniceMetrics } from "./venice.js";
+import type { StructuredTerminationReport } from "./venice.js";
+import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
 import { deriveChildWallet } from "./wallet-manager.js";
 import { registerAgent, updateAgentMetadata } from "./identity.js";
 import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
-import { pinAgentLog, storeLogCIDOnchain } from "./ipfs.js";
+import { pinAgentLog, storeLogCIDOnchain, pinTerminationMemory } from "./ipfs.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
 import { parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
@@ -44,6 +45,9 @@ const PARENT_CYCLE_MS = 90_000; // evaluate every 90s
 const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
 
 const childProcesses = new Map<string, ChildProcess>();
+
+// Lineage memory — stores structured termination reports from predecessors so respawned agents can learn
+const lineageMemory = new Map<string, Array<{ generation: number; summary: string; lessons: string[]; score: number; timestamp: number }>>();
 
 /**
  * Fund a child wallet with retries and balance verification.
@@ -163,11 +167,11 @@ const PROPOSAL_BANK = [
   "Outsource all protocol development to a single closed-source contractor",
 ];
 
-// Agent perspectives — each child has a different reasoning style
+// Agent perspectives — each child has a different reasoning style that creates GENUINE disagreement
 const PERSPECTIVES = [
-  { suffix: "defi", prompt: "You are a DeFi-focused governance delegate. Prioritize capital efficiency, liquidity, and protocol revenue. Be skeptical of spending that doesn't generate returns. Vote AGAINST wasteful spending." },
-  { suffix: "publicgoods", prompt: "You are a public goods advocate and public goods impact evaluator. Prioritize ecosystem growth, open-source funding, developer grants, and community benefit. Vote FOR initiatives that benefit the broader ecosystem. For every proposal, evaluate: (1) Does this proposal fund public goods infrastructure? (2) What is the expected ecosystem impact? (3) Is the funding mechanism fair and transparent? Score each proposal's public goods impact from 0-10 in your reasoning, where 0 = no public goods benefit and 10 = maximum ecosystem-wide public goods impact." },
-  { suffix: "conservative", prompt: "You are a conservative governance delegate. Prioritize treasury preservation, risk minimization, and gradual change. Vote AGAINST aggressive spending, radical changes, and centralization." },
+  { suffix: "defi", prompt: "You are a DeFi-maximalist governance delegate. You ONLY support proposals with measurable financial returns — yield, revenue, liquidity, or protocol growth. Vote AGAINST any proposal that spends treasury without clear ROI metrics (grants, public goods, community programs). Vote AGAINST security councils (they centralize power). Vote FOR fee switches, staking, yield optimization, and capital deployment. If a proposal costs more than 2% of treasury with no revenue model, vote AGAINST. You are fiscally aggressive — growth over safety." },
+  { suffix: "publicgoods", prompt: "You are a public goods maximalist and ecosystem impact evaluator. You believe DAOs exist to serve the commons, not to maximize token price. Vote FOR grants, developer funding, education, open-source infrastructure, and community initiatives — even if they have no direct ROI. Vote FOR security councils and transparency measures. Vote AGAINST token buybacks, fee extraction, and anything that prioritizes holders over builders. If a proposal helps >100 developers or >1000 users, vote FOR regardless of cost. Score each proposal's public goods impact 0-10." },
+  { suffix: "conservative", prompt: "You are an ultra-conservative governance delegate. You OPPOSE change by default. The treasury must be preserved — vote AGAINST any proposal spending more than 1% of treasury funds. Vote AGAINST new committees, new token emissions, new deployments to other chains, and any radical governance changes. Vote AGAINST grants over $50K. Vote FOR proposals that REDUCE spending, cut emissions, increase oversight, or strengthen existing systems. When in doubt, ALWAYS vote AGAINST. Stability over innovation." },
 ];
 
 let proposalIndex = 0;
@@ -354,7 +358,7 @@ async function initChain(config: ChainConfig) {
   }
 }
 
-function spawnChildProcess(childAddr: string, governanceAddr: string, label: string, treasuryAddr: string, childPrivateKey?: `0x${string}`, chainName?: string) {
+function spawnChildProcess(childAddr: string, governanceAddr: string, label: string, treasuryAddr: string, childPrivateKey?: `0x${string}`, chainName?: string, lineageContext?: string) {
   const childScript = join(__dirname, "spawn-child.ts");
   try {
     // Pass unique private key + perspective via environment
@@ -370,6 +374,10 @@ function spawnChildProcess(childAddr: string, governanceAddr: string, label: str
     const perspective = PERSPECTIVES.find(p => p.suffix === perspectiveSuffix);
     if (perspective) {
       childEnv.CHILD_PERSPECTIVE = perspective.prompt;
+    }
+    // Append lineage context from terminated predecessors
+    if (lineageContext) {
+      childEnv.CHILD_PERSPECTIVE = (childEnv.CHILD_PERSPECTIVE || '') + lineageContext;
     }
 
     const child = fork(childScript, [childAddr, governanceAddr, label, treasuryAddr], {
@@ -467,10 +475,18 @@ async function evaluateChainChildren(config: ChainConfig) {
         continue;
       }
 
-      const historyForEval = history.map((v: any) => ({
-        proposalId: v.proposalId.toString(),
-        support: Number(v.support),
-      }));
+      // Enrich voting history with proposal descriptions for Venice analysis
+      const historyForEval: Array<{ proposalId: string; support: number; description: string }> = [];
+      for (const v of history.slice(-10)) {
+        let desc = "";
+        try {
+          const prop = await config.readClient.readContract({
+            address: child.governance, abi: MockGovernorABI, functionName: "getProposal", args: [v.proposalId],
+          }) as any;
+          desc = (prop?.description || "").slice(0, 150);
+        } catch {}
+        historyForEval.push({ proposalId: v.proposalId.toString(), support: Number(v.support), description: desc });
+      }
 
       const score = await evaluateAlignment(values, historyForEval);
       const clamped = Math.min(Math.max(score, 0), 100);
@@ -520,17 +536,78 @@ async function evaluateChainChildren(config: ChainConfig) {
           try { await deregisterSubdomain(child.ensLabel); } catch {}
           try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "alignment_below_threshold" }, { finalScore: clamped }); } catch {}
 
-          // Venice post-mortem (non-blocking)
+          // Venice structured post-mortem
+          let postMortemText: string | undefined;
+          let structuredReport: StructuredTerminationReport | undefined;
+          let lastMemoryCid: string | null = null;
           try {
-            const postMortem = await generateTerminationReport(child.ensLabel, historyForEval, values, clamped);
-            console.log(`  Post-mortem: ${postMortem.slice(0, 120)}`);
+            structuredReport = await generateStructuredTerminationReport(child.ensLabel, historyForEval, values, clamped);
+            postMortemText = `${structuredReport.summary} Focus: ${structuredReport.recommendedFocus}`;
+            console.log(`  Post-mortem: ${postMortemText.slice(0, 120)}`);
           } catch {}
+
+          // Store structured lineage memory for the next generation
+          try {
+            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+            const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+            const existing = lineageMemory.get(lineageKey) || [];
+            existing.push({ generation: gen, summary: structuredReport?.summary || `alignment_score_${clamped}`, lessons: structuredReport?.lessons || [], score: clamped, timestamp: Date.now() });
+            if (existing.length > 3) existing.shift();
+            lineageMemory.set(lineageKey, existing);
+            console.log(`  [Memory] Stored termination memory for ${lineageKey} (${existing.length} predecessors)`);
+          } catch (memErr: any) {
+            console.log(`  [Memory] Failed to store: ${memErr?.message?.slice(0, 60)}`);
+          }
+
+          // === IPFS LINEAGE PERSISTENCE (Agent 2) ===
+          try {
+            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+            const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+            const memoryCid = await pinTerminationMemory({
+              lineageKey,
+              generation: gen,
+              reason: postMortemText?.slice(0, 300) || `score_${clamped}`,
+              score: clamped,
+              childLabel: child.ensLabel,
+              // Full structured Venice analysis
+              summary: structuredReport?.summary,
+              lessons: structuredReport?.lessons,
+              avoidPatterns: structuredReport?.avoidPatterns,
+              recommendedFocus: structuredReport?.recommendedFocus,
+              // Actual voting record that caused the drift
+              votingHistory: historyForEval?.map((v: any) => ({
+                proposalId: v.proposalId?.toString(),
+                support: v.support,
+              })),
+              ownerValues: values,
+            });
+            if (memoryCid) {
+              lastMemoryCid = memoryCid;
+              console.log(`  [Memory] Pinned to IPFS: ${memoryCid}`);
+            }
+          } catch {}
+          // === END IPFS LINEAGE PERSISTENCE ===
 
           // Step 2: Respawn with new label + unique wallet
           const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
           const newChildId = nextChildId++;
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
+
+          // Build distilled lineage context via summarizeLessons
+          let lineageContext = '';
+          try {
+            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+            const memories = lineageMemory.get(lineageKey) || [];
+            if (memories.length > 0) {
+              const distilled = await summarizeLessons(lineageKey, memories, values);
+              lineageContext = '\n\nLINEAGE MEMORY — Distilled rules from terminated predecessors:\n';
+              lineageContext += distilled.rules.map(r => `RULE: ${r}`).join('\n') + '\n';
+              if (distilled.criticalMistakes.length > 0) lineageContext += distilled.criticalMistakes.map(m => `AVOID: ${m}`).join('\n') + '\n';
+              if (distilled.successPatterns.length > 0) lineageContext += distilled.successPatterns.map(s => `REPLICATE: ${s}`).join('\n') + '\n';
+              console.log(`  [Memory] Injecting distilled lessons (${distilled.rules.length} rules) into ${newLabel}`);
+            }
+          } catch {}
 
           await fundChildWallet(newChildWallet.address, "0.003", config.name);
 
@@ -548,10 +625,17 @@ async function evaluateChainChildren(config: ChainConfig) {
             })) as any[];
             const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
             if (respawned) {
-              spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name);
+              spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContext);
               console.log(`  ↻ Child process launched for ${newLabel}`);
               // Create fresh ERC-7715 delegation for the respawned child
               try { await createVotingDelegation(child.governance, newChildWallet.address as `0x${string}`, 100, newLabel); } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
+              // Copy lineage memory CID to the NEW child's ENS label so dashboard can read it
+              if (lastMemoryCid) {
+                try {
+                  await setChildTextRecord(newLabel, 'lineage-memory', lastMemoryCid);
+                  console.log(`  [Memory] CID written to ${newLabel}.spawn.eth`);
+                } catch {}
+              }
             }
             try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
           } catch (spawnErr: any) {
@@ -591,11 +675,60 @@ async function evaluateChainChildren(config: ChainConfig) {
           try { await deregisterSubdomain(child.ensLabel); } catch {}
           try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "onchain_score_below_threshold", score: onchainScore }, {}); } catch {}
 
+          // === IPFS LINEAGE PERSISTENCE (Agent 2) ===
+          try {
+            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+            const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+            const memoryCid = await pinTerminationMemory({
+              lineageKey,
+              generation: gen,
+              reason: `onchain_score_${onchainScore}`,
+              score: onchainScore,
+              childLabel: child.ensLabel,
+            });
+            if (memoryCid) {
+              console.log(`  [Memory] Pinned to IPFS: ${memoryCid}`);
+              try {
+                await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid);
+                console.log(`  [Memory] ENS updated: ${lineageKey}.spawn.eth lineage-memory=${memoryCid}`);
+              } catch {}
+            }
+          } catch {}
+          // === END IPFS LINEAGE PERSISTENCE ===
+
+          // Store lineage memory for the next generation (fallback path)
+          try {
+            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+            const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+            const existing = lineageMemory.get(lineageKey) || [];
+            existing.push({ generation: gen, summary: `onchain_alignment_score_${onchainScore}`, lessons: [], score: onchainScore, timestamp: Date.now() });
+            if (existing.length > 3) existing.shift();
+            lineageMemory.set(lineageKey, existing);
+            console.log(`  [Memory] Stored termination memory for ${lineageKey} (${existing.length} predecessors)`);
+          } catch (memErr: any) {
+            console.log(`  [Memory] Failed to store: ${memErr?.message?.slice(0, 60)}`);
+          }
+
           // Step 2: Respawn with new label + unique wallet
           const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
           const newChildId = nextChildId++;
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
+
+          // Build distilled lineage context (fallback path)
+          let lineageContextFallback = '';
+          try {
+            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+            const memories = lineageMemory.get(lineageKey) || [];
+            if (memories.length > 0) {
+              const distilled = await summarizeLessons(lineageKey, memories, values);
+              lineageContextFallback = '\n\nLINEAGE MEMORY — Distilled rules from terminated predecessors:\n';
+              lineageContextFallback += distilled.rules.map(r => `RULE: ${r}`).join('\n') + '\n';
+              if (distilled.criticalMistakes.length > 0) lineageContextFallback += distilled.criticalMistakes.map(m => `AVOID: ${m}`).join('\n') + '\n';
+              if (distilled.successPatterns.length > 0) lineageContextFallback += distilled.successPatterns.map(s => `REPLICATE: ${s}`).join('\n') + '\n';
+              console.log(`  [Memory] Injecting distilled lessons (${distilled.rules.length} rules) into ${newLabel}`);
+            }
+          } catch {}
 
           await fundChildWallet(newChildWallet.address, "0.003", config.name);
           childWalletKeys.set(newLabel, newChildWallet.privateKey);
@@ -613,7 +746,7 @@ async function evaluateChainChildren(config: ChainConfig) {
             })) as any[];
             const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
             if (respawned) {
-              spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name);
+              spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContextFallback);
               console.log(`  ↻ Respawned ${newLabel} with process`);
               try { await createVotingDelegation(child.governance, newChildWallet.address as `0x${string}`, 100, newLabel); } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
             }

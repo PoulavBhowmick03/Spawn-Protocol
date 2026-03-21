@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useChainContext } from "@/context/ChainContext";
-import { CONTRACTS, CELO_CONTRACTS, GOVERNORS, CELO_GOVERNORS } from "@/lib/contracts";
+import { CONTRACTS, GOVERNORS } from "@/lib/contracts";
 import { SpawnFactoryABI, ChildGovernorABI } from "@/lib/abis";
 
 export interface ProposalVoter {
@@ -48,18 +48,21 @@ interface RawProposal {
 }
 
 export function useProposals() {
-  const { client, chainId } = useChainContext();
+  const { client } = useChainContext();
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
-    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
-    const governors = chainId === "celo" ? CELO_GOVERNORS : GOVERNORS;
-    try {
-      const allProposals: Proposal[] = [];
+  // Track last known proposal count per governor to only fetch new ones
+  const prevCounts = useRef<Map<string, number>>(new Map());
+  const cachedProposals = useRef<Proposal[]>([]);
 
-      await Promise.all(
+  const fetchData = useCallback(async () => {
+    const contracts = CONTRACTS;
+    const governors = GOVERNORS;
+    try {
+      // Step 1: Get proposal counts from all governors (3 calls, multicall-batched)
+      const counts = await Promise.all(
         governors.map(async (gov) => {
           try {
             const count = await client.readContract({
@@ -67,90 +70,148 @@ export function useProposals() {
               abi: gov.abi,
               functionName: "proposalCount",
             });
-
-            const total = Number(count);
-            if (total === 0) return;
-
-            const ids = Array.from({ length: total }, (_, i) => BigInt(i + 1));
-
-            const results = await Promise.all(
-              ids.map(async (id) => {
-                const [rawProposal, state] = await Promise.all([
-                  client.readContract({
-                    address: gov.address,
-                    abi: gov.abi,
-                    functionName: "getProposal",
-                    args: [id],
-                  }) as Promise<RawProposal>,
-                  client.readContract({
-                    address: gov.address,
-                    abi: gov.abi,
-                    functionName: "state",
-                    args: [id],
-                  }),
-                ]);
-
-                // Parse source DAO from description — tag like "[Arbitrum Core — Real Governance via Tally]"
-                // can appear anywhere in the text
-                const desc = rawProposal.description || "";
-                const tallyMatch = desc.match(/\[(.+?)\s*[—–-]\s*Real Governance via Tally\]/);
-                const sourceDaoName = tallyMatch ? tallyMatch[1] : null;
-
-                return {
-                  id: rawProposal.id,
-                  description: desc,
-                  startTime: rawProposal.startTime,
-                  endTime: rawProposal.endTime,
-                  forVotes: rawProposal.forVotes,
-                  againstVotes: rawProposal.againstVotes,
-                  abstainVotes: rawProposal.abstainVotes,
-                  executed: rawProposal.executed,
-                  state: Number(state),
-                  daoName: gov.name,
-                  daoSlug: gov.slug,
-                  governorAddress: gov.address,
-                  daoColor: gov.color,
-                  daoBorderColor: gov.borderColor,
-                  sourceDaoName,
-                  tallySource: !!tallyMatch,
-                  voters: [],
-                  uid: `${gov.slug}-${rawProposal.id.toString()}`,
-                } satisfies Proposal;
-              })
-            );
-
-            allProposals.push(...results);
+            return { gov, count: Number(count) };
           } catch {
-            // If a governor is not deployed / unreachable, skip it gracefully
+            return { gov, count: 0 };
           }
         })
       );
 
-      // Aggregate votes from ChildGovernor contracts (since children
-      // record votes locally, not on MockGovernor)
-      try {
-        const rawChildren = await client.readContract({
-          address: contracts.SpawnFactory.address,
-          abi: SpawnFactoryABI,
-          functionName: "getActiveChildren",
-        });
+      // Step 2: Only fetch proposals we haven't seen yet
+      const newProposals: Proposal[] = [];
+      const staleIds: { gov: typeof governors[number]; id: bigint }[] = [];
 
-        for (const child of rawChildren) {
-          try {
-            const history = await client.readContract({
-              address: child.childAddr,
-              abi: ChildGovernorABI,
-              functionName: "getVotingHistory",
-            });
+      await Promise.all(
+        counts.map(async ({ gov, count }) => {
+          if (count === 0) return;
+          const prevCount = prevCounts.current.get(gov.address) ?? 0;
 
+          // Fetch only new proposals (id > prevCount)
+          const startId = prevCount + 1;
+          if (startId > count) {
+            // No new proposals — but refresh state of active ones (state can change)
+            for (const p of cachedProposals.current) {
+              if (p.governorAddress === gov.address && p.state === 1) {
+                staleIds.push({ gov, id: p.id });
+              }
+            }
+            return;
+          }
+
+          const ids = Array.from({ length: count - prevCount }, (_, i) => BigInt(startId + i));
+
+          const results = await Promise.all(
+            ids.map(async (id) => {
+              const [rawProposal, state] = await Promise.all([
+                client.readContract({
+                  address: gov.address,
+                  abi: gov.abi,
+                  functionName: "getProposal",
+                  args: [id],
+                }) as Promise<RawProposal>,
+                client.readContract({
+                  address: gov.address,
+                  abi: gov.abi,
+                  functionName: "state",
+                  args: [id],
+                }),
+              ]);
+
+              const desc = rawProposal.description || "";
+              const tallyMatch = desc.match(/\[(.+?)\s*[—–-]\s*Real Governance via Tally\]/);
+              const sourceDaoName = tallyMatch ? tallyMatch[1] : null;
+
+              return {
+                id: rawProposal.id,
+                description: desc,
+                startTime: rawProposal.startTime,
+                endTime: rawProposal.endTime,
+                forVotes: rawProposal.forVotes,
+                againstVotes: rawProposal.againstVotes,
+                abstainVotes: rawProposal.abstainVotes,
+                executed: rawProposal.executed,
+                state: Number(state),
+                daoName: gov.name,
+                daoSlug: gov.slug,
+                governorAddress: gov.address,
+                daoColor: gov.color,
+                daoBorderColor: gov.borderColor,
+                sourceDaoName,
+                tallySource: !!tallyMatch,
+                voters: [],
+                uid: `${gov.slug}-${rawProposal.id.toString()}`,
+              } satisfies Proposal;
+            })
+          );
+
+          newProposals.push(...results);
+          prevCounts.current.set(gov.address, count);
+        })
+      );
+
+      // Step 3: Refresh state of previously-active proposals (cheap — just state() calls)
+      if (staleIds.length > 0) {
+        const stateUpdates = await Promise.all(
+          staleIds.map(async ({ gov, id }) => {
+            try {
+              const state = await client.readContract({
+                address: gov.address,
+                abi: gov.abi,
+                functionName: "state",
+                args: [id],
+              });
+              return { govAddr: gov.address, id, state: Number(state) };
+            } catch {
+              return null;
+            }
+          })
+        );
+        for (const update of stateUpdates) {
+          if (!update) continue;
+          const existing = cachedProposals.current.find(
+            (p) => p.governorAddress === update.govAddr && p.id === update.id
+          );
+          if (existing) existing.state = update.state;
+        }
+      }
+
+      // Step 4: Merge cached + new proposals
+      const allProposals = [...cachedProposals.current, ...newProposals];
+
+      // Step 5: Fetch child vote histories (only on first load or when new proposals exist)
+      if (cachedProposals.current.length === 0 || newProposals.length > 0) {
+        try {
+          const rawChildren = await client.readContract({
+            address: contracts.SpawnFactory.address,
+            abi: SpawnFactoryABI,
+            functionName: "getActiveChildren",
+          });
+
+          const proposalMap = new Map<string, Proposal>();
+          for (const p of allProposals) {
+            p.voters = []; // reset voters before re-aggregating
+            proposalMap.set(`${p.governorAddress.toLowerCase()}-${p.id.toString()}`, p);
+          }
+
+          const childHistories = await Promise.all(
+            rawChildren.map(async (child) => {
+              try {
+                const history = await client.readContract({
+                  address: child.childAddr,
+                  abi: ChildGovernorABI,
+                  functionName: "getVotingHistory",
+                });
+                return { child, history };
+              } catch {
+                return { child, history: [] as any[] };
+              }
+            })
+          );
+
+          for (const { child, history } of childHistories) {
+            const govAddr = child.governance.toLowerCase();
             for (const vote of history) {
-              // Find matching proposal across all governors
-              const govAddr = child.governance.toLowerCase();
-              const matching = allProposals.find(
-                (p) =>
-                  p.governorAddress.toLowerCase() === govAddr &&
-                  p.id === vote.proposalId
-              );
+              const matching = proposalMap.get(`${govAddr}-${vote.proposalId.toString()}`);
               if (matching) {
                 if (vote.support === 1) matching.forVotes += BigInt(1);
                 else if (vote.support === 0) matching.againstVotes += BigInt(1);
@@ -162,9 +223,9 @@ export function useProposals() {
                 });
               }
             }
-          } catch {}
-        }
-      } catch {}
+          }
+        } catch {}
+      }
 
       // Sort: newest first by startTime
       allProposals.sort((a, b) => {
@@ -173,6 +234,7 @@ export function useProposals() {
         return 0;
       });
 
+      cachedProposals.current = allProposals;
       setProposals(allProposals);
       setError(null);
     } catch (err) {
@@ -180,13 +242,15 @@ export function useProposals() {
     } finally {
       setLoading(false);
     }
-  }, [client, chainId]);
+  }, [client]);
 
   useEffect(() => {
     setLoading(true);
     setProposals([]);
+    prevCounts.current.clear();
+    cachedProposals.current = [];
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 

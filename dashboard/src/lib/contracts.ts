@@ -56,51 +56,6 @@ export const GOVERNORS = [
   },
 ] as const;
 
-// Celo Sepolia — latest deployment with operator auth (run-1773941913639)
-export const CELO_CONTRACTS = {
-  ParentTreasury: {
-    address: "0x35ab52d20736886ebe3730f7fc2d6fa52c7159d4" as const,
-    abi: ParentTreasuryABI,
-  },
-  SpawnFactory: {
-    address: "0x8d3c3dbbc7a6f87feaf24282956ca8a014fe889a" as const,
-    abi: SpawnFactoryABI,
-  },
-  ChildGovernorImpl: {
-    address: "0xf0e256c1e4ca7f7c89cf369f5d1370f7cbbef076" as const,
-    abi: ChildGovernorABI,
-  },
-} as const;
-
-export const CELO_GOVERNORS = [
-  {
-    name: "Uniswap DAO",
-    slug: "uniswap",
-    address: "0x1e7d5f7c461d8f4678699669ace80e5e317b466f" as const,
-    abi: MockGovernorABI,
-    color: "text-pink-400",
-    borderColor: "border-pink-400/30",
-    bgColor: "bg-pink-400/5",
-  },
-  {
-    name: "Lido DAO",
-    slug: "lido",
-    address: "0x349618bed66c73faca427da69a26cb8f7f91b9bb" as const,
-    abi: MockGovernorABI,
-    color: "text-blue-400",
-    borderColor: "border-blue-400/30",
-    bgColor: "bg-blue-400/5",
-  },
-  {
-    name: "ENS DAO",
-    slug: "ens",
-    address: "0x1f54fd588a80bbde83d91003c043f21705814885" as const,
-    abi: MockGovernorABI,
-    color: "text-purple-400",
-    borderColor: "border-purple-400/30",
-    bgColor: "bg-purple-400/5",
-  },
-] as const;
 
 export const EXPLORER_BASE = "https://sepolia.basescan.org";
 
@@ -125,14 +80,9 @@ export function ensName(ensLabel: string | undefined): string | null {
 
 /** Resolve a governance contract address to a human-readable DAO name */
 const GOVERNOR_NAMES: Record<string, string> = {
-  // Base Sepolia
   "0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": "Uniswap DAO",
   "0x40bae6f7d75c2600d724b4cc194e20e66f6386ac": "Lido DAO",
   "0xb4e46e107fbd9b616b145adb91a5ffe0f5a2c42c": "ENS DAO",
-  // Celo Sepolia
-  "0x1e7d5f7c461d8f4678699669ace80e5e317b466f": "Uniswap DAO",
-  "0x349618bed66c73faca427da69a26cb8f7f91b9bb": "Lido DAO",
-  "0x1f54fd588a80bbde83d91003c043f21705814885": "ENS DAO",
 };
 
 export function governorName(address: string): string | null {

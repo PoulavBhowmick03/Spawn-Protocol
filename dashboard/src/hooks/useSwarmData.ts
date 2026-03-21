@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useChainContext } from "@/context/ChainContext";
-import { CONTRACTS, CELO_CONTRACTS } from "@/lib/contracts";
+import { CONTRACTS } from "@/lib/contracts";
 import { ChildGovernorABI } from "@/lib/abis";
 import type { Address } from "viem";
 
@@ -17,10 +17,13 @@ export interface ChildInfo {
   alignmentScore: bigint;
   voteCount: bigint;
   lastVoteTimestamp: bigint;
+  forVotes: number;
+  againstVotes: number;
+  abstainVotes: number;
 }
 
 export function useSwarmData() {
-  const { client, chainId } = useChainContext();
+  const { client } = useChainContext();
   const [children, setChildren] = useState<ChildInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +31,7 @@ export function useSwarmData() {
   const prevVoteCounts = useRef<Map<string, number>>(new Map());
 
   const fetchData = useCallback(async () => {
-    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
+    const contracts = CONTRACTS;
     try {
       // Step 1: Get active children via getActiveChildren() — single RPC call
       const activeRaw = (await client.readContract({
@@ -43,6 +46,7 @@ export function useSwarmData() {
           let alignmentScore = BigInt(0);
           let voteCount = BigInt(0);
           let lastVoteTimestamp = BigInt(0);
+          let forVotes = 0, againstVotes = 0, abstainVotes = 0;
           try {
             const [score, cnt, history] = await Promise.all([
               client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
@@ -52,8 +56,13 @@ export function useSwarmData() {
             alignmentScore = score;
             voteCount = cnt;
             if (history.length > 0) lastVoteTimestamp = history[history.length - 1].timestamp;
+            for (const v of history) {
+              if (v.support === 1) forVotes++;
+              else if (v.support === 0) againstVotes++;
+              else abstainVotes++;
+            }
           } catch {}
-          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: true, alignmentScore, voteCount, lastVoteTimestamp };
+          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: true, alignmentScore, voteCount, lastVoteTimestamp, forVotes, againstVotes, abstainVotes };
         })
       );
 
@@ -68,26 +77,28 @@ export function useSwarmData() {
       const terminatedStart = Math.max(1, totalCount - 60); // only check last 60
       const terminatedBatch: ChildInfo[] = [];
 
-      for (let start = terminatedStart; start <= totalCount; start += 20) {
-        const batchSize = Math.min(20, totalCount - start + 1);
-        const batch = await Promise.all(
-          Array.from({ length: batchSize }, (_, i) => {
-            const childId = start + i;
-            if (activeIds.has(childId)) return null; // skip active ones
-            return client.readContract({
-              address: contracts.SpawnFactory.address,
-              abi: contracts.SpawnFactory.abi,
-              functionName: "getChild",
-              args: [BigInt(childId)],
-            }).catch(() => null);
-          })
-        );
+      // Fetch all terminated children in parallel (single batch)
+      const allTerminatedIds: number[] = [];
+      for (let i = terminatedStart; i <= totalCount; i++) {
+        if (!activeIds.has(i)) allTerminatedIds.push(i);
+      }
 
-        for (const child of batch) {
-          if (!child || activeIds.has(Number(child.id))) continue;
+      const rawTerminated = await Promise.all(
+        allTerminatedIds.map((childId) =>
+          client.readContract({
+            address: contracts.SpawnFactory.address,
+            abi: contracts.SpawnFactory.abi,
+            functionName: "getChild",
+            args: [BigInt(childId)],
+          }).catch(() => null)
+        )
+      );
+
+      // Enrich all terminated children in parallel
+      const enrichedTerminated = await Promise.all(
+        rawTerminated.filter((child): child is NonNullable<typeof child> => !!child && !activeIds.has(Number(child.id))).map(async (child) => {
           let alignmentScore = BigInt(0);
           let voteCount = BigInt(0);
-          let lastVoteTimestamp = BigInt(0);
           try {
             const [score, cnt] = await Promise.all([
               client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
@@ -96,9 +107,10 @@ export function useSwarmData() {
             alignmentScore = score;
             voteCount = cnt;
           } catch {}
-          terminatedBatch.push({ id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: child.active, alignmentScore, voteCount, lastVoteTimestamp });
-        }
-      }
+          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: child.active, alignmentScore, voteCount, lastVoteTimestamp: BigInt(0), forVotes: 0, againstVotes: 0, abstainVotes: 0 } as ChildInfo;
+        })
+      );
+      terminatedBatch.push(...enrichedTerminated);
 
       const enriched = [...activeEnriched, ...terminatedBatch];
 
@@ -132,13 +144,13 @@ export function useSwarmData() {
     } finally {
       setLoading(false);
     }
-  }, [client, chainId]);
+  }, [client]);
 
   useEffect(() => {
     setLoading(true);
     setChildren([]);
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -146,7 +158,7 @@ export function useSwarmData() {
 }
 
 export function useChildData(childId: string) {
-  const { client, chainId } = useChainContext();
+  const { client } = useChainContext();
   const [child, setChild] = useState<ChildInfo | null>(null);
   const [voteHistory, setVoteHistory] = useState<Array<{
     proposalId: bigint;
@@ -160,7 +172,7 @@ export function useChildData(childId: string) {
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
-    const contracts = chainId === "celo" ? CELO_CONTRACTS : CONTRACTS;
+    const contracts = CONTRACTS;
     try {
       const rawChild = await client.readContract({
         address: contracts.SpawnFactory.address,
@@ -208,6 +220,13 @@ export function useChildData(childId: string) {
       const lastVoteTimestamp =
         history.length > 0 ? history[history.length - 1].timestamp : BigInt(0);
 
+      let forVotes = 0, againstVotes = 0, abstainVotes = 0;
+      for (const v of history) {
+        if (v.support === 1) forVotes++;
+        else if (v.support === 0) againstVotes++;
+        else abstainVotes++;
+      }
+
       setChild({
         id: rawChild.id,
         childAddr: rawChild.childAddr,
@@ -219,6 +238,9 @@ export function useChildData(childId: string) {
         alignmentScore,
         voteCount,
         lastVoteTimestamp,
+        forVotes,
+        againstVotes,
+        abstainVotes,
       });
       setVoteHistory(history);
       setError(null);
@@ -227,11 +249,11 @@ export function useChildData(childId: string) {
     } finally {
       setLoading(false);
     }
-  }, [childId, client, chainId]);
+  }, [childId, client]);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 

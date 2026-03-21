@@ -2,6 +2,7 @@
 
 import { use, useState, useEffect } from "react";
 import Link from "next/link";
+import { keccak256, toBytes } from "viem";
 import { useChildData } from "@/hooks/useSwarmData";
 import { useChainContext } from "@/context/ChainContext";
 import { AlignmentBadge } from "@/components/AlignmentBadge";
@@ -28,21 +29,50 @@ interface PageProps {
 export default function AgentDetailPage({ params }: PageProps) {
   const { id } = use(params);
   const { child, voteHistory, loading, error } = useChildData(id);
-  const { client, chainId } = useChainContext();
+  const { client } = useChainContext();
   const [delegation, setDelegation] = useState<any>(null);
   const [revocation, setRevocation] = useState<any>(null);
+  const [lineageReport, setLineageReport] = useState<any>(null);
+  const [lineageMemoryCid, setLineageMemoryCid] = useState<string | null>(null);
 
   // Fetch delegation + revocation from ENS text records
   useEffect(() => {
-    if (!child || chainId !== "base") return;
+    if (!child) return;
     const label = child.ensLabel;
-    client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation"] })
-      .then(r => { if (r) try { setDelegation(JSON.parse(r as string)); } catch { setDelegation({ raw: r }); } })
-      .catch(() => {});
-    client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation.revoked"] })
-      .then(r => { if (r) try { setRevocation(JSON.parse(r as string)); } catch { setRevocation({ raw: r }); } })
-      .catch(() => {});
-  }, [child, client, chainId]);
+    // Fetch delegation, revocation, and lineage memory all in parallel
+    const baseLabel = label.replace(/-v\d+$/, "");
+    Promise.all([
+      client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation"] }).catch(() => ""),
+      client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation.revoked"] }).catch(() => ""),
+      client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "lineage-memory"] }).catch(() => ""),
+      client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [baseLabel, "lineage-memory"] }).catch(() => ""),
+    ]).then(([del, rev, lineageSelf, lineageBase]) => {
+      if (del) try { setDelegation(JSON.parse(del as string)); } catch { setDelegation({ raw: del }); }
+      if (rev) try { setRevocation(JSON.parse(rev as string)); } catch { setRevocation({ raw: rev }); }
+      const cid = (lineageSelf || lineageBase) as string;
+      if (cid) {
+        setLineageMemoryCid(cid);
+        // Try multiple IPFS gateways — Pinata public gateway often rate-limits (429)
+        const gateways = [
+          `https://ipfs.io/ipfs/${cid}`,
+          `https://cloudflare-ipfs.com/ipfs/${cid}`,
+          `https://gateway.pinata.cloud/ipfs/${cid}`,
+          `https://dweb.link/ipfs/${cid}`,
+        ];
+        (async () => {
+          for (const url of gateways) {
+            try {
+              const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+              if (res.ok) {
+                const data = await res.json();
+                if (data) { setLineageReport(data); return; }
+              }
+            } catch {}
+          }
+        })();
+      }
+    }).catch(() => {});
+  }, [child, client]);
 
   if (loading) {
     return (
@@ -107,6 +137,14 @@ export default function AgentDetailPage({ params }: PageProps) {
                   7715 REVOKED
                 </span>
               )}
+              {(() => {
+                const gen = child.ensLabel.match(/-v(\d+)$/)?.[1];
+                return gen && Number(gen) > 1 ? (
+                  <span className="text-[10px] border border-cyan-400/30 bg-cyan-400/10 text-cyan-400 rounded px-1.5 py-0.5 font-mono uppercase">
+                    Gen {gen}
+                  </span>
+                ) : null;
+              })()}
             </h1>
             <a
               href={explorerAddress(child.childAddr)}
@@ -146,6 +184,93 @@ export default function AgentDetailPage({ params }: PageProps) {
           </div>
         </div>
       </div>
+
+      {/* Lineage Memory */}
+      {(() => {
+        const generation = child.ensLabel.match(/-v(\d+)$/)?.[1];
+        return lineageMemoryCid && generation ? (
+          <div className="border border-cyan-400/30 bg-cyan-400/5 rounded-lg p-5 mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-mono text-cyan-400 uppercase tracking-widest">Lineage Memory</h2>
+              <a href={`https://gateway.pinata.cloud/ipfs/${lineageMemoryCid}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-purple-400 hover:text-purple-300 border border-purple-400/30 rounded px-1.5 py-0.5">
+                IPFS {lineageMemoryCid.slice(0, 12)}... ↗
+              </a>
+            </div>
+            <p className="text-xs text-gray-400 mb-3">
+              Generation {generation} — inherits knowledge from {Number(generation) - 1} terminated predecessors
+            </p>
+
+            {lineageReport && (
+              <div className="space-y-2">
+                {/* Termination reason */}
+                {lineageReport.reason && (
+                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Predecessor Terminated</p>
+                    <p className="text-xs text-gray-300">{lineageReport.reason}</p>
+                  </div>
+                )}
+                {lineageReport.summary && (
+                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Cause of Death</p>
+                    <p className="text-xs text-gray-300">{lineageReport.summary}</p>
+                  </div>
+                )}
+                {/* Lessons */}
+                {lineageReport.lessons && lineageReport.lessons.length > 0 && (
+                  <div className="p-2 bg-yellow-400/5 border border-yellow-400/20 rounded">
+                    <p className="text-[10px] text-yellow-400/70 uppercase tracking-wider mb-1">Lessons Inherited</p>
+                    <ul className="text-xs text-gray-300 space-y-1">
+                      {lineageReport.lessons.map((l: string, i: number) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className="text-yellow-400/60 shrink-0">→</span>
+                          <span>{l}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {/* Avoid Patterns */}
+                {lineageReport.avoidPatterns && lineageReport.avoidPatterns.length > 0 && (
+                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Patterns to Avoid</p>
+                    <ul className="text-xs text-gray-300 space-y-1">
+                      {lineageReport.avoidPatterns.map((p: string, i: number) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className="text-red-400/60 shrink-0">✕</span>
+                          <span>{p}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {/* Recommended Focus */}
+                {lineageReport.recommendedFocus && (
+                  <div className="p-2 bg-green-400/5 border border-green-400/20 rounded">
+                    <p className="text-[10px] text-green-400/70 uppercase tracking-wider mb-1">Recommended Focus for This Generation</p>
+                    <p className="text-xs text-gray-300">{lineageReport.recommendedFocus}</p>
+                  </div>
+                )}
+                {/* Score + Owner Values */}
+                <div className="flex items-center gap-4 text-xs">
+                  {lineageReport.score !== undefined && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-600">Predecessor score:</span>
+                      <span className={`font-mono font-bold ${lineageReport.score >= 50 ? "text-yellow-400" : "text-red-400"}`}>{lineageReport.score}/100</span>
+                    </div>
+                  )}
+                  {lineageReport.generation && (
+                    <span className="text-gray-600">Gen {lineageReport.generation} → Gen {Number(lineageReport.generation) + 1}</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!lineageReport && (
+              <p className="text-[10px] text-gray-600 font-mono">Loading memory from IPFS...</p>
+            )}
+          </div>
+        ) : null;
+      })()}
 
       {/* Delegation Details */}
       {(delegation || revocation) && (
@@ -247,14 +372,7 @@ export default function AgentDetailPage({ params }: PageProps) {
                       <div className="mt-2 pt-2 border-t border-gray-800">
                         <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
                         <p className="font-mono text-[10px] text-green-400/60 break-all">
-                          {(() => {
-                            try {
-                              const { keccak256, toBytes } = require("viem");
-                              return keccak256(toBytes(rationale));
-                            } catch {
-                              return "verification unavailable";
-                            }
-                          })()}
+                          {keccak256(toBytes(rationale))}
                         </p>
                         <p className="text-[10px] text-gray-700 mt-0.5">
                           Compare with reasoning hash committed before vote to verify E2EE integrity

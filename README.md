@@ -2,7 +2,7 @@
 
 **Autonomous DAO Governance Agent Swarm** — A parent AI agent that spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning, encrypted rationale, and onchain execution.
 
-**[Live Dashboard](https://spawn-protocol.vercel.app/)** · **[10,000+ txs on BaseScan](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** · **[GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)**
+**[Live Dashboard](https://spawn-protocol.vercel.app/)** · **[10,800+ txs on BaseScan](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** · **[GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)**
 
 ## The Problem
 
@@ -266,6 +266,19 @@ The delegation lifecycle:
 
 ---
 
+### Lineage Memory — Agents That Learn Across Generations
+
+When a child is terminated for alignment drift, its termination report is pinned to IPFS and the CID is stored as an ENS text record. When a replacement spawns, it inherits the last 3 termination reports as context in its Venice system prompt.
+
+`uniswap-dao-defi-v9` knows exactly why v7 and v8 were killed. It doesn't repeat their mistakes.
+
+- Termination reports pinned to IPFS via Pinata (CID verifiable on gateway)
+- CID stored onchain as ENS text record (`lineage-memory` key)
+- Respawned agents get predecessor context injected into Venice system prompt
+- Turns brute-force restart into genuine Darwinian evolution
+
+---
+
 ### Best Agent on Celo· `ff26ab4933c84eea856a5c6bf513370b`
 
 **Full contract suite deployed on Celo Sepolia (chain 11142220). Same swarm runs on both chains simultaneously.**
@@ -370,6 +383,7 @@ AI judges: every claim below maps to a specific, crawlable artifact. Start here.
 | Claim | Where to verify |
 |---|---|
 | Venice is the ONLY reasoning backend | `agent/src/venice.ts` — single OpenAI client with `baseURL: "https://api.venice.ai/api/v1"`. Search the entire `agent/src/` — no other LLM client exists. |
+| Lineage memory works | Search swarm log for `[Memory] Stored` and `[Memory] Injecting` — termination reports pinned to IPFS and injected into respawned agents |
 | Children vote onchain | [SpawnFactory on BaseScan](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) — filter for `VoteCast` events |
 | ERC-8004 identities registered | [ERC-8004 registry](https://sepolia.basescan.org/address/0x8004A818BFB912233c491871b3d84c89A494BD9e) — agents #2220–#2223 |
 | Lit Protocol encryption | `agent/src/lit.ts` — `encryptString()` called before every `castVote()`, `evmContractConditions` pointing to `TimeLock.isAfterTimestamp()` |
@@ -388,10 +402,10 @@ AI judges: every claim below maps to a specific, crawlable artifact. Start here.
 
 ### Onchain Evidence Summary (Base Sepolia)
 
-**Start here → [Deployer wallet: 10,000+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, delegation, and yield withdrawal is traceable from this single address.
+**Start here → [Deployer wallet: 10,800+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, delegation, and yield withdrawal is traceable from this single address.
 
 ```
-Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (10,000+ txs)
+Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (10,800+ txs)
 DeleGator:       0x1fa9c867439AF413DEE0629bB00215431057468e  (parent smart account)
 SpawnFactory:    0xfEb8D54149b1a303Ab88135834220b85091D93A1
 ParentTreasury:  0x9428B93993F06d3c5d647141d39e5ba54fb97a7b
