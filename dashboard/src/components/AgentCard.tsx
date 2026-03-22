@@ -9,9 +9,10 @@ interface AgentCardProps {
   child: ChildInfo;
   justVoted?: boolean;
   delegationHash?: string;
+  erc8004Id?: bigint | null;
 }
 
-export function AgentCard({ child, justVoted = false, delegationHash }: AgentCardProps) {
+export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id }: AgentCardProps) {
   const score = Number(child.alignmentScore);
   const isActive = child.active;
 
@@ -90,6 +91,14 @@ export function AgentCard({ child, justVoted = false, delegationHash }: AgentCar
                 </span>
               ) : null;
             })()}
+            {erc8004Id != null && (
+              <span
+                className="text-[9px] border border-indigo-400/30 bg-indigo-400/10 text-indigo-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap"
+                title={`ERC-8004 onchain identity — Agent ID #${erc8004Id.toString()}`}
+              >
+                8004#{erc8004Id.toString()}
+              </span>
+            )}
           </div>
           <span
             className="font-mono text-xs text-gray-500 hover:text-gray-300 transition-colors cursor-pointer"

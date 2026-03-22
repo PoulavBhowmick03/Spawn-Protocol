@@ -2,7 +2,7 @@
 
 import { use, useState, useEffect } from "react";
 import Link from "next/link";
-import { keccak256, toBytes } from "viem";
+import { keccak256, toBytes, type Address } from "viem";
 import { useChildData } from "@/hooks/useSwarmData";
 import { useChainContext } from "@/context/ChainContext";
 import { AlignmentBadge } from "@/components/AlignmentBadge";
@@ -22,6 +22,28 @@ const ENS_REGISTRY_ABI = [
   { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const;
 
+// ERC-8004 Agent Registry on Base Sepolia
+const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address;
+const ERC8004_ABI = [
+  { type: "function", name: "ownerOf", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "getMetadata", inputs: [{ name: "agentId", type: "uint256" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+  { type: "function", name: "agentURI", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+] as const;
+
+// Maximum number of agent IDs to scan when resolving owner → agentId
+const ERC8004_SCAN_LIMIT = 30;
+
+interface Erc8004Data {
+  agentId: bigint;
+  agentType: string;
+  alignmentScore: string;
+  ensName: string;
+  governanceContract: string;
+  capabilities: string;
+  agentURI: string;
+  owner: Address;
+}
+
 interface PageProps {
   params: Promise<{ id: string }>;
 }
@@ -34,6 +56,69 @@ export default function AgentDetailPage({ params }: PageProps) {
   const [revocation, setRevocation] = useState<any>(null);
   const [lineageReport, setLineageReport] = useState<any>(null);
   const [lineageMemoryCid, setLineageMemoryCid] = useState<string | null>(null);
+  const [erc8004Data, setErc8004Data] = useState<Erc8004Data | null>(null);
+  const [erc8004Loading, setErc8004Loading] = useState(false);
+
+  // Resolve ERC-8004 identity by scanning agentIds until ownerOf matches child address
+  useEffect(() => {
+    if (!child) return;
+    const childAddr = child.childAddr.toLowerCase();
+    setErc8004Loading(true);
+
+    (async () => {
+      try {
+        // Scan IDs 1..ERC8004_SCAN_LIMIT in parallel batches of 10
+        for (let batchStart = 1; batchStart <= ERC8004_SCAN_LIMIT; batchStart += 10) {
+          const ids = Array.from(
+            { length: Math.min(10, ERC8004_SCAN_LIMIT - batchStart + 1) },
+            (_, i) => BigInt(batchStart + i)
+          );
+          const owners = await Promise.all(
+            ids.map((agentId) =>
+              client.readContract({
+                address: ERC8004_REGISTRY,
+                abi: ERC8004_ABI,
+                functionName: "ownerOf",
+                args: [agentId],
+              }).catch(() => null)
+            )
+          );
+          const matchIdx = owners.findIndex(
+            (o) => o && (o as string).toLowerCase() === childAddr
+          );
+          if (matchIdx !== -1) {
+            const agentId = ids[matchIdx];
+            // Fetch all metadata fields in parallel
+            const [agentType, alignmentScore, ensNameVal, governanceContract, capabilities, agentURI, owner] =
+              await Promise.all([
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "agentType"] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "alignmentScore"] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "ensName"] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "governanceContract"] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "capabilities"] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "agentURI", args: [agentId] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "ownerOf", args: [agentId] }).catch(() => child.childAddr as Address),
+              ]);
+            setErc8004Data({
+              agentId,
+              agentType: agentType as string,
+              alignmentScore: alignmentScore as string,
+              ensName: ensNameVal as string,
+              governanceContract: governanceContract as string,
+              capabilities: capabilities as string,
+              agentURI: agentURI as string,
+              owner: owner as Address,
+            });
+            return;
+          }
+        }
+      } catch {
+        // Silently fail — registry may not have this agent
+      } finally {
+        setErc8004Loading(false);
+      }
+    })();
+  }, [child, client]);
 
   // Fetch delegation + revocation from ENS text records
   useEffect(() => {
@@ -184,6 +269,121 @@ export default function AgentDetailPage({ params }: PageProps) {
           </div>
         </div>
       </div>
+
+      {/* ERC-8004 Onchain Identity */}
+      {(erc8004Loading || erc8004Data) && (
+        <div className="border border-indigo-400/30 bg-indigo-400/5 rounded-lg p-5 mb-6">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h2 className="text-xs font-mono text-indigo-400 uppercase tracking-widest">ERC-8004 Onchain Identity</h2>
+            <a
+              href={`https://sepolia.basescan.org/address/${ERC8004_REGISTRY}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-[10px] font-mono text-indigo-300 border border-indigo-400/30 bg-indigo-400/10 rounded px-2 py-1 hover:bg-indigo-400/20 transition-all"
+              title="View ERC-8004 registry contract on BaseScan"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
+              Verified onchain via ERC-8004 registry {formatAddress(ERC8004_REGISTRY)} ↗
+            </a>
+          </div>
+
+          {erc8004Loading && !erc8004Data && (
+            <div className="animate-pulse space-y-2">
+              <div className="h-3 bg-gray-800 rounded w-1/3" />
+              <div className="h-3 bg-gray-800 rounded w-1/2" />
+            </div>
+          )}
+
+          {erc8004Data && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-xs mb-4">
+                <div>
+                  <p className="text-gray-600 uppercase tracking-wider mb-1">Agent ID</p>
+                  <p className="font-mono text-indigo-300 font-bold">#{erc8004Data.agentId.toString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-600 uppercase tracking-wider mb-1">Agent Type</p>
+                  <p className="font-mono text-white capitalize">{erc8004Data.agentType || "child"}</p>
+                </div>
+                {erc8004Data.alignmentScore && (
+                  <div>
+                    <p className="text-gray-600 uppercase tracking-wider mb-1">Alignment Score</p>
+                    <p className={`font-mono font-bold ${Number(erc8004Data.alignmentScore) >= 70 ? "text-green-400" : Number(erc8004Data.alignmentScore) >= 40 ? "text-yellow-400" : "text-red-400"}`}>
+                      {erc8004Data.alignmentScore}/100
+                    </p>
+                  </div>
+                )}
+                {erc8004Data.ensName && (
+                  <div>
+                    <p className="text-gray-600 uppercase tracking-wider mb-1">ENS Name</p>
+                    <p className="font-mono text-green-400">{erc8004Data.ensName}</p>
+                  </div>
+                )}
+                {erc8004Data.governanceContract && (
+                  <div>
+                    <p className="text-gray-600 uppercase tracking-wider mb-1">Governance Contract</p>
+                    <a
+                      href={explorerAddress(erc8004Data.governanceContract)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-blue-400 hover:text-blue-300 break-all"
+                    >
+                      {formatAddress(erc8004Data.governanceContract)} ↗
+                    </a>
+                  </div>
+                )}
+                {erc8004Data.owner && (
+                  <div>
+                    <p className="text-gray-600 uppercase tracking-wider mb-1">Owner (wallet)</p>
+                    <a
+                      href={explorerAddress(erc8004Data.owner)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-gray-400 hover:text-gray-300 break-all"
+                    >
+                      {formatAddress(erc8004Data.owner)} ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+
+              {erc8004Data.capabilities && (() => {
+                let caps: string[] = [];
+                try { caps = JSON.parse(erc8004Data.capabilities); } catch { caps = [erc8004Data.capabilities]; }
+                return caps.length > 0 ? (
+                  <div className="mb-4">
+                    <p className="text-gray-600 uppercase tracking-wider text-xs mb-2">Capabilities</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {caps.map((cap, i) => (
+                        <span key={i} className="text-[10px] font-mono border border-indigo-400/20 bg-indigo-400/5 text-indigo-300 rounded px-1.5 py-0.5">
+                          {cap}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+
+              {erc8004Data.agentURI && (
+                <div>
+                  <p className="text-gray-600 uppercase tracking-wider text-xs mb-1">Agent URI</p>
+                  <p className="font-mono text-[10px] text-indigo-300/70 break-all bg-indigo-900/10 border border-indigo-400/10 rounded p-2">
+                    {erc8004Data.agentURI}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ERC-8004 not found notice — only show after loading completes and child is active */}
+      {!erc8004Loading && !erc8004Data && child.active && (
+        <div className="border border-gray-800 rounded-lg p-4 mb-6 flex items-center gap-3">
+          <span className="text-[10px] font-mono text-gray-600 uppercase tracking-wider">ERC-8004</span>
+          <span className="text-xs text-gray-600 font-mono">Identity not yet registered in registry {formatAddress(ERC8004_REGISTRY)}</span>
+        </div>
+      )}
 
       {/* Lineage Memory */}
       {(() => {
