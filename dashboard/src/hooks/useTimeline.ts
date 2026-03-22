@@ -2,8 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useChainContext } from "@/context/ChainContext";
-import { CONTRACTS } from "@/lib/contracts";
+import { CONTRACTS, GOVERNORS } from "@/lib/contracts";
 import type { Address } from "viem";
+
+// MockGovernor addresses — ChildGovernor calls castVote on these, which emits
+// VoteCast(address indexed voter, ...) where voter = child contract address.
+// Querying 3 known addresses avoids the 413 from no-address or large address-array filters.
+const MOCK_GOVERNOR_ADDRS = GOVERNORS.map((g) => g.address) as Address[];
 
 export type EventType =
   | "ChildSpawned"
@@ -27,7 +32,7 @@ export interface TimelineEvent {
 
 // Contracts deployed at block 39086990 on Base Sepolia (from broadcast/DeployMultiDAO.s.sol)
 const DEPLOY_BLOCK = BigInt(39086990);
-const CHUNK = BigInt(50000); // publicnode max
+const CHUNK = BigInt(10000); // sepolia.base.org hard limit
 
 export function useTimeline() {
   const { client } = useChainContext();
@@ -120,33 +125,31 @@ export function useTimeline() {
         if (addr) knownChildAddresses.current.add(addr);
       }
 
-      // VoteCast/AlignmentUpdated: skip on initial load entirely.
-      // No-address getLogs returns 413 even for 50k blocks (too many matching events
-      // across all Base Sepolia contracts). Address arrays also cause 413.
-      // New votes appear on the first poll (only ~8 new blocks, tiny response, no 413).
+      // VoteCast: query the 3 MockGovernor addresses with OZ IGovernor event shape.
+      // ChildGovernor calls MockGovernor.castVote → emits VoteCast(voter=childAddr,...).
+      // 3 known addresses = tiny request, no 413. Works on both initial load and polls.
+      // AlignmentUpdated: ChildGovernor-only event, skip on initial load to avoid 413.
       const knownSet = new Set([...knownChildAddresses.current].map((a) => a.toLowerCase()));
+      const childFrom = isInitial ? DEPLOY_BLOCK : fromBlock;
 
-      let voteCastLogs: any[] = [];
-      let alignmentLogs: any[] = [];
-
-      if (!isInitial) {
-        const [allVoteLogs, allAlignmentLogs] = await Promise.all([
-          getLogsInRange({
-            event: { type: "event", name: "VoteCast", inputs: [
-              { name: "proposalId", type: "uint256", indexed: true },
-              { name: "support", type: "uint8", indexed: false },
-              { name: "encryptedRationale", type: "bytes", indexed: false },
-            ]},
-          }, fromBlock, currentBlock).catch(() => [] as any[]),
-          getLogsInRange({
-            event: { type: "event", name: "AlignmentUpdated", inputs: [
-              { name: "newScore", type: "uint256", indexed: false },
-            ]},
-          }, fromBlock, currentBlock).catch(() => [] as any[]),
-        ]);
-        voteCastLogs = (allVoteLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
-        alignmentLogs = (allAlignmentLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
-      }
+      const [allVoteLogs, allAlignmentLogs] = await Promise.all([
+        getLogsInRange({
+          address: MOCK_GOVERNOR_ADDRS,
+          event: { type: "event", name: "VoteCast", inputs: [
+            { name: "proposalId", type: "uint256", indexed: true },
+            { name: "voter", type: "address", indexed: true },
+            { name: "support", type: "uint8", indexed: false },
+            { name: "reason", type: "string", indexed: false },
+          ]},
+        }, childFrom, currentBlock).catch(() => [] as any[]),
+        isInitial ? Promise.resolve([] as any[]) : getLogsInRange({
+          event: { type: "event", name: "AlignmentUpdated", inputs: [
+            { name: "newScore", type: "uint256", indexed: false },
+          ]},
+        }, fromBlock, currentBlock).catch(() => [] as any[]),
+      ]);
+      const voteCastLogs = (allVoteLogs as any[]).filter((log) => knownSet.has((log.args?.voter as string)?.toLowerCase()));
+      const alignmentLogs = (allAlignmentLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
 
       // Build new events and merge into cache (deduplicates by id)
       const newEvents: TimelineEvent[] = [
@@ -190,7 +193,7 @@ export function useTimeline() {
           type: "VoteCast" as EventType,
           blockNumber: log.blockNumber ?? BigInt(0),
           transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { childAddr: log.address, proposalId: log.args?.proposalId?.toString(), support: Number(log.args?.support ?? 0) },
+          data: { childAddr: log.args?.voter, proposalId: log.args?.proposalId?.toString(), support: Number(log.args?.support ?? 0) },
         })),
         ...alignmentLogs.map((log: any) => ({
           id: `alignment-${log.transactionHash}-${log.logIndex}`,
@@ -239,15 +242,20 @@ export function useTimeline() {
     }
   }, [client, getLogsInRange]);
 
+  // Keep a ref so the interval always calls the latest fetchData without
+  // re-running the effect (which would clear the cache and reset state).
+  const fetchDataRef = useRef(fetchData);
+  useEffect(() => { fetchDataRef.current = fetchData; }, [fetchData]);
+
   useEffect(() => {
     setLoading(true);
     eventCache.current.clear();
     lastFetchedBlock.current = null;
     knownChildAddresses.current.clear();
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
+    fetchDataRef.current();
+    const interval = setInterval(() => fetchDataRef.current(), 15000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { events, loading, error };
 }
