@@ -953,6 +953,14 @@ async function main() {
   // Structural Venice validation — fails hard if not connected to Venice.
   // llama-3.3-70b does not exist on OpenAI; changing baseURL would immediately break.
   await validateVeniceProvider();
+  logParentAction("venice_init", {
+    provider: "venice",
+    baseURL: "https://api.venice.ai/api/v1",
+    model: "llama-3.3-70b",
+    enable_e2ee: true,
+    include_venice_system_prompt: false,
+    zero_data_retention: true,
+  }, { validated: true });
 
   // Register parent on ERC-8004
   try {

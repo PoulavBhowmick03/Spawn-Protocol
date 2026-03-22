@@ -10,10 +10,9 @@ import { type Address, type Hex } from "viem";
 import { account, publicClient, walletClient } from "./chain.js";
 
 // ERC-8004 Agent Registry — deployed on Base Sepolia
-// If not deployed yet, we use a lightweight local registry for demo
 const AGENT_REGISTRY_ADDRESS =
   (process.env.ERC8004_REGISTRY_ADDRESS as Address) ||
-  ("0x0000000000000000000000000000000000000000" as Address);
+  ("0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address);
 
 // Minimal ERC-8004 ABI based on the standard
 const ERC8004_ABI = [

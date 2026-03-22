@@ -88,13 +88,37 @@ export default function LogsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
-  // Fetch log: try IPFS (live, pinned every ~90s) first, fall back to GitHub
+  // Fetch log: try IPFS first (onchain CID + known-good fallback CID), then GitHub
   useEffect(() => {
     const GITHUB_URL = "https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json";
     const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
+    // Latest pinned CID — updated on each agent_log.json push
+    const KNOWN_CID = "Qme4yxqSsdw6VcofiEHKZaENUtxfQfG2zHspocUUyppM5q";
+
+    async function tryIPFS(cid: string): Promise<boolean> {
+      const gateways = [
+        `https://ipfs.filebase.io/ipfs/${cid}`,
+        `https://ipfs.io/ipfs/${cid}`,
+        `https://cloudflare-ipfs.com/ipfs/${cid}`,
+        `https://dweb.link/ipfs/${cid}`,
+      ];
+      for (const url of gateways) {
+        try {
+          const ipfsRes = await fetch(url, { signal: AbortSignal.timeout(6000) });
+          if (ipfsRes.ok) {
+            const data = await ipfsRes.json();
+            setLog(data);
+            setError(null);
+            setLoading(false);
+            return true;
+          }
+        } catch {}
+      }
+      return false;
+    }
 
     async function fetchLog() {
-      // Try reading IPFS CID from onchain ENS text record
+      // 1. Try reading IPFS CID from onchain ENS text record
       try {
         const cid = await publicClient.readContract({
           address: ENS_REGISTRY,
@@ -102,29 +126,13 @@ export default function LogsPage() {
           functionName: "getTextRecord",
           args: ["parent", "ipfs.agent_log"],
         });
-        if (cid) {
-          const gateways = [
-            `https://ipfs.io/ipfs/${cid}`,
-            `https://cloudflare-ipfs.com/ipfs/${cid}`,
-            `https://ipfs.filebase.io/ipfs/${cid}`,
-            `https://dweb.link/ipfs/${cid}`,
-          ];
-          for (const url of gateways) {
-            try {
-              const ipfsRes = await fetch(url, { signal: AbortSignal.timeout(6000) });
-              if (ipfsRes.ok) {
-                const data = await ipfsRes.json();
-                setLog(data);
-                setError(null);
-                setLoading(false);
-                return;
-              }
-            } catch {}
-          }
-        }
+        if (cid && cid !== KNOWN_CID && await tryIPFS(cid)) return;
       } catch {}
 
-      // Fallback to GitHub
+      // 2. Try known-good pinned CID (updated each push)
+      if (await tryIPFS(KNOWN_CID)) return;
+
+      // 3. Fallback to GitHub (always has latest)
       try {
         const res = await fetch(GITHUB_URL);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

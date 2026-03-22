@@ -371,15 +371,17 @@ export async function revokeDelegation(delegationHash: Hex, childLabel?: string,
     activeDelegations.delete(delegationHash);
   }
 
-  // Store revocation onchain as ENS text record
+  // Store revocation onchain as ENS text record and capture the tx hash as proof
+  let revokeTxHash: string | undefined;
   if (childLabel) {
     try {
-      await setChildTextRecord(childLabel, "erc7715.delegation.revoked", JSON.stringify({
+      const txHash = await setChildTextRecord(childLabel, "erc7715.delegation.revoked", JSON.stringify({
         hash: delegationHash,
         revokedAt: new Date().toISOString(),
         reason: reason || "alignment_drift",
       }));
-      console.log(`[Delegation] Revoked delegation for ${childLabel} — stored onchain`);
+      if (txHash) revokeTxHash = txHash;
+      console.log(`[Delegation] Revoked delegation for ${childLabel} — stored onchain${txHash ? ` (tx: ${txHash})` : ""}`);
     } catch {}
   }
 
@@ -387,7 +389,7 @@ export async function revokeDelegation(delegationHash: Hex, childLabel?: string,
     delegationHash,
     child: childLabel,
     reason: reason || "alignment_drift",
-  }, {});
+  }, { revokeTxHash }, revokeTxHash);
 
   return true;
 }
