@@ -539,8 +539,9 @@ export default function AgentDetailPage({ params }: PageProps) {
               let rationale: string | null = null;
               let litCiphertext: { ciphertext: string; dataToEncryptHash: string } | null = null;
               if (vote.revealed && vote.decryptedRationale && vote.decryptedRationale !== "0x") {
+                let decoded = "";
                 try {
-                  const decoded = new TextDecoder().decode(
+                  decoded = new TextDecoder().decode(
                     Buffer.from(vote.decryptedRationale.slice(2), "hex")
                   );
                   // Check if the revealed bytes are actually a Lit ciphertext JSON
@@ -552,7 +553,7 @@ export default function AgentDetailPage({ params }: PageProps) {
                     rationale = decoded;
                   }
                 } catch {
-                  rationale = vote.decryptedRationale;
+                  rationale = decoded;
                 }
               }
 
