@@ -31,7 +31,7 @@ const ERC8004_ABI = [
 ] as const;
 
 // Maximum number of agent IDs to scan when resolving owner → agentId
-const ERC8004_SCAN_LIMIT = 30;
+const ERC8004_SCAN_LIMIT = 300;
 
 interface Erc8004Data {
   agentId: bigint;
@@ -59,32 +59,35 @@ export default function AgentDetailPage({ params }: PageProps) {
   const [erc8004Data, setErc8004Data] = useState<Erc8004Data | null>(null);
   const [erc8004Loading, setErc8004Loading] = useState(false);
 
-  // Resolve ERC-8004 identity by scanning agentIds until ownerOf matches child address
+  // Resolve ERC-8004 identity by scanning agentIds and matching agentURI.
+  // NOTE: ownerOf returns the parent EOA, not the child contract.
+  // setMetadata reverts onchain so metadata fields are empty.
+  // agentURI IS stored (passed directly to register()) as "spawn://<ensLabel>.spawn.eth".
   useEffect(() => {
     if (!child) return;
-    const childAddr = child.childAddr.toLowerCase();
+    const targetURI = `spawn://${child.ensLabel}.spawn.eth`.toLowerCase();
     setErc8004Loading(true);
 
     (async () => {
       try {
-        // Scan IDs 1..ERC8004_SCAN_LIMIT in parallel batches of 10
-        for (let batchStart = 1; batchStart <= ERC8004_SCAN_LIMIT; batchStart += 10) {
+        // Scan IDs 1..ERC8004_SCAN_LIMIT in parallel batches of 20
+        for (let batchStart = 1; batchStart <= ERC8004_SCAN_LIMIT; batchStart += 20) {
           const ids = Array.from(
-            { length: Math.min(10, ERC8004_SCAN_LIMIT - batchStart + 1) },
+            { length: Math.min(20, ERC8004_SCAN_LIMIT - batchStart + 1) },
             (_, i) => BigInt(batchStart + i)
           );
-          const owners = await Promise.all(
+          const uris = await Promise.all(
             ids.map((agentId) =>
               client.readContract({
                 address: ERC8004_REGISTRY,
                 abi: ERC8004_ABI,
-                functionName: "ownerOf",
+                functionName: "agentURI",
                 args: [agentId],
               }).catch(() => null)
             )
           );
-          const matchIdx = owners.findIndex(
-            (o) => o && (o as string).toLowerCase() === childAddr
+          const matchIdx = uris.findIndex(
+            (u) => u && (u as string).toLowerCase() === targetURI
           );
           if (matchIdx !== -1) {
             const agentId = ids[matchIdx];
