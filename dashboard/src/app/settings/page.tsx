@@ -1,7 +1,19 @@
 "use client";
 
+import { useState, useEffect } from "react";
+import { createPublicClient, http } from "viem";
+import { baseSepolia } from "viem/chains";
 import { useTreasuryData } from "@/hooks/useTimeline";
 import { CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
+
+const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D" as const;
+const ENS_REGISTRY_ABI = [
+  { type: "function", name: "subdomainCount", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "getAllSubdomains", inputs: [], outputs: [{ name: "names", type: "string[]" }, { name: "addresses", type: "address[]" }], stateMutability: "view" },
+  { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+] as const;
+
+const client = createPublicClient({ chain: baseSepolia, transport: http("https://sepolia.base.org") });
 
 export default function SettingsPage() {
   const {
@@ -13,6 +25,26 @@ export default function SettingsPage() {
     loading,
     error,
   } = useTreasuryData();
+
+  const [ensSubdomains, setEnsSubdomains] = useState<Array<{ label: string; address: string; agentType: string }>>([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [, [names, addresses]] = await Promise.all([
+          client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "subdomainCount" }),
+          client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getAllSubdomains" }),
+        ]);
+        const data = await Promise.all(
+          (names as string[]).map(async (label, i) => {
+            const agentType = await client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "agentType"] }).catch(() => "");
+            return { label, address: (addresses as string[])[i], agentType: agentType as string };
+          })
+        );
+        setEnsSubdomains(data);
+      } catch {}
+    })();
+  }, []);
 
   return (
     <div className="p-4 md:p-8">
@@ -135,6 +167,50 @@ export default function SettingsPage() {
             ))}
           </dl>
         </div>
+
+        {/* ENS Registry — Live Subdomains */}
+        {ensSubdomains.length > 0 && (
+          <div className="border border-teal-400/20 rounded-lg p-6 bg-teal-400/5 lg:col-span-2">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-mono text-teal-400 uppercase tracking-widest">
+                ENS Registry — Live Subdomains ({ensSubdomains.length})
+              </h2>
+              <a
+                href={`https://sepolia.basescan.org/address/${ENS_REGISTRY}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] font-mono text-teal-400/60 hover:text-teal-400 transition-colors"
+              >
+                SpawnENSRegistry {ENS_REGISTRY.slice(0, 6)}…{ENS_REGISTRY.slice(-4)} ↗
+              </a>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {ensSubdomains.map((sub) => (
+                <div key={sub.label} className="border border-teal-400/10 bg-[#0d0d14] rounded-md px-3 py-2 flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-mono text-teal-300 truncate">{sub.label}.spawn.eth</span>
+                    {sub.agentType && (
+                      <span className="text-[10px] font-mono text-teal-400/60 border border-teal-400/20 rounded px-1.5 py-0.5 shrink-0">
+                        {sub.agentType}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] font-mono text-gray-600 truncate">
+                    addr:{" "}
+                    <a
+                      href={`https://sepolia.basescan.org/address/${sub.address}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-gray-500 hover:text-gray-300"
+                    >
+                      {sub.address.slice(0, 6)}…{sub.address.slice(-4)}
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Write Actions Notice */}
         <div className="border border-yellow-400/20 rounded-lg p-6 bg-yellow-400/5 lg:col-span-2">

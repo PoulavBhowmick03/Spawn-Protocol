@@ -1,22 +1,36 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { type Address } from "viem";
 import { useSwarmData } from "@/hooks/useSwarmData";
 import { AgentCard } from "@/components/AgentCard";
 import { CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
 import { useChainContext } from "@/context/ChainContext";
 
-// ENS Registry for reading IPFS CID and delegation hashes
+// ENS Registry for reading IPFS CID, delegation hashes, subdomain count, and subdomain list
 const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
 const ENS_REGISTRY_ABI = [
   { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+  { type: "function", name: "subdomainCount", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "getAllSubdomains", inputs: [], outputs: [{ name: "names", type: "string[]" }, { name: "addresses", type: "address[]" }], stateMutability: "view" },
 ] as const;
+
+// ERC-8004 Agent Registry on Base Sepolia
+const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address;
+const ERC8004_OWNER_ABI = [
+  { type: "function", name: "ownerOf", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+] as const;
+// Scan up to this many IDs when building the address→agentId map
+const ERC8004_SCAN_LIMIT = 30;
 
 export default function SwarmPage() {
   const { children, loading, error, justVotedSet } = useSwarmData();
   const { client, explorerBase } = useChainContext();
   const [ipfsCid, setIpfsCid] = useState<string | null>(null);
   const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
+  const [ensSubdomainCount, setEnsSubdomainCount] = useState<number | null>(null);
+  // Maps child contract address (lowercase) → ERC-8004 agentId
+  const [erc8004Ids, setErc8004Ids] = useState<Map<string, bigint>>(new Map());
 
   // Fetch IPFS CID from ENS text record
   useEffect(() => {
@@ -52,6 +66,57 @@ export default function SwarmPage() {
     };
     if (children.length > 0) fetchDelegations();
   }, [children, client]);
+
+  // Build address → ERC-8004 agentId map by scanning the registry
+  useEffect(() => {
+    if (children.length === 0) return;
+    const childAddrs = new Set(children.map((c) => c.childAddr.toLowerCase()));
+    (async () => {
+      const map = new Map<string, bigint>();
+      for (let batchStart = 1; batchStart <= ERC8004_SCAN_LIMIT; batchStart += 10) {
+        const ids = Array.from(
+          { length: Math.min(10, ERC8004_SCAN_LIMIT - batchStart + 1) },
+          (_, i) => BigInt(batchStart + i)
+        );
+        const owners = await Promise.all(
+          ids.map((agentId) =>
+            client.readContract({
+              address: ERC8004_REGISTRY,
+              abi: ERC8004_OWNER_ABI,
+              functionName: "ownerOf",
+              args: [agentId],
+            }).catch(() => null)
+          )
+        );
+        owners.forEach((owner, idx) => {
+          if (owner) {
+            const lc = (owner as string).toLowerCase();
+            if (childAddrs.has(lc)) map.set(lc, ids[idx]);
+          }
+        });
+        // Stop early if all children are matched
+        if (map.size >= childAddrs.size) break;
+      }
+      if (map.size > 0) setErc8004Ids(map);
+    })();
+  }, [children, client]);
+
+  // Fetch ENS subdomain count for the badge
+  useEffect(() => {
+    const fetchCount = async () => {
+      try {
+        const count = await client.readContract({
+          address: ENS_REGISTRY,
+          abi: ENS_REGISTRY_ABI,
+          functionName: "subdomainCount",
+        });
+        setEnsSubdomainCount(Number(count));
+      } catch {}
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 30_000);
+    return () => clearInterval(interval);
+  }, [client]);
 
   const activeCount = children.filter((c) => c.active).length;
   const totalCount = children.length;
@@ -121,8 +186,9 @@ export default function SwarmPage() {
         </div>
       </div>
 
-      {/* IPFS + Delegation Status Bar */}
+      {/* IPFS + Delegation + ENS Status Bar */}
       {!loading && (
+        <>
         <div className="flex flex-wrap gap-3 mb-6">
           {ipfsCid && (
             <a
@@ -154,7 +220,42 @@ export default function SwarmPage() {
               </div>
             );
           })()}
+
+          {/* ERC-8004 registry badge */}
+          <a
+            href={`https://sepolia.basescan.org/address/${ERC8004_REGISTRY}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 border border-indigo-400/30 bg-indigo-400/5 rounded-lg px-4 py-2 hover:bg-indigo-400/10 transition-all"
+            title="ERC-8004 onchain agent identity registry on Base Sepolia"
+          >
+            <span className="text-indigo-400 text-sm">ERC-8004</span>
+            <span className="text-xs font-mono text-indigo-300">
+              {erc8004Ids.size > 0 ? `${erc8004Ids.size} agent${erc8004Ids.size !== 1 ? "s" : ""} registered` : "Onchain Identity"}
+            </span>
+            <span className="text-[10px] font-mono text-indigo-400/60">{ERC8004_REGISTRY.slice(0, 6)}…{ERC8004_REGISTRY.slice(-4)}</span>
+            <span className="text-indigo-400 text-xs">↗</span>
+          </a>
+
+          {/* ENS Registry live badge */}
+          <a
+            href={`https://sepolia.basescan.org/address/${ENS_REGISTRY}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 border border-teal-400/30 bg-teal-400/5 rounded-lg px-4 py-2 hover:bg-teal-400/10 transition-all"
+          >
+            <span className="text-teal-400 text-sm">ENS</span>
+            <span className="text-xs font-mono text-teal-300">
+              {ensSubdomainCount === null
+                ? "loading…"
+                : `${ensSubdomainCount} active agent subdomain${ensSubdomainCount !== 1 ? "s" : ""} on spawn.eth`}
+            </span>
+            <span className="text-[10px] font-mono text-teal-400/60">SpawnENSRegistry {ENS_REGISTRY.slice(0, 6)}…{ENS_REGISTRY.slice(-4)}</span>
+            <span className="text-teal-400 text-xs">↗</span>
+          </a>
         </div>
+
+        </>
       )}
 
       {error && (
@@ -194,7 +295,7 @@ export default function SwarmPage() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {children.filter((c) => c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} delegationHash={delegationHashes.get(child.ensLabel)} />
+                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} delegationHash={delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} />
                 ))}
               </div>
             </div>
@@ -212,7 +313,7 @@ export default function SwarmPage() {
                 </summary>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 opacity-40">
                   {children.filter((c) => !c.active).slice(0, 12).map((child) => (
-                    <AgentCard key={child.childAddr} child={child} justVoted={false} delegationHash={delegationHashes.get(`${child.ensLabel}:revoked`) ? "REVOKED" : delegationHashes.get(child.ensLabel)} />
+                    <AgentCard key={child.childAddr} child={child} justVoted={false} delegationHash={delegationHashes.get(`${child.ensLabel}:revoked`) ? "REVOKED" : delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} />
                   ))}
                 </div>
                 {children.filter((c) => !c.active).length > 12 && (
