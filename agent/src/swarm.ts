@@ -326,14 +326,21 @@ async function initChain(config: ChainConfig) {
           }) as `0x${string}`;
 
           if (operator && operator !== "0x0000000000000000000000000000000000000000") {
-            // Search derived wallets to find matching key
-            for (let id = 0; id < 100; id++) {
-              const w = deriveChildWallet(id);
-              if (w.address.toLowerCase() === operator.toLowerCase()) {
-                childKey = w.privateKey;
-                childWalletKeys.set(child.ensLabel, childKey);
-                console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
-                break;
+            // If operator is the parent wallet itself, use the parent key directly
+            if (operator.toLowerCase() === account.address.toLowerCase()) {
+              childKey = process.env.PRIVATE_KEY as `0x${string}`;
+              childWalletKeys.set(child.ensLabel, childKey);
+              console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
+            } else {
+              // Search derived wallets to find matching key (expanded to 1000)
+              for (let id = 0; id < 1000; id++) {
+                const w = deriveChildWallet(id);
+                if (w.address.toLowerCase() === operator.toLowerCase()) {
+                  childKey = w.privateKey;
+                  childWalletKeys.set(child.ensLabel, childKey);
+                  console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
+                  break;
+                }
               }
             }
           }
@@ -438,7 +445,7 @@ async function evaluateChainChildren(config: ChainConfig) {
     functionName: "getActiveChildren",
   })) as any[];
 
-  // Health check: auto-fund any child with empty wallet
+  // Health check: auto-fund any child with empty wallet + auto-create missing delegation
   for (const child of children) {
     try {
       const operator = await config.readClient.readContract({
@@ -450,6 +457,15 @@ async function evaluateChainChildren(config: ChainConfig) {
           console.log(`  [Health] ${child.ensLabel} wallet empty — auto-funding`);
           await fundChildWallet(operator, "0.003", config.name);
         }
+        // Auto-create delegation if missing
+        try {
+          const ENS_REGISTRY_ABI = [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const;
+          const existingDel = await config.readClient.readContract({ address: "0x29170A43352D65329c462e6cDacc1c002419331D" as `0x${string}`, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [child.ensLabel, "erc7715.delegation"] });
+          if (!existingDel) {
+            console.log(`  [Health] ${child.ensLabel} missing delegation — creating`);
+            await createVotingDelegation(child.governance, operator as `0x${string}`, 100, child.ensLabel);
+          }
+        } catch {}
       }
     } catch {}
   }
