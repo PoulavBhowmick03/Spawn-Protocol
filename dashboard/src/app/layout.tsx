@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Navbar } from "@/components/Navbar";
 import { ChainProvider } from "@/context/ChainContext";
+import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -39,6 +41,8 @@ export default function RootLayout({
           <Navbar />
           <main className="md:ml-56 pt-14 md:pt-0 min-h-screen grid-bg">{children}</main>
         </ChainProvider>
+        <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );
