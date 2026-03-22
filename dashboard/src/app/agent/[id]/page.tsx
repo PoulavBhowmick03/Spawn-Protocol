@@ -30,9 +30,9 @@ const ERC8004_ABI = [
   { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const;
 
-// Our tokens start at ~2200 on this shared public registry. Scan 2200–2600.
+// Our tokens start at ~2200 on this shared public registry. Scan 2200–2900.
 const ERC8004_SCAN_START = 2200;
-const ERC8004_SCAN_LIMIT = 400;
+const ERC8004_SCAN_END = 2900;
 
 interface Erc8004Data {
   agentId: bigint;
@@ -70,10 +70,9 @@ export default function AgentDetailPage({ params }: PageProps) {
 
     (async () => {
       try {
-        const end = ERC8004_SCAN_START + ERC8004_SCAN_LIMIT;
-        for (let batchStart = ERC8004_SCAN_START; batchStart <= end; batchStart += 20) {
+        for (let batchStart = ERC8004_SCAN_START; batchStart <= ERC8004_SCAN_END; batchStart += 20) {
           const ids = Array.from(
-            { length: Math.min(20, end - batchStart + 1) },
+            { length: Math.min(20, ERC8004_SCAN_END - batchStart + 1) },
             (_, i) => BigInt(batchStart + i)
           );
           const rawUris = await Promise.all(
@@ -100,6 +99,9 @@ export default function AgentDetailPage({ params }: PageProps) {
               return raw as string;
             }
           });
+          // Stop early if we've passed the end of minted tokens
+          if (rawUris.every((r) => r === null)) break;
+
           const matchIdx = names.findIndex(
             (n) => n && n.toLowerCase() === targetName
           );

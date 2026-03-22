@@ -110,6 +110,8 @@ interface RegisteredAgent {
 // In-memory registry for demo when ERC-8004 contract isn't available
 let nextLocalId = BigInt(1);
 const localRegistry = new Map<string, RegisteredAgent>();
+// URIs already registered this process lifetime — prevents parent re-registering on every restart
+const registeredUris = new Set<string>();
 
 // Serialize all onchain writes through a single queue to prevent nonce conflicts.
 // The swarm spawns multiple children concurrently — without this, concurrent
@@ -132,6 +134,11 @@ export async function registerAgent(
   uri: string,
   metadata: AgentMetadata
 ): Promise<RegisteredAgent> {
+  if (registeredUris.has(uri)) {
+    console.log(`[ERC-8004] Skipping duplicate registration: ${uri}`);
+    return registerLocal(uri, metadata);
+  }
+  registeredUris.add(uri);
   console.log(`[ERC-8004] Queuing registration: ${uri} (type=${metadata.agentType})`);
 
   if (AGENT_REGISTRY_ADDRESS !== "0x0000000000000000000000000000000000000000") {
@@ -148,11 +155,15 @@ export async function registerAgent(
 
         const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
 
-        // Extract agentId from AgentRegistered(uint256 indexed agentId, ...) event
+        // Extract agentId from AgentRegistered event (0xca52e62c...).
+        // The ERC-721 Transfer event is emitted first with topics[1]=from (0x0),
+        // so we must find the AgentRegistered event specifically, not the first log.
+        const AGENT_REGISTERED_SIG = "0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a";
         let agentId = BigInt(0);
         for (const log of receipt.logs) {
           if (
             log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase() &&
+            log.topics[0] === AGENT_REGISTERED_SIG &&
             log.topics[1]
           ) {
             try { agentId = BigInt(log.topics[1]); } catch {}
@@ -426,8 +437,8 @@ export async function updateAgentURI(
   label: string,
   stats: { alignmentScore?: number; voteCount?: number; status?: string; chain?: string }
 ): Promise<string | null> {
-  const registryAddr = process.env.ERC8004_REGISTRY_ADDRESS as Address | undefined;
-  if (!registryAddr) return null;
+  const registryAddr = AGENT_REGISTRY_ADDRESS;
+  if (!registryAddr || registryAddr === "0x0000000000000000000000000000000000000000") return null;
 
   const params = new URLSearchParams();
   if (stats.alignmentScore !== undefined) params.set("alignment", stats.alignmentScore.toString());

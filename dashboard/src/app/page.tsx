@@ -16,12 +16,15 @@ const ENS_REGISTRY_ABI = [
 ] as const;
 
 // ERC-8004 Agent Registry on Base Sepolia
+// Our tokens start at ~2200 on the shared public registry (confirmed via register-all-agents.ts)
 const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address;
-const ERC8004_OWNER_ABI = [
-  { type: "function", name: "ownerOf", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+const ERC8004_DEPLOYER = "0x15896e731c51ecB7BdB1447600DF126ea1d6969A".toLowerCase();
+const ERC8004_SCAN_START = 2200;
+const ERC8004_SCAN_END = 2900; // covers 700 slots — well above current agent count
+const ERC8004_TOKEN_ABI = [
+  { type: "function", name: "ownerOf", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const;
-// Scan up to this many IDs when building the address→agentId map
-const ERC8004_SCAN_LIMIT = 30;
 
 export default function SwarmPage() {
   const { children, loading, error, justVotedSet } = useSwarmData();
@@ -67,35 +70,42 @@ export default function SwarmPage() {
     if (children.length > 0) fetchDelegations();
   }, [children, client]);
 
-  // Build address → ERC-8004 agentId map by scanning the registry
+  // Build childAddr → ERC-8004 agentId map by scanning the registry.
+  // Our tokens live at IDs ~2200+ on the shared public registry.
+  // Match by parsing the ENS label from tokenURI (base64 JSON name field)
+  // and comparing against child.ensLabel. Filter to our deployer address only.
   useEffect(() => {
     if (children.length === 0) return;
-    const childAddrs = new Set(children.map((c) => c.childAddr.toLowerCase()));
+    const labelToAddr = new Map(children.map((c) => [c.ensLabel.toLowerCase(), c.childAddr.toLowerCase()]));
     (async () => {
       const map = new Map<string, bigint>();
-      for (let batchStart = 1; batchStart <= ERC8004_SCAN_LIMIT; batchStart += 10) {
-        const ids = Array.from(
-          { length: Math.min(10, ERC8004_SCAN_LIMIT - batchStart + 1) },
-          (_, i) => BigInt(batchStart + i)
-        );
-        const owners = await Promise.all(
-          ids.map((agentId) =>
-            client.readContract({
-              address: ERC8004_REGISTRY,
-              abi: ERC8004_OWNER_ABI,
-              functionName: "ownerOf",
-              args: [agentId],
-            }).catch(() => null)
-          )
-        );
+      for (let batchStart = ERC8004_SCAN_START; batchStart <= ERC8004_SCAN_END; batchStart += 20) {
+        const batchEnd = Math.min(batchStart + 19, ERC8004_SCAN_END);
+        const ids = Array.from({ length: batchEnd - batchStart + 1 }, (_, i) => BigInt(batchStart + i));
+        const [owners, uris] = await Promise.all([
+          Promise.all(ids.map((id) => client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_TOKEN_ABI, functionName: "ownerOf", args: [id] }).catch(() => null))),
+          Promise.all(ids.map((id) => client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_TOKEN_ABI, functionName: "tokenURI", args: [id] }).catch(() => null))),
+        ]);
+
+        let allNull = true;
         owners.forEach((owner, idx) => {
-          if (owner) {
-            const lc = (owner as string).toLowerCase();
-            if (childAddrs.has(lc)) map.set(lc, ids[idx]);
+          if (owner) allNull = false;
+          if (!owner || (owner as string).toLowerCase() !== ERC8004_DEPLOYER) return;
+          let rawUri = uris[idx] as string | null;
+          if (!rawUri) return;
+          // tokenURI may be base64-encoded JSON: data:application/json;base64,...
+          if (rawUri.startsWith("data:application/json;base64,")) {
+            try { rawUri = JSON.parse(atob(rawUri.slice(29))).name || rawUri; } catch {}
           }
+          const match = rawUri.match(/^spawn:\/\/([^.?]+)\.spawn\.eth/);
+          if (!match) return;
+          const label = match[1].toLowerCase();
+          const addr = labelToAddr.get(label);
+          if (addr) map.set(addr, ids[idx]);
         });
-        // Stop early if all children are matched
-        if (map.size >= childAddrs.size) break;
+
+        // Stop early if we've passed the minted range or matched everyone
+        if (allNull || map.size >= labelToAddr.size) break;
       }
       if (map.size > 0) setErc8004Ids(map);
     })();

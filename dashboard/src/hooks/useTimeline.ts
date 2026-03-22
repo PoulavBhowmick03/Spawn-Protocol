@@ -120,35 +120,30 @@ export function useTimeline() {
         if (addr) knownChildAddresses.current.add(addr);
       }
 
-      // For child events: initial load fetches full history; polls only fetch new range
-      const childFrom = isInitial ? DEPLOY_BLOCK : fromBlock;
-      const childLogResults = await Promise.all(
-        [...knownChildAddresses.current].map(async (addr) => {
-          try {
-            const [votes, aligns] = await Promise.all([
-              getLogsInRange({
-                address: addr,
-                event: { type: "event", name: "VoteCast", inputs: [
-                  { name: "proposalId", type: "uint256", indexed: true },
-                  { name: "support", type: "uint8", indexed: false },
-                  { name: "encryptedRationale", type: "bytes", indexed: false },
-                ]},
-              }, childFrom, currentBlock),
-              getLogsInRange({
-                address: addr,
-                event: { type: "event", name: "AlignmentUpdated", inputs: [
-                  { name: "newScore", type: "uint256", indexed: false },
-                ]},
-              }, childFrom, currentBlock),
-            ]);
-            return { votes: votes as any[], aligns: aligns as any[] };
-          } catch {
-            return { votes: [], aligns: [] };
-          }
-        })
-      );
-      const voteCastLogs = childLogResults.flatMap((r) => r.votes);
-      const alignmentLogs = childLogResults.flatMap((r) => r.aligns);
+      // For child events: no address filter (address arrays cause 413 on public RPC).
+      // On initial load scan only the last 50k blocks (one chunk). On subsequent polls
+      // scan only new blocks. Filter results to known child addresses in JS.
+      const knownSet = new Set([...knownChildAddresses.current].map((a) => a.toLowerCase()));
+      const childFrom = isInitial
+        ? (currentBlock > CHUNK ? currentBlock - CHUNK + BigInt(1) : DEPLOY_BLOCK)
+        : fromBlock;
+
+      const [allVoteLogs, allAlignmentLogs] = await Promise.all([
+        getLogsInRange({
+          event: { type: "event", name: "VoteCast", inputs: [
+            { name: "proposalId", type: "uint256", indexed: true },
+            { name: "support", type: "uint8", indexed: false },
+            { name: "encryptedRationale", type: "bytes", indexed: false },
+          ]},
+        }, childFrom, currentBlock).catch(() => [] as any[]),
+        getLogsInRange({
+          event: { type: "event", name: "AlignmentUpdated", inputs: [
+            { name: "newScore", type: "uint256", indexed: false },
+          ]},
+        }, childFrom, currentBlock).catch(() => [] as any[]),
+      ]);
+      const voteCastLogs = (allVoteLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
+      const alignmentLogs = (allAlignmentLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
 
       // Build new events and merge into cache (deduplicates by id)
       const newEvents: TimelineEvent[] = [
@@ -206,9 +201,10 @@ export function useTimeline() {
       for (const e of newEvents) eventCache.current.set(e.id, e);
       lastFetchedBlock.current = currentBlock;
 
-      // Fetch timestamps only for uncached blocks (cap at 20 per cycle)
+      // Fetch timestamps only for uncached blocks — prioritise the most recent (visible) ones
       const allCached = [...eventCache.current.values()];
-      const uncachedBlocks = [...new Set(allCached.map((e) => e.blockNumber))]
+      const sortedByBlock = [...allCached].sort((a, b) => (b.blockNumber > a.blockNumber ? 1 : -1));
+      const uncachedBlocks = [...new Set(sortedByBlock.map((e) => e.blockNumber))]
         .filter((bn) => !blockTimestampCache.current.has(bn))
         .slice(0, 20);
 
