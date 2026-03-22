@@ -462,10 +462,10 @@ synthesis/
 
 ## Student Founders
 
-| Name | University | Graduation | Telegram |
-|---|---|---|---|
-| Poulav Bhowmick | Heritage Institute of Technology, Kolkata | Class of 2026 | @impoulav |
-| Ishita Bhattacharyya | Heritage Institute of Technology, Kolkata | Class of 2026 | @ishitaaaaw |
+| Name | University | Graduation | Telegram | Email Id |
+|---|---|---|---|---|
+| Poulav Bhowmick | Heritage Institute of Technology, Kolkata | Class of 2026 | @impoulav | poulav.bhowmick.ece26@heritageit.edu.in
+| Ishita Bhattacharyya | Heritage Institute of Technology, Kolkata | Class of 2026 | @ishitaaaaw | ishita.bhattacharyya.ece26@heritageit.edu.in
 
 ## Submission
 

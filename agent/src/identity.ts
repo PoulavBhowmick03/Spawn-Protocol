@@ -111,87 +111,70 @@ interface RegisteredAgent {
 let nextLocalId = BigInt(1);
 const localRegistry = new Map<string, RegisteredAgent>();
 
+// Serialize all onchain writes through a single queue to prevent nonce conflicts.
+// The swarm spawns multiple children concurrently — without this, concurrent
+// writeContract calls from the same EOA collide on nonce and silently revert.
+let _writeQueue: Promise<void> = Promise.resolve();
+
+function enqueueWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const result = _writeQueue.then(fn);
+  // Swallow errors on the queue tail so one failure doesn't block subsequent writes
+  _writeQueue = result.then(() => {}, () => {});
+  return result;
+}
+
 /**
  * Register an agent onchain with ERC-8004 identity.
- * Falls back to local tracking if the registry contract isn't deployed.
+ * Serialized via write queue to prevent nonce conflicts on concurrent spawns.
+ * Falls back to local tracking if the registry call fails.
  */
 export async function registerAgent(
   uri: string,
   metadata: AgentMetadata
 ): Promise<RegisteredAgent> {
-  console.log(
-    `[ERC-8004] Registering agent: ${uri}`,
-    `\n  Type: ${metadata.agentType}`,
-    `\n  DAO: ${metadata.assignedDAO || "none"}`,
-    `\n  Governance: ${metadata.governanceContract || "none"}`
-  );
+  console.log(`[ERC-8004] Queuing registration: ${uri} (type=${metadata.agentType})`);
 
-  // Try onchain registration
   if (AGENT_REGISTRY_ADDRESS !== "0x0000000000000000000000000000000000000000") {
     try {
-      const txHash = await walletClient.writeContract({
-        address: AGENT_REGISTRY_ADDRESS,
-        abi: ERC8004_ABI,
-        functionName: "register",
-        args: [uri],
-      });
+      const agent = await enqueueWrite(async () => {
+        const txHash = await walletClient.writeContract({
+          address: AGENT_REGISTRY_ADDRESS,
+          abi: ERC8004_ABI,
+          functionName: "register",
+          args: [uri],
+        });
 
-      console.log(`[ERC-8004] Registration TX sent: ${txHash}`);
+        console.log(`[ERC-8004] Registration TX sent: ${txHash}`);
 
-      // Wait for receipt to get the agentId from events
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash: txHash,
-      });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
 
-      let agentId = BigInt(0);
-
-      // Parse AgentRegistered event to extract agentId
-      for (const log of receipt.logs) {
-        if (log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase()) {
-          try {
-            // AgentRegistered(uint256 indexed agentId, address indexed owner, string agentURI)
-            if (log.topics[1]) {
-              agentId = BigInt(log.topics[1]);
-            }
-          } catch {
-            // Continue with default agentId
+        // Extract agentId from AgentRegistered(uint256 indexed agentId, ...) event
+        let agentId = BigInt(0);
+        for (const log of receipt.logs) {
+          if (
+            log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase() &&
+            log.topics[1]
+          ) {
+            try { agentId = BigInt(log.topics[1]); } catch {}
+            break;
           }
         }
-      }
 
-      // Set metadata fields onchain
-      const metadataEntries = serializeMetadata(metadata);
-      for (const [key, value] of metadataEntries) {
-        try {
-          await walletClient.writeContract({
-            address: AGENT_REGISTRY_ADDRESS,
-            abi: ERC8004_ABI,
-            functionName: "setMetadata",
-            args: [agentId, key, value],
-          });
-        } catch (e) {
-          console.log(`[ERC-8004] Failed to set metadata ${key}: ${e}`);
-        }
-      }
-
-      const agent: RegisteredAgent = {
-        agentId,
-        uri,
-        metadata,
-        owner: account.address,
-        registeredAt: Date.now(),
-        txHash,
-      };
-
-      localRegistry.set(agentId.toString(), agent);
-      console.log(
-        `[ERC-8004] Agent registered onchain with ID: ${agentId}`
-      );
+        const agent: RegisteredAgent = {
+          agentId,
+          uri,
+          metadata,
+          owner: account.address,
+          registeredAt: Date.now(),
+          txHash,
+        };
+        localRegistry.set(agentId.toString(), agent);
+        console.log(`[ERC-8004] Registered onchain ID #${agentId}: ${uri}`);
+        return agent;
+      });
       return agent;
-    } catch (error) {
-      console.log(
-        `[ERC-8004] Onchain registration failed, using local: ${error}`
-      );
+    } catch (error: any) {
+      console.log(`[ERC-8004] Registration failed for ${uri}: ${error?.message?.slice(0, 80)}`);
     }
   }
 
@@ -242,22 +225,23 @@ export async function updateAgentMetadata(
     ...metadata,
   };
 
-  // Try onchain update
+  // Try onchain update (serialized through write queue)
   if (AGENT_REGISTRY_ADDRESS !== "0x0000000000000000000000000000000000000000") {
     const entries = serializeMetadata(metadata);
     for (const [metaKey, metaValue] of entries) {
       try {
-        await walletClient.writeContract({
-          address: AGENT_REGISTRY_ADDRESS,
-          abi: ERC8004_ABI,
-          functionName: "setMetadata",
-          args: [agentId, metaKey, metaValue],
-        });
-        console.log(
-          `[ERC-8004] Updated onchain metadata: ${metaKey}=${metaValue}`
+        await enqueueWrite(() =>
+          walletClient.writeContract({
+            address: AGENT_REGISTRY_ADDRESS,
+            abi: ERC8004_ABI,
+            functionName: "setMetadata",
+            args: [agentId, metaKey, metaValue],
+          }).then((hash) => {
+            console.log(`[ERC-8004] setMetadata ${metaKey} tx: ${hash}`);
+          })
         );
-      } catch (e) {
-        console.log(`[ERC-8004] Onchain metadata update failed: ${e}`);
+      } catch (e: any) {
+        console.log(`[ERC-8004] setMetadata ${metaKey} failed: ${e?.message?.slice(0, 60)}`);
       }
     }
   }
@@ -455,15 +439,17 @@ export async function updateAgentURI(
   const uri = `spawn://${label}.spawn.eth?${params.toString()}`;
 
   try {
-    const hash = await walletClient.writeContract({
-      address: registryAddr,
-      abi: ERC8004_ABI,
-      functionName: "setAgentURI",
-      args: [agentId, uri],
+    return await enqueueWrite(async () => {
+      const hash = await walletClient.writeContract({
+        address: registryAddr,
+        abi: ERC8004_ABI,
+        functionName: "setAgentURI",
+        args: [agentId, uri],
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      console.log(`[ERC-8004] Updated agent ${agentId} URI: ${uri} (tx: ${receipt.transactionHash})`);
+      return receipt.transactionHash;
     });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    console.log(`[ERC-8004] Updated agent ${agentId} URI: ${uri} (tx: ${receipt.transactionHash})`);
-    return receipt.transactionHash;
   } catch (err: any) {
     console.log(`[ERC-8004] setAgentURI failed for ${agentId}: ${err?.message?.slice(0, 50)}`);
     return null;
