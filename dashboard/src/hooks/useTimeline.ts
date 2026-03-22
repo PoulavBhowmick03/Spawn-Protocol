@@ -47,7 +47,7 @@ export function useTimeline() {
     params: Omit<Parameters<typeof client.getLogs>[0], "fromBlock" | "toBlock">,
     from: bigint,
     to: bigint,
-  ) => {
+  ): Promise<any[]> => {
     const chunks: Array<[bigint, bigint]> = [];
     let start = from;
     while (start <= to) {
@@ -115,8 +115,8 @@ export function useTimeline() {
         ]);
 
       // Register any newly discovered child addresses
-      for (const log of spawnedLogs) {
-        const addr = (log.args as any)?.childAddr as `0x${string}` | undefined;
+      for (const log of spawnedLogs as any[]) {
+        const addr = log.args?.childAddr as `0x${string}` | undefined;
         if (addr) knownChildAddresses.current.add(addr);
       }
 
