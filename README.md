@@ -2,7 +2,7 @@
 
 **Autonomous DAO Governance Agent Swarm** — A parent AI agent that spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning, encrypted rationale, and onchain execution.
 
-**[Live Dashboard](https://spawn-protocol.vercel.app/)** · **[10,800+ txs on BaseScan](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** · **[GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)**
+**[Live Dashboard](https://spawn-protocol.vercel.app/)** · **[Demo Video](https://youtu.be/bw0DZxWnNG4)** · **[10,800+ txs on BaseScan](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** · **[GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)**
 
 ## The Problem
 
