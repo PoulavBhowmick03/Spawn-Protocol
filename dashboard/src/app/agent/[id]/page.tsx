@@ -27,11 +27,12 @@ const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address
 const ERC8004_ABI = [
   { type: "function", name: "ownerOf", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
   { type: "function", name: "getMetadata", inputs: [{ name: "agentId", type: "uint256" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
-  { type: "function", name: "agentURI", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+  { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const;
 
-// Maximum number of agent IDs to scan when resolving owner → agentId
-const ERC8004_SCAN_LIMIT = 300;
+// Our tokens start at ~2200 on this shared public registry. Scan 2200–2600.
+const ERC8004_SCAN_START = 2200;
+const ERC8004_SCAN_LIMIT = 400;
 
 interface Erc8004Data {
   agentId: bigint;
@@ -59,35 +60,48 @@ export default function AgentDetailPage({ params }: PageProps) {
   const [erc8004Data, setErc8004Data] = useState<Erc8004Data | null>(null);
   const [erc8004Loading, setErc8004Loading] = useState(false);
 
-  // Resolve ERC-8004 identity by scanning agentIds and matching agentURI.
-  // NOTE: ownerOf returns the parent EOA, not the child contract.
-  // setMetadata reverts onchain so metadata fields are empty.
-  // agentURI IS stored (passed directly to register()) as "spawn://<ensLabel>.spawn.eth".
+  // Resolve ERC-8004 identity by scanning tokenURI on the shared public registry.
+  // Our tokens start at ~ID 2200. The tokenURI returns a base64-encoded JSON whose
+  // "name" field is "spawn://<ensLabel>.spawn.eth" — that's our match key.
   useEffect(() => {
     if (!child) return;
-    const targetURI = `spawn://${child.ensLabel}.spawn.eth`.toLowerCase();
+    const targetName = `spawn://${child.ensLabel}.spawn.eth`.toLowerCase();
     setErc8004Loading(true);
 
     (async () => {
       try {
-        // Scan IDs 1..ERC8004_SCAN_LIMIT in parallel batches of 20
-        for (let batchStart = 1; batchStart <= ERC8004_SCAN_LIMIT; batchStart += 20) {
+        const end = ERC8004_SCAN_START + ERC8004_SCAN_LIMIT;
+        for (let batchStart = ERC8004_SCAN_START; batchStart <= end; batchStart += 20) {
           const ids = Array.from(
-            { length: Math.min(20, ERC8004_SCAN_LIMIT - batchStart + 1) },
+            { length: Math.min(20, end - batchStart + 1) },
             (_, i) => BigInt(batchStart + i)
           );
-          const uris = await Promise.all(
+          const rawUris = await Promise.all(
             ids.map((agentId) =>
               client.readContract({
                 address: ERC8004_REGISTRY,
                 abi: ERC8004_ABI,
-                functionName: "agentURI",
+                functionName: "tokenURI",
                 args: [agentId],
               }).catch(() => null)
             )
           );
-          const matchIdx = uris.findIndex(
-            (u) => u && (u as string).toLowerCase() === targetURI
+          // Parse base64 JSON and extract "name" field
+          const names = rawUris.map((raw) => {
+            if (!raw) return null;
+            try {
+              const s = raw as string;
+              if (s.startsWith("data:application/json;base64,")) {
+                const json = JSON.parse(atob(s.slice(29)));
+                return (json.name as string) || null;
+              }
+              return s;
+            } catch {
+              return raw as string;
+            }
+          });
+          const matchIdx = names.findIndex(
+            (n) => n && n.toLowerCase() === targetName
           );
           if (matchIdx !== -1) {
             const agentId = ids[matchIdx];
@@ -99,14 +113,14 @@ export default function AgentDetailPage({ params }: PageProps) {
                 client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "ensName"] }).catch(() => ""),
                 client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "governanceContract"] }).catch(() => ""),
                 client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "capabilities"] }).catch(() => ""),
-                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "agentURI", args: [agentId] }).catch(() => ""),
+                client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "tokenURI", args: [agentId] }).catch(() => ""),
                 client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "ownerOf", args: [agentId] }).catch(() => child.childAddr as Address),
               ]);
             setErc8004Data({
               agentId,
               agentType: agentType as string,
               alignmentScore: alignmentScore as string,
-              ensName: ensNameVal as string,
+              ensName: (ensNameVal as string) || `${child.ensLabel}.spawn.eth`,
               governanceContract: governanceContract as string,
               capabilities: capabilities as string,
               agentURI: agentURI as string,
