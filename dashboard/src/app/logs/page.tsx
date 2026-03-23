@@ -93,7 +93,7 @@ export default function LogsPage() {
     const GITHUB_URL = "https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json";
     const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
     // Latest pinned CID — updated on each agent_log.json push
-    const KNOWN_CID = "QmcZe4uvuWeFGe3PC7buRAN7Jy9WYf3dt3czSvSbdVQYUc";
+    const KNOWN_CID = "QmRKSPkg7MQuChCXkgRPqmsAhLG4Y7xf7nUo6N3AXr9wFx";
 
     async function tryIPFS(cid: string): Promise<boolean> {
       const gateways = [

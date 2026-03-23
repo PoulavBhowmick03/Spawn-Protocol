@@ -1,0 +1,21 @@
+FROM node:22-slim
+
+WORKDIR /app
+
+# Copy agent package files and install dependencies
+COPY agent/package.json agent/package-lock.json* ./agent/
+RUN cd agent && npm install
+
+# Copy agent source
+COPY agent/ ./agent/
+
+# Create a writable location for agent_log.json (persisted via Railway volume)
+RUN mkdir -p /app/data
+
+# The swarm process writes to ../agent_log.json relative to agent/src/
+# So we symlink /app/agent_log.json -> /app/data/agent_log.json for persistence
+RUN ln -sf /app/data/agent_log.json /app/agent_log.json
+
+WORKDIR /app/agent
+
+CMD ["npx", "tsx", "src/swarm.ts"]
