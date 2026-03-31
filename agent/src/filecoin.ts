@@ -25,7 +25,9 @@ import { join } from "path";
 
 const DEFAULT_RPC = "https://api.calibration.node.glif.io/rpc/v1";
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
-const FILECOIN_EXPLORER = "https://calibration.filfox.info/en";
+// Synapse Warm Storage CIDs are piece CIDs, not Filecoin deal IDs.
+// The correct verifiable URL is the Synapse storage dashboard or IPFS gateway.
+const SYNAPSE_EXPLORER = "https://warm.storage/calibration";
 
 // Module-level singleton — initialized once on first use
 let synapseInstance: Awaited<ReturnType<typeof Synapse.create>> | null = null;
@@ -113,8 +115,14 @@ export async function downloadFromFilecoin(pieceCid: string): Promise<unknown> {
 /**
  * Filecoin explorer URL for a given pieceCid.
  */
+/**
+ * Returns a verifiable URL for a Synapse-stored piece CID.
+ * Synapse Warm Storage CIDs are piece CIDs, NOT Filecoin deal IDs —
+ * filfox.info /deal/<cid> doesn't work. Use IPFS gateway for verification.
+ */
 export function filecoinExplorerUrl(pieceCid: string): string {
-  return `${FILECOIN_EXPLORER}/deal/${encodeURIComponent(pieceCid)}`;
+  // IPFS gateways can resolve piece CIDs stored via Synapse
+  return `https://ipfs.io/ipfs/${encodeURIComponent(pieceCid)}`;
 }
 
 // ── High-level helpers (same interface shape as ipfs.ts) ──────────────────────
