@@ -1,7 +1,9 @@
 {
+  "manifest_version": "1.0",
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   "name": "Spawn Protocol",
-  "description": "Autonomous DAO governance agent swarm. A parent AI agent spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning via Venice AI, encrypted rationale via Lit Protocol, and onchain execution.",
-  "version": "1.0.0",
+  "description": "Autonomous DAO governance agent swarm. A parent AI agent spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning via Venice AI (E2EE, zero data retention), encrypted rationale via Lit Protocol, and onchain execution. Parent evaluates alignment every 90s and kills/respawns drifting agents with lineage memory.",
+  "version": "2.0.0",
   "author": {
     "name": "Poulav Bhowmick",
     "github": "PoulavBhowmick03"
@@ -11,24 +13,37 @@
       "id": "parent",
       "name": "Spawn Parent Agent",
       "type": "parent",
-      "description": "Spawns child agents, evaluates alignment via Venice AI, terminates misaligned children, respawns replacements. Manages ENS subdomains, ERC-8004 identities, and MetaMask delegations.",
-      "entrypoint": "agent/src/parent.ts",
+      "description": "Spawns child agents, evaluates alignment via Venice AI, terminates misaligned children, respawns replacements with lineage memory. Manages ENS subdomains, ERC-8004 identities across all 3 registries, and MetaMask ERC-7715 delegations.",
+      "entrypoint": "agent/src/swarm.ts",
+      "agent_loops": {
+        "planning": "Read owner governance values from ParentTreasury, enumerate active children from SpawnFactory, resolve ENS subdomains, fetch voting histories",
+        "execution": "Spawn children via SpawnFactory EIP-1167 clones, fund child wallets, register ENS subdomains, create ERC-8004 identities, issue ERC-7715 scoped delegations",
+        "verification": "Evaluate each child's voting record against owner values via Venice AI (0-100 alignment score), write score to ChildGovernor.updateAlignmentScore(), submit feedback to ReputationRegistry, validate voting record in ValidationRegistry",
+        "decision": "If alignment < 40 for 2 cycles: terminate (revoke delegation, recall onchain, deregister ENS, pin IPFS post-mortem, store CID as ENS text record), respawn with lineage memory injected as Venice system context"
+      },
       "capabilities": [
         "spawn_child_agents",
         "evaluate_alignment",
         "terminate_children",
         "respawn_children",
+        "inject_lineage_memory",
         "register_ens_subdomain",
         "register_erc8004_identity",
+        "submit_reputation_feedback",
+        "request_validation",
         "create_metamask_delegation",
         "track_yield"
       ],
       "tools": [
-        "venice_ai",
+        "venice_ai_e2ee",
         "viem",
-        "erc8004_registry",
+        "erc8004_identity_registry",
+        "erc8004_reputation_registry",
+        "erc8004_validation_registry",
         "ens_registry",
         "metamask_delegation_toolkit",
+        "lit_protocol",
+        "ipfs_pinning",
         "lido_steth"
       ],
       "erc8004": {
@@ -42,19 +57,27 @@
       "id": "child",
       "name": "Spawn Child Agent",
       "type": "child",
-      "description": "Reads active proposals from assigned governance contract, reasons privately via Venice AI, encrypts rationale via Lit Protocol, casts vote onchain, reveals rationale after voting ends.",
+      "description": "One process per DAO. Reads active proposals, reasons privately via Venice AI (E2EE), encrypts rationale via Lit Protocol with time-lock access control, casts vote onchain via ERC-7715 scoped delegation, reveals rationale after voting ends. Inherits predecessor termination reports as lineage memory.",
       "entrypoint": "agent/src/child.ts",
+      "agent_loops": {
+        "planning": "Fetch active proposals from assigned governance contract, filter unvoted proposals, load lineage memory from predecessor IPFS CIDs",
+        "execution": "Summarize proposal via Venice, assess risk via Venice, reason FOR/AGAINST/ABSTAIN via Venice with owner values + lineage context, encrypt reasoning via Lit Protocol (time-locked), cast vote onchain",
+        "verification": "After voting period ends: decrypt rationale via Lit Protocol (time condition met), call revealRationale() onchain, verify keccak256 hash matches committed pre-vote hash",
+        "decision": "Skip vote if Venice unavailable (no fallback reasoning). Inherit predecessor lessons if lineage memory available."
+      },
       "capabilities": [
         "read_proposals",
         "reason_about_governance",
         "encrypt_rationale",
         "cast_vote_onchain",
-        "reveal_rationale"
+        "reveal_rationale",
+        "inherit_lineage_memory"
       ],
       "tools": [
-        "venice_ai",
+        "venice_ai_e2ee",
         "viem",
-        "lit_protocol"
+        "lit_protocol",
+        "metamask_delegation_toolkit"
       ],
       "erc8004": {
         "registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
@@ -62,6 +85,35 @@
       }
     }
   ],
+  "registries": {
+    "identity": {
+      "address": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+      "chain": "base-sepolia",
+      "chainId": 84532,
+      "standard": "ERC-8004",
+      "description": "Agent identity tokens (ERC-721). Parent #2220, children #2221-#2223+. Updated with live stats on each cycle.",
+      "operations": ["register", "setMetadata", "setAgentURI", "getMetadata"],
+      "example_tx": "0x9712c5dac1568c9c8bb7149648ac57f2eaa95de2e74808bde0c7e42a71753d4d"
+    },
+    "reputation": {
+      "address": "0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14",
+      "chain": "base-sepolia",
+      "chainId": 84532,
+      "standard": "ERC-8004",
+      "description": "Parent submits feedback for each child after every alignment evaluation. Score 0-100, tagged by outcome (aligned/drifting/misaligned/terminated). Terminations write score=0.",
+      "operations": ["giveFeedback", "revokeFeedback", "readFeedback", "getSummary"],
+      "example_tx": "0x3143c2a969f54592910fc19e76d5856984cff331081fe77af35da7155a6866ef"
+    },
+    "validation": {
+      "address": "0x3caE87f24e15970a8e19831CeCD5FAe3c087a546",
+      "chain": "base-sepolia",
+      "chainId": 84532,
+      "standard": "ERC-8004",
+      "description": "Parent requests validation of each child's voting record, then responds as validator. Creates a two-step onchain proof: request (content hash of vote digest) + response (score + approved). Pending cross-child peer validation in Phase 4.",
+      "operations": ["validationRequest", "validationResponse", "getValidationStatus", "getSummary"],
+      "example_tx": "0xdb238bbfd479fcab18fcd6a8a4bb61bd6c5a6b6298506ebd0a9c4b06e3468f2b"
+    }
+  },
   "contracts": {
     "base-sepolia": {
       "chainId": 84532,
@@ -73,7 +125,9 @@
       "SpawnFactory": "0xfEb8D54149b1a303Ab88135834220b85091D93A1",
       "SpawnENSRegistry": "0x29170A43352D65329c462e6cDacc1c002419331D",
       "StETHTreasury": "0x7434531B76aa98bDC5d4b03306dE29fadc88A06c",
-      "TimeLock": "0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23"
+      "TimeLock": "0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23",
+      "ReputationRegistry": "0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14",
+      "ValidationRegistry": "0x3caE87f24e15970a8e19831CeCD5FAe3c087a546"
     },
     "celo-sepolia": {
       "chainId": 11142220,
@@ -88,13 +142,15 @@
   },
   "reasoning": {
     "provider": "venice",
-    "model": "llama-3.3-70b",
+    "model": "e2ee-qwen3-30b-a3b-p",
+    "fallbackModel": "e2ee-gemma-3-27b-p",
     "baseURL": "https://api.venice.ai/api/v1",
     "dataRetention": false,
     "privateCompute": true,
     "e2ee": true,
-    "reasoningHashCommitment": "keccak256 of Venice output committed before onchain vote",
-    "usageTracking": "tokens counted per call, logged per cycle",
+    "note": "E2EE activated via model ID prefix (e2ee-), not a flag. Venice is the ONLY inference backend — remove it and the swarm is braindead.",
+    "reasoningHashCommitment": "keccak256 of Venice output committed onchain before vote, revealed post-deadline via Lit Protocol",
+    "usageTracking": "tokens counted per call, logged per cycle in agent_log.json",
     "callTypes": [
       "summarizeProposal — extract key points before voting",
       "assessProposalRisk — evaluate treasury/centralization/alignment risk",
@@ -107,24 +163,49 @@
   "encryption": {
     "provider": "lit-protocol",
     "network": "datil-dev",
+    "sdk_version": "7.4.0",
     "accessControl": "evmContractConditions",
-    "timeLockContract": "TimeLock.isAfterTimestamp()"
+    "timeLockContract": "TimeLock.isAfterTimestamp()",
+    "timeLockAddress": "0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23",
+    "purpose": "Vote rationale encrypted before vote, decryptable only after voting period ends. Prevents front-running and social pressure attacks."
   },
   "delegations": {
     "framework": "metamask-delegation-toolkit",
     "standard": "ERC-7715",
-    "caveats": ["AllowedTargetsEnforcer", "AllowedMethodsEnforcer", "LimitedCallsEnforcer"]
+    "caveats": ["AllowedTargetsEnforcer", "AllowedMethodsEnforcer", "LimitedCallsEnforcer"],
+    "scope": "castVote only — children cannot transfer funds, change settings, or call any other function",
+    "lifecycle": "create on spawn → scope to ChildGovernor.castVote → revoke on termination"
   },
   "identity": {
     "standard": "ERC-8004",
-    "registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    "registries": {
+      "identity": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+      "reputation": "0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14",
+      "validation": "0x3caE87f24e15970a8e19831CeCD5FAe3c087a546"
+    },
     "agentIds": [2220, 2221, 2222, 2223, 2246],
     "ens": {
       "parentDomain": "spawn.eth",
       "childPattern": "{dao-name}-{perspective}.spawn.eth",
       "registry": "0x29170A43352D65329c462e6cDacc1c002419331D",
       "registeredSubdomains": 10,
-      "features": ["register", "deregister", "resolve", "reverseResolve", "textRecords"]
+      "features": ["register", "deregister", "resolve", "reverseResolve", "textRecords"],
+      "lineageMemoryKey": "lineage-memory"
+    }
+  },
+  "onchain_verifiability": {
+    "description": "Every agent action produces a verifiable onchain transaction. Judges can query BaseScan for real-time activity.",
+    "deployer": "0x15896e731c51ecB7BdB1447600DF126ea1d6969A",
+    "explorer": "https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A",
+    "example_transactions": {
+      "child_spawn": "SpawnFactory.spawnChild() — EIP-1167 clone deployed per child",
+      "vote_cast": "ChildGovernor.castVote() — every vote is an onchain tx",
+      "alignment_update": "ChildGovernor.updateAlignmentScore() — parent writes score per eval",
+      "reputation_feedback": "ReputationRegistry.giveFeedback() — 0x3143c2a969f54592910fc19e76d5856984cff331081fe77af35da7155a6866ef",
+      "validation_request": "ValidationRegistry.validationRequest() — 0xdb238bbfd479fcab18fcd6a8a4bb61bd6c5a6b6298506ebd0a9c4b06e3468f2b",
+      "validation_response": "ValidationRegistry.validationResponse() — 0x34d50890db40db6b64058a0729628e5e13963b3faf08efe1efd42d217678cd6c",
+      "ens_subdomain": "SpawnENSRegistry.registerSubdomain() — per-child ENS name",
+      "lineage_memory": "SpawnENSRegistry.setTextRecord(lineage-memory, ipfsCID) — termination reports persisted"
     }
   },
   "treasury": {

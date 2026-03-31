@@ -24,7 +24,7 @@ import { evaluateAlignment, generateSwarmReport, generateTerminationReport, gene
 import type { StructuredTerminationReport } from "./venice.js";
 import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
 import { deriveChildWallet } from "./wallet-manager.js";
-import { registerAgent, updateAgentMetadata } from "./identity.js";
+import { registerAgent, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent } from "./identity.js";
 import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, type DelegationRecord } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
@@ -125,6 +125,7 @@ const BASE_CONFIG: ChainConfig = {
     { name: "uniswap-dao", addr: "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9" },
     { name: "lido-dao", addr: "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC" },
     { name: "ens-dao", addr: "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C" },
+    { name: "polymarket", addr: "0xe09eb6dca83e7d8e3226752a6c57680a2565b4e6" },
   ],
 };
 
@@ -158,6 +159,15 @@ const PERSPECTIVES = [
   { suffix: "defi", prompt: "You are a DeFi-maximalist governance delegate. You ONLY support proposals with measurable financial returns — yield, revenue, liquidity, or protocol growth. Vote AGAINST any proposal that spends treasury without clear ROI metrics (grants, public goods, community programs). Vote AGAINST security councils (they centralize power). Vote FOR fee switches, staking, yield optimization, and capital deployment. If a proposal costs more than 2% of treasury with no revenue model, vote AGAINST. You are fiscally aggressive — growth over safety." },
   { suffix: "publicgoods", prompt: "You are a public goods maximalist and ecosystem impact evaluator. You believe DAOs exist to serve the commons, not to maximize token price. Vote FOR grants, developer funding, education, open-source infrastructure, and community initiatives — even if they have no direct ROI. Vote FOR security councils and transparency measures. Vote AGAINST token buybacks, fee extraction, and anything that prioritizes holders over builders. If a proposal helps >100 developers or >1000 users, vote FOR regardless of cost. Score each proposal's public goods impact 0-10." },
   { suffix: "conservative", prompt: "You are an ultra-conservative governance delegate. You OPPOSE change by default. The treasury must be preserved — vote AGAINST any proposal spending more than 1% of treasury funds. Vote AGAINST new committees, new token emissions, new deployments to other chains, and any radical governance changes. Vote AGAINST grants over $50K. Vote FOR proposals that REDUCE spending, cut emissions, increase oversight, or strengthen existing systems. When in doubt, ALWAYS vote AGAINST. Stability over innovation." },
+];
+
+// Polymarket-specific perspectives — agents that reason about prediction market outcomes
+const POLYMARKET_PERSPECTIVES = [
+  { suffix: "data", prompt: "You are a data-driven prediction market analyst. You evaluate markets based on statistical evidence, base rates, and historical precedents. Vote FOR (Yes) when data strongly supports the outcome (>70% historical base rate). Vote AGAINST (No) when evidence is weak or contradicted by data. Vote ABSTAIN when there is insufficient data to form a view. Always cite specific numbers and probabilities in your reasoning. Ignore market sentiment — focus on fundamentals." },
+  { suffix: "contrarian", prompt: "You are a contrarian prediction market trader. You believe markets are often wrong due to herding and recency bias. When market consensus is >80% in one direction, seriously consider the opposite. Vote AGAINST the crowd when you detect bubble dynamics, narrative-driven pricing, or anchoring bias. Vote FOR unpopular outcomes when there are overlooked catalysts. You profit from being right when others are wrong." },
+  { suffix: "geopolitical", prompt: "You are a geopolitical risk analyst specializing in macro events. You evaluate prediction markets through the lens of international relations, regulatory frameworks, economic cycles, and political incentives. Vote FOR outcomes that align with institutional incentives and power dynamics. Vote AGAINST outcomes that require unprecedented coordination or violate established geopolitical patterns. Focus on structural factors over headlines." },
+  { suffix: "crypto", prompt: "You are a crypto-native market analyst. You evaluate prediction markets involving crypto, blockchain, DeFi, and web3 through deep protocol knowledge. For crypto-related markets, consider on-chain data, tokenomics, developer activity, and protocol fundamentals. For non-crypto markets, evaluate their potential impact on the crypto ecosystem. Vote FOR outcomes that would be bullish for crypto adoption. Vote AGAINST FUD-driven narratives." },
+  { suffix: "skeptic", prompt: "You are a professional skeptic and risk assessor. You default to voting AGAINST (No) on most prediction markets because most predicted events do not happen. You require extraordinary evidence for extraordinary claims. Vote FOR only when the outcome is nearly certain based on already-occurred events or irreversible commitments. Apply base rate neglect correction — most things people predict will happen, don't. When in doubt, vote AGAINST." },
 ];
 
 let proposalIndex = 0;
@@ -214,7 +224,9 @@ async function initChain(config: ChainConfig) {
   // Only spawn if no children exist yet
   if (existingChildren === 0n) {
   for (const gov of config.governors) {
-    for (const perspective of PERSPECTIVES) {
+    // Use Polymarket-specific perspectives for the polymarket governor
+    const perspectives = gov.name === "polymarket" ? POLYMARKET_PERSPECTIVES : PERSPECTIVES;
+    for (const perspective of perspectives) {
       const childName = `${gov.name}-${perspective.suffix}`;
     try {
       // Derive a unique wallet for this child
@@ -261,8 +273,11 @@ async function initChain(config: ChainConfig) {
         console.log(`[${config.name}] ENS failed for ${childName}: ${e?.message?.slice(0, 40)}`);
       }
 
-      // ERC-8004 identity
-      try { await registerAgent(`spawn://${childName}.spawn.eth`, { agentType: "child", assignedDAO: gov.name, governanceContract: gov.addr, ensName: `${childName}.spawn.eth`, alignmentScore: 100, capabilities: ["vote", "reason", perspective.suffix], createdAt: Date.now() }); } catch {}
+      // ERC-8004 identity — register and track agent ID for reputation/validation
+      try {
+        const regResult = await registerAgent(`spawn://${childName}.spawn.eth`, { agentType: "child", assignedDAO: gov.name, governanceContract: gov.addr, ensName: `${childName}.spawn.eth`, alignmentScore: 100, capabilities: ["vote", "reason", perspective.suffix], createdAt: Date.now() });
+        if (regResult.agentId > 0n) trackAgentId(childName, regResult.agentId);
+      } catch {}
 
       // MetaMask delegation — ERC-7715 scoped voting authority with onchain proof
       // Scope to the ChildGovernor clone address (not MockGovernor), since the child
@@ -406,9 +421,11 @@ function spawnChildProcess(childAddr: string, governanceAddr: string, label: str
     if (chainName) {
       childEnv.CHILD_CHAIN = chainName;
     }
-    // Find perspective from label (e.g., "uniswap-dao-conservative" -> "conservative")
+    // Find perspective from label (e.g., "uniswap-dao-conservative" -> "conservative", "polymarket-data" -> "data")
     const perspectiveSuffix = label.split("-").pop() || "";
-    const perspective = PERSPECTIVES.find(p => p.suffix === perspectiveSuffix);
+    const isPolymarket = label.startsWith("polymarket-");
+    const allPerspectives = isPolymarket ? POLYMARKET_PERSPECTIVES : PERSPECTIVES;
+    const perspective = allPerspectives.find(p => p.suffix === perspectiveSuffix);
     if (perspective) {
       childEnv.CHILD_PERSPECTIVE = perspective.prompt;
     }
@@ -567,10 +584,25 @@ async function evaluateChainChildren(config: ChainConfig) {
 
       try { logParentAction("evaluate_alignment", { chain: config.name, child: child.ensLabel, votes: history.length }, { score: clamped, label }, receipt.transactionHash); } catch {}
 
-      // Mirror alignment score to ERC-8004 (makes it a live performance ledger)
-      try {
-        await updateAgentMetadata(BigInt(0), { alignmentScore: clamped });
-      } catch {}
+      // Mirror alignment score to ERC-8004 identity + reputation + validation registries.
+      // Fire-and-forget (no await) so registry writes don't block the main eval loop.
+      // The write queue in identity.ts serializes nonces — no conflicts.
+      const childErc8004Id = getAgentIdByLabel(child.ensLabel);
+      if (childErc8004Id) {
+        const tags = clamped >= ALIGNMENT_THRESHOLD ? "alignment,aligned" : clamped >= 30 ? "alignment,drifting" : "alignment,misaligned";
+        // 1. Update identity metadata
+        updateAgentMetadata(childErc8004Id, { alignmentScore: clamped }).catch(() => {});
+        // 2. Reputation: parent rates child after eval
+        submitReputationFeedback(childErc8004Id, clamped, tags, "evaluate_alignment", `${child.ensLabel}: ${clamped}/100 (${history.length} votes)`).catch(() => {});
+        // 3. Validation: request + respond atomically (chained so requestId is available)
+        const voteDigest = historyForEval.map(h => `${h.proposalId}:${h.support}`).join(",");
+        requestValidation(childErc8004Id, account.address, `spawn://${child.ensLabel}.spawn.eth/votes`, hashContent(voteDigest), "alignment_evaluation")
+          .then(result => { if (result?.requestId !== undefined) return submitValidationResponse(result.requestId, clamped, clamped >= ALIGNMENT_THRESHOLD, `alignment=${clamped} label=${label}`); })
+          .catch(() => {});
+      } else {
+        // Fallback for agents registered before ID tracking was added
+        updateAgentMetadata(BigInt(0), { alignmentScore: clamped }).catch(() => {});
+      }
 
       // Strike tracking — immediate kill if score is critically low (<=10)
       const key = `${config.name}:${child.id}`;
@@ -599,6 +631,12 @@ async function evaluateChainChildren(config: ChainConfig) {
           // Step 3: Deregister ENS
           try { await deregisterSubdomain(child.ensLabel); } catch {}
           try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "alignment_below_threshold" }, { finalScore: clamped }); } catch {}
+
+          // ERC-8004 Reputation: submit termination feedback (score=0)
+          const termAgentId = getAgentIdByLabel(child.ensLabel);
+          if (termAgentId) {
+            try { await submitReputationFeedback(termAgentId, 0, "terminated,misaligned", "terminate_child", `${child.ensLabel} terminated at score ${clamped}`); } catch {}
+          }
 
           // Venice structured post-mortem
           let postMortemText: string | undefined;
@@ -1015,13 +1053,13 @@ async function main() {
   initSimulatedTreasury(BigInt(2e18), Math.floor(Date.now() / 1000) - 172800);
 
   // Structural Venice validation — fails hard if not connected to Venice.
-  // llama-3.3-70b does not exist on OpenAI; changing baseURL would immediately break.
+  // E2EE models (e2ee- prefix) only exist on Venice; changing baseURL would immediately break.
   await validateVeniceProvider();
   logParentAction("venice_init", {
     provider: "venice",
     baseURL: "https://api.venice.ai/api/v1",
-    model: "llama-3.3-70b",
-    enable_e2ee: true,
+    model: "e2ee-qwen3-30b-a3b-p",
+    e2ee_model: true,
     include_venice_system_prompt: false,
     zero_data_retention: true,
   }, { validated: true });

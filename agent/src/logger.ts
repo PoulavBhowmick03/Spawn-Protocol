@@ -108,7 +108,7 @@ const DEFAULT_METRICS: Metrics = {
   childrenRespawned: 67,
   reasoningCalls: 538,
   reasoningProvider: "venice",
-  reasoningModel: "llama-3.3-70b",
+  reasoningModel: "e2ee-qwen3-30b-a3b-p",
   e2eeEnabled: true,
   yieldWithdrawals: 1,
   ensSubdomainsRegistered: 22,
@@ -247,7 +247,7 @@ export function logAction(entry: Omit<LogEntry, "timestamp">) {
   // Venice reasoning tags
   if (/vote|align|evaluat|proposal|reason|assess|summarize|report|termin/i.test(entry.action)) {
     execEntry.reasoningProvider = "venice";
-    execEntry.reasoningModel = "llama-3.3-70b";
+    execEntry.reasoningModel = "e2ee-qwen3-30b-a3b-p";
   }
 
   if (/vote|cast/i.test(entry.action)) {

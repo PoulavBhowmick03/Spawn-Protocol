@@ -14,20 +14,18 @@ const venice = new OpenAI({
   timeout: 30_000, // 30s hard timeout — prevents infinite hangs
 });
 
-// Venice enables E2EE on ALL models automatically.
-// These models (llama-3.3-70b, llama-3.1-8b) do not exist on OpenAI —
-// changing baseURL to api.openai.com would immediately fail with model-not-found.
-// Additionally, all calls pass venice_parameters.enable_e2ee = true, which is
-// a Venice-only API field that structurally enables E2EE transport. This is the
-// Substitution Test: the code cannot run against any other provider.
-const STANDARD_MODEL = "llama-3.3-70b";
-const FALLBACK_MODEL = "llama-3.1-8b"; // lighter Venice model if primary throttled
+// Venice E2EE models run inside TEE hardware enclaves with end-to-end encryption.
+// The e2ee- prefix activates Venice's secure compute pipeline — prompts are encrypted
+// on-device, stay encrypted through Venice's proxy, and only decrypt inside the TEE.
+// These models do not exist on OpenAI or any other provider — swapping baseURL breaks immediately.
+// See: https://venice.ai/blog/venice-launches-end-to-end-encrypted-ai
+const STANDARD_MODEL = "e2ee-qwen3-30b-a3b-p";
+const FALLBACK_MODEL = "e2ee-gemma-3-27b-p"; // E2EE fallback if primary throttled
 
 // Venice-specific parameters appended to every chat completion request.
-// enable_e2ee activates Venice's end-to-end encrypted transport for all reasoning.
 // include_venice_system_prompt: false prevents Venice from injecting its own prompt.
 const VENICE_PARAMS = {
-  venice_parameters: { enable_e2ee: true, include_venice_system_prompt: false },
+  venice_parameters: { include_venice_system_prompt: false },
 } as const;
 
 /**
@@ -41,14 +39,14 @@ export async function validateVeniceProvider(): Promise<void> {
     const modelData: any[] = models?.data ?? [];
     const ids: string[] = modelData.map((m: any) => m.id as string);
 
-    // Check 1: llama-3.3-70b must exist — this model does not exist on OpenAI.
-    // Swapping baseURL to api.openai.com fails here immediately.
-    const hasLlama = ids.some((id) => id.includes("llama-3.3-70b"));
-    if (!hasLlama) {
+    // Check 1: E2EE models must exist — these are Venice-exclusive TEE models.
+    // No other provider serves e2ee- prefixed models.
+    const hasE2EE = ids.some((id) => id.includes("e2ee-"));
+    if (!hasE2EE) {
       throw new Error(
-        `Venice provider check failed: llama-3.3-70b not in model list. ` +
+        `Venice provider check failed: no E2EE models in model list. ` +
         `Received: ${ids.slice(0, 5).join(", ")}. ` +
-        `This system cannot run on OpenAI or any non-Venice provider.`
+        `This system requires Venice E2EE models for private reasoning.`
       );
     }
 
@@ -69,9 +67,10 @@ export async function validateVeniceProvider(): Promise<void> {
       );
     }
 
+    const e2eeModels = ids.filter((id) => id.includes("e2ee-"));
     console.log(
-      `[Venice] Provider validated: ${ids.length} models, Venice metadata confirmed ` +
-      `(llama-3.3-70b present, Venice-specific fields: ${VENICE_METADATA_FIELDS.filter(f => f in firstModel).join(", ")})`
+      `[Venice] Provider validated: ${ids.length} models, ${e2eeModels.length} E2EE models, Venice metadata confirmed ` +
+      `(E2EE models: ${e2eeModels.slice(0, 5).join(", ")}, Venice-specific fields: ${VENICE_METADATA_FIELDS.filter(f => f in firstModel).join(", ")})`
     );
   } catch (err: any) {
     if (err.message?.includes("Venice")) throw err;
