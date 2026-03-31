@@ -57,6 +57,7 @@ import {
   writeJudgeFlowState,
 } from "./judge-flow.js";
 import { writeFileSync } from "fs";
+import { startControlServer } from "./control-server.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2411,6 +2412,7 @@ async function dynamicScaling(config: ChainConfig) {
 
 // ── Main ──
 async function main() {
+  startControlServer();
   console.log("╔══════════════════════════════════════════════════════╗");
   console.log("║  SPAWN PROTOCOL — AUTONOMOUS GOVERNANCE SWARM       ║");
   console.log("║  Cross-chain · Self-correcting · Zero human input   ║");

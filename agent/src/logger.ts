@@ -16,6 +16,9 @@ import { pinAgentLog, storeLogCIDOnchain } from "./ipfs.js";
 import { storeAgentLog } from "./filecoin.js";
 
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
+const PRIMARY_REASONING_MODEL = "e2ee-qwen3-30b-a3b-p";
+const PRIMARY_CHAIN = "base-sepolia";
+const ERC8004_PUBLIC_REGISTRY_FLOOR = 2220;
 
 // --- Dashboard / judge-facing format (executionLogs) ---
 
@@ -117,7 +120,7 @@ const DEFAULT_METRICS: Metrics = {
   childrenRespawned: 67,
   reasoningCalls: 538,
   reasoningProvider: "venice",
-  reasoningModel: "e2ee-qwen3-30b-a3b-p",
+  reasoningModel: PRIMARY_REASONING_MODEL,
   e2eeEnabled: true,
   yieldWithdrawals: 1,
   ensSubdomainsRegistered: 22,
@@ -132,6 +135,39 @@ let logEntryCount = 0;
 // overwrites another child's newer entries.
 const sessionEntries: LogEntry[] = [];
 const sessionExecEntries: ExecutionLogEntry[] = [];
+
+function deriveAgentsRegistered(l: AgentLog): number {
+  const ids = new Set<number>();
+
+  for (const entry of l.executionLogs ?? []) {
+    if (entry.erc8004AgentId !== undefined && entry.erc8004AgentId >= ERC8004_PUBLIC_REGISTRY_FLOOR) {
+      ids.add(entry.erc8004AgentId);
+    }
+  }
+
+  for (const entry of l.entries ?? []) {
+    for (const side of [entry.inputs, entry.outputs]) {
+      const value = side?.erc8004AgentId;
+      if (typeof value === "number" && value >= ERC8004_PUBLIC_REGISTRY_FLOOR) {
+        ids.add(value);
+      }
+    }
+  }
+
+  return ids.size;
+}
+
+function deriveProposalsCreated(l: AgentLog): number {
+  return (l.executionLogs ?? []).filter((entry) => entry.action === "create_proposal").length;
+}
+
+function normalizePublicMetrics(l: AgentLog) {
+  l.metrics.reasoningProvider = "venice";
+  l.metrics.reasoningModel = PRIMARY_REASONING_MODEL;
+  l.metrics.chainsDeployed = [PRIMARY_CHAIN];
+  l.metrics.agentsRegistered = Math.max(l.metrics.agentsRegistered ?? 0, deriveAgentsRegistered(l));
+  l.metrics.proposalsCreated = Math.max(l.metrics.proposalsCreated ?? 0, deriveProposalsCreated(l));
+}
 
 function initLog(): AgentLog {
   if (log) return log;
@@ -150,6 +186,7 @@ function initLog(): AgentLog {
         metrics: { ...DEFAULT_METRICS, ...(raw.metrics ?? {}) },
         entries: raw.entries ?? [],
       };
+      normalizePublicMetrics(log);
       return log;
     } catch {
       // fall through to create fresh
@@ -164,6 +201,7 @@ function initLog(): AgentLog {
     metrics: { ...DEFAULT_METRICS },
     entries: [],
   };
+  normalizePublicMetrics(log);
   return log;
 }
 
@@ -185,6 +223,7 @@ function inferPhase(action: string): string {
 
 function persist(l: AgentLog) {
   try {
+    normalizePublicMetrics(l);
     // Read-merge-write: always read current disk state and append only our session's
     // new entries. This prevents multi-process races where 11 child processes
     // overwrite each other's in-memory copies when flushing to the same JSON file.

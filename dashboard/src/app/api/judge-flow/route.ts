@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 export const dynamic = "force-dynamic";
+const JUDGE_FLOW_PROXY_URL = process.env.JUDGE_FLOW_PROXY_URL?.replace(/\/$/, "");
 
 const CONTROL_PATH =
   process.env.JUDGE_FLOW_CONTROL_PATH ||
@@ -18,6 +19,15 @@ const EMPTY_STATE = {
 
 export async function GET() {
   try {
+    if (JUDGE_FLOW_PROXY_URL) {
+      const res = await fetch(`${JUDGE_FLOW_PROXY_URL}/judge-flow`, {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      const data = await res.json();
+      return NextResponse.json(data, { status: res.status });
+    }
+
     if (!existsSync(CONTROL_PATH)) {
       return NextResponse.json(EMPTY_STATE);
     }
