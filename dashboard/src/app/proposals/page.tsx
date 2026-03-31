@@ -2,23 +2,36 @@
 
 import { useState, useEffect } from "react";
 import { useProposals } from "@/hooks/useProposals";
+import { usePolymarket } from "@/hooks/usePolymarket";
 import { ProposalCard } from "@/components/ProposalCard";
+import { PolymarketCard } from "@/components/PolymarketCard";
 
 const PAGE_SIZE = 20;
 
+type Tab = "governance" | "polymarket";
+
 export default function ProposalsPage() {
   const { proposals, loading, error } = useProposals();
+  const { markets, loading: polyLoading, error: polyError } = usePolymarket();
+  const [tab, setTab] = useState<Tab>("governance");
   const [page, setPage] = useState(1);
 
-  const activeCount = proposals.filter((p) => p.state === 1).length;
-  const totalPages = Math.max(1, Math.ceil(proposals.length / PAGE_SIZE));
+  // Reset page on tab change
+  useEffect(() => {
+    setPage(1);
+  }, [tab]);
 
-  // Auto-advance to last page when new proposals push us over the limit
+  const activeCount = proposals.filter((p) => p.state === 1).length;
+
+  const currentItems = tab === "governance" ? proposals : markets;
+  const totalPages = Math.max(1, Math.ceil(currentItems.length / PAGE_SIZE));
+
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [totalPages, page]);
 
-  const paginated = proposals.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const isLoading = tab === "governance" ? loading : polyLoading;
+  const currentError = tab === "governance" ? error : polyError;
 
   return (
     <div className="p-4 md:p-8">
@@ -29,7 +42,7 @@ export default function ProposalsPage() {
               Proposals
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              Uniswap · Lido · ENS governance on Base Sepolia
+              Uniswap · Lido · ENS · Polymarket on Base Sepolia
             </p>
           </div>
           {!loading && (
@@ -44,20 +57,50 @@ export default function ProposalsPage() {
                 <div className="text-3xl font-mono font-bold text-gray-400">
                   {proposals.length}
                 </div>
-                <div className="text-xs text-gray-500 uppercase tracking-wider">Total</div>
+                <div className="text-xs text-gray-500 uppercase tracking-wider">Onchain</div>
+              </div>
+              <div>
+                <div className="text-3xl font-mono font-bold text-orange-400">
+                  {markets.length}
+                </div>
+                <div className="text-xs text-gray-500 uppercase tracking-wider">Markets</div>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {error && (
+      {/* Tabs */}
+      <div className="flex gap-1 mb-6 border border-gray-800 rounded-lg p-1 w-fit bg-[#0a0a12]">
+        <button
+          onClick={() => setTab("governance")}
+          className={`px-4 py-2 rounded-md text-sm font-mono transition-colors ${
+            tab === "governance"
+              ? "bg-blue-500/10 text-blue-400 border border-blue-500/30"
+              : "text-gray-500 hover:text-gray-300 border border-transparent"
+          }`}
+        >
+          Governance ({proposals.length})
+        </button>
+        <button
+          onClick={() => setTab("polymarket")}
+          className={`px-4 py-2 rounded-md text-sm font-mono transition-colors ${
+            tab === "polymarket"
+              ? "bg-orange-500/10 text-orange-400 border border-orange-500/30"
+              : "text-gray-500 hover:text-gray-300 border border-transparent"
+          }`}
+        >
+          Polymarket ({markets.length})
+        </button>
+      </div>
+
+      {currentError && (
         <div className="mb-6 border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
-          <p className="text-red-400 text-sm font-mono">Error: {error}</p>
+          <p className="text-red-400 text-sm font-mono">Error: {currentError}</p>
         </div>
       )}
 
-      {loading && (
+      {isLoading && (
         <div className="space-y-4">
           {[...Array(3)].map((_, i) => (
             <div key={i} className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14] animate-pulse">
@@ -69,22 +112,34 @@ export default function ProposalsPage() {
         </div>
       )}
 
-      {!loading && !error && proposals.length === 0 && (
+      {!isLoading && !currentError && currentItems.length === 0 && (
         <div className="border border-gray-800 rounded-lg p-12 text-center">
-          <div className="text-4xl mb-4">◈</div>
-          <h2 className="font-mono text-lg text-gray-400 mb-2">No proposals yet</h2>
+          <div className="text-4xl mb-4">{tab === "governance" ? "◈" : "◉"}</div>
+          <h2 className="font-mono text-lg text-gray-400 mb-2">
+            {tab === "governance" ? "No proposals yet" : "No active markets"}
+          </h2>
           <p className="text-sm text-gray-600">
-            Proposals will appear when the agent creates them on MockGovernor.
+            {tab === "governance"
+              ? "Proposals will appear when the agent creates them on MockGovernor."
+              : "Active Polymarket prediction markets will appear here."}
           </p>
         </div>
       )}
 
-      {!loading && proposals.length > 0 && (
+      {!isLoading && currentItems.length > 0 && (
         <>
           <div className="space-y-4">
-            {paginated.map((proposal) => (
-              <ProposalCard key={proposal.uid} proposal={proposal} />
-            ))}
+            {tab === "governance"
+              ? proposals
+                  .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+                  .map((proposal) => (
+                    <ProposalCard key={proposal.uid} proposal={proposal} />
+                  ))
+              : markets
+                  .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+                  .map((market) => (
+                    <PolymarketCard key={market.uid} market={market} />
+                  ))}
           </div>
 
           {totalPages > 1 && (
@@ -133,7 +188,7 @@ export default function ProposalsPage() {
               </button>
 
               <span className="ml-4 text-gray-600 text-xs">
-                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, proposals.length)} of {proposals.length}
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, currentItems.length)} of {currentItems.length}
               </span>
             </div>
           )}
@@ -142,7 +197,9 @@ export default function ProposalsPage() {
 
       <div className="fixed bottom-6 right-6 flex items-center gap-2 bg-[#0d0d14] border border-gray-800 rounded-full px-3 py-1.5">
         <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" style={{ animationDuration: "2s" }} />
-        <span className="text-xs font-mono text-gray-500">Live — 15s</span>
+        <span className="text-xs font-mono text-gray-500">
+          Live — {tab === "governance" ? "15s" : "30s"}
+        </span>
       </div>
     </div>
   );

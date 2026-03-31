@@ -13,6 +13,7 @@
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { pinAgentLog, storeLogCIDOnchain } from "./ipfs.js";
+import { storeAgentLog } from "./filecoin.js";
 
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
 
@@ -271,25 +272,37 @@ export function logAction(entry: Omit<LogEntry, "timestamp">) {
 
   persist(l);
 
-  // Pin to IPFS every 10th log entry (fire and forget)
+  // Store to Filecoin (primary) or IPFS (fallback) every 10th log entry
   logEntryCount++;
   if (logEntryCount % 10 === 0) {
-    pinAgentLog()
-      .then(async (cid) => {
+    (async () => {
+      let cid: string | null = null;
+      try {
+        cid = await storeAgentLog();
         if (log) {
-          (log.metrics as any).latestIPFSCid = cid;
+          (log.metrics as any).latestFilecoinCid = cid;
           persist(log);
         }
-        console.log(`[IPFS] Agent log pinned (entry #${logEntryCount}): ${cid}`);
+        console.log(`[Filecoin] Agent log stored (entry #${logEntryCount}): ${cid}`);
+      } catch {
+        // Filecoin unavailable — fall back to IPFS
         try {
-          await storeLogCIDOnchain(cid);
+          cid = await pinAgentLog();
+          if (log) {
+            (log.metrics as any).latestIPFSCid = cid;
+            persist(log);
+          }
+          console.log(`[IPFS] Agent log pinned (fallback, entry #${logEntryCount}): ${cid}`);
         } catch (err: any) {
-          console.warn(`[IPFS] Failed to store CID onchain: ${err?.message?.slice(0, 80) || "unknown"}`);
+          console.warn(`[IPFS] Background pin failed: ${err?.message?.slice(0, 80) || "unknown"}`);
         }
-      })
-      .catch((err) => {
-        console.warn(`[IPFS] Background pin failed: ${err?.message?.slice(0, 80) || "unknown"}`);
-      });
+      }
+      if (cid) {
+        try { await storeLogCIDOnchain(cid); } catch (err: any) {
+          console.warn(`[Storage] Failed to store CID onchain: ${err?.message?.slice(0, 80) || "unknown"}`);
+        }
+      }
+    })();
   }
 }
 

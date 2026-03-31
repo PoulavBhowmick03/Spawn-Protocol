@@ -10,9 +10,10 @@ interface AgentCardProps {
   justVoted?: boolean;
   delegationHash?: string;
   erc8004Id?: bigint | null;
+  filecoinCid?: string | null;
 }
 
-export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id }: AgentCardProps) {
+export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id, filecoinCid }: AgentCardProps) {
   const score = Number(child.alignmentScore);
   const isActive = child.active;
 
@@ -98,6 +99,18 @@ export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id 
               >
                 8004#{erc8004Id.toString()}
               </span>
+            )}
+            {filecoinCid && (
+              <a
+                href={`https://calibration.filfox.info/en/deal/${encodeURIComponent(filecoinCid)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-[9px] border border-blue-400/30 bg-blue-400/10 text-blue-300 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap hover:bg-blue-400/20 transition-colors"
+                title={`Identity stored on Filecoin Calibration Testnet — ${filecoinCid}`}
+              >
+                FIL
+              </a>
             )}
           </div>
           <span

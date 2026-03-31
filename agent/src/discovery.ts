@@ -28,7 +28,7 @@ export interface DiscoveredProposal {
   /** DAO slug */
   daoSlug: string;
   /** Source platform */
-  source: "tally" | "snapshot" | "boardroom" | "simulated";
+  source: "tally" | "snapshot" | "boardroom" | "polymarket" | "simulated";
   /** Timestamp when we discovered it */
   discoveredAt: number;
 }
@@ -37,7 +37,7 @@ export interface DiscoveredDAO {
   name: string;
   slug: string;
   proposalCount: number;
-  source: "tally" | "snapshot" | "boardroom" | "simulated";
+  source: "tally" | "snapshot" | "boardroom" | "polymarket" | "simulated";
 }
 
 // ── State (deduplication) ──
@@ -336,6 +336,103 @@ async function fetchFromSnapshot(): Promise<DiscoveredProposal[]> {
   return results;
 }
 
+// ── Polymarket API (prediction markets — no API key needed for reads) ──
+
+const POLYMARKET_GAMMA_API = "https://gamma-api.polymarket.com";
+
+async function fetchFromPolymarket(): Promise<DiscoveredProposal[]> {
+  const results: DiscoveredProposal[] = [];
+  const now = Math.floor(Date.now() / 1000);
+
+  try {
+    const response = await fetch(
+      `${POLYMARKET_GAMMA_API}/markets?limit=20&active=true&closed=false&order=volume24hr&ascending=false`,
+      { signal: AbortSignal.timeout(15_000) }
+    );
+
+    if (!response.ok) {
+      console.log(`[Discovery] Polymarket returned ${response.status}`);
+      return [];
+    }
+
+    const markets = (await response.json()) as any[];
+
+    for (const m of markets) {
+      if (!m.question || !m.active || m.closed) continue;
+
+      const externalId = `polymarket-${m.id}`;
+      if (seenProposals.has(externalId)) continue;
+
+      // Parse outcome probabilities for context
+      let outcomesStr = "";
+      try {
+        const outcomes: string[] = JSON.parse(m.outcomes || "[]");
+        const prices: number[] = JSON.parse(m.outcomePrices || "[]").map(Number);
+        outcomesStr = outcomes
+          .map((o, i) => `${o}: ${(prices[i] * 100).toFixed(1)}%`)
+          .join(", ");
+      } catch {}
+
+      const volume = m.volumeNum || Number(m.volume) || 0;
+      const volumeStr = volume >= 1_000_000
+        ? `$${(volume / 1_000_000).toFixed(1)}M`
+        : volume >= 1_000
+        ? `$${(volume / 1_000).toFixed(1)}K`
+        : `$${volume.toFixed(0)}`;
+
+      // Categorize market into a DAO-like bucket based on keywords
+      const q = m.question.toLowerCase();
+      const desc = (m.description || "").toLowerCase();
+      let daoName = "Polymarket";
+      let daoSlug = "polymarket";
+
+      if (q.includes("ethereum") || q.includes("eth") || desc.includes("ethereum")) {
+        daoName = "Polymarket — Crypto"; daoSlug = "polymarket-crypto";
+      } else if (q.includes("bitcoin") || q.includes("btc") || desc.includes("bitcoin")) {
+        daoName = "Polymarket — Crypto"; daoSlug = "polymarket-crypto";
+      } else if (q.includes("defi") || q.includes("uniswap") || q.includes("aave")) {
+        daoName = "Polymarket — DeFi"; daoSlug = "polymarket-defi";
+      } else if (q.includes("regulation") || q.includes("sec") || q.includes("congress") || q.includes("trump") || q.includes("president")) {
+        daoName = "Polymarket — Policy"; daoSlug = "polymarket-policy";
+      } else if (q.includes("ai") || q.includes("openai") || q.includes("artificial")) {
+        daoName = "Polymarket — AI/Tech"; daoSlug = "polymarket-tech";
+      }
+
+      trackDAO(daoName, daoSlug, "polymarket");
+
+      const proposalDescription = [
+        `[${daoName} — Prediction Market via Polymarket]`,
+        m.question,
+        "",
+        m.description ? truncate(m.description) : "",
+        "",
+        `Market Data: ${outcomesStr}`,
+        `Volume: ${volumeStr} | Liquidity: $${((m.liquidityNum || Number(m.liquidity) || 0) / 1000).toFixed(1)}K`,
+        m.endDate ? `Resolution: ${new Date(m.endDate).toLocaleDateString()}` : "",
+        `Source: https://polymarket.com/event/${m.slug}`,
+      ].filter(Boolean).join("\n");
+
+      results.push({
+        externalId,
+        title: m.question,
+        description: proposalDescription,
+        daoName,
+        daoSlug,
+        source: "polymarket",
+        discoveredAt: now,
+      });
+    }
+
+    if (results.length > 0) {
+      console.log(`[Discovery] Polymarket: ${results.length} new active markets`);
+    }
+  } catch (err: any) {
+    console.log(`[Discovery] Polymarket fetch failed: ${err?.message?.slice(0, 60)}`);
+  }
+
+  return results;
+}
+
 // ── Simulated Feed (fallback) ──
 
 const SIMULATED_PROPOSALS = [
@@ -379,7 +476,7 @@ function truncate(text: string, maxLen = 1500): string {
   return text.slice(0, maxLen) + "...";
 }
 
-function trackDAO(name: string, slug: string, source: "tally" | "snapshot" | "boardroom" | "simulated") {
+function trackDAO(name: string, slug: string, source: "tally" | "snapshot" | "boardroom" | "polymarket" | "simulated") {
   const existing = discoveredDAOs.get(slug);
   if (existing) {
     existing.proposalCount++;
@@ -439,6 +536,11 @@ function pickGovernor(
 ): { addr: Address; name: string } {
   const slug = proposal.daoSlug.toLowerCase();
   const name = proposal.daoName.toLowerCase();
+
+  // ALL Polymarket markets → dedicated Polymarket governor
+  if (proposal.source === "polymarket" || slug.includes("polymarket")) {
+    return governors.find(g => g.name.toLowerCase() === "polymarket") || governors[governors.length - 1];
+  }
 
   // DeFi protocols → Uniswap governor
   if (slug.includes("uniswap") || slug.includes("compound") || slug.includes("aave") ||
@@ -516,7 +618,21 @@ async function pollOnce(
     console.log(`[Discovery] Snapshot error: ${err?.message?.slice(0, 50)}`);
   }
 
-  // 4. If no real proposals found, generate simulated ones
+  // 4. Fetch from Polymarket (no API key needed)
+  try {
+    const polymarketProposals = await fetchFromPolymarket();
+    for (const p of polymarketProposals) {
+      if (!seenProposals.has(p.externalId)) {
+        seenProposals.add(p.externalId);
+        allProposals.push(p);
+        newProposals.push(p);
+      }
+    }
+  } catch (err: any) {
+    console.log(`[Discovery] Polymarket error: ${err?.message?.slice(0, 50)}`);
+  }
+
+  // 5. If no real proposals found, generate simulated ones
   if (newProposals.length === 0) {
     const sim = generateSimulatedProposal();
     if (!seenProposals.has(sim.externalId)) {
@@ -526,11 +642,31 @@ async function pollOnce(
     }
   }
 
-  // 5. Mirror new proposals to MockGovernor (max 3 per poll to avoid nonce issues)
-  const toMirror = newProposals.slice(0, 3);
+  // 6. Mirror new proposals to MockGovernor (max 5 per poll to avoid nonce issues)
+  // Ensure each source gets at least one slot so Polymarket doesn't get starved
+  const bySource = new Map<string, DiscoveredProposal[]>();
+  for (const p of newProposals) {
+    const arr = bySource.get(p.source) || [];
+    arr.push(p);
+    bySource.set(p.source, arr);
+  }
+  const toMirror: DiscoveredProposal[] = [];
+  // Round-robin: one from each source first
+  for (const [, proposals] of bySource) {
+    if (proposals.length > 0 && toMirror.length < 5) {
+      toMirror.push(proposals.shift()!);
+    }
+  }
+  // Fill remaining slots from whatever's left
+  for (const [, proposals] of bySource) {
+    for (const p of proposals) {
+      if (toMirror.length >= 5) break;
+      toMirror.push(p);
+    }
+  }
   for (const p of toMirror) {
     await mirrorToMockGovernor(p, governors, sendTxFn);
-    await sleep(2000); // space out txs to avoid nonce collisions
+    await sleep(4000); // space out txs to avoid nonce collisions with child agent votes
   }
 
   // Cap tracked proposals to prevent unbounded memory growth
@@ -561,7 +697,7 @@ export async function startProposalFeed(
   sendTxFn: SendTxFn
 ): Promise<() => void> {
   console.log("[Discovery] Starting multi-source proposal feed...");
-  console.log(`[Discovery] Sources: Tally (${TALLY_ORGS.length} DAOs) + Boardroom (${BOARDROOM_PROTOCOLS.length} protocols) + Snapshot (${SNAPSHOT_SPACES.length} spaces) + simulated`);
+  console.log(`[Discovery] Sources: Tally (${TALLY_ORGS.length} DAOs) + Boardroom (${BOARDROOM_PROTOCOLS.length} protocols) + Snapshot (${SNAPSHOT_SPACES.length} spaces) + Polymarket + simulated`);
   console.log(`[Discovery] Governors: ${governors.map(g => g.name).join(", ")}`);
   console.log(`[Discovery] Poll interval: ${POLL_INTERVAL_MS / 1000}s`);
 
@@ -627,6 +763,7 @@ export function getFeedStats() {
       tally: allProposals.filter(p => p.source === "tally").length,
       boardroom: allProposals.filter(p => p.source === "boardroom").length,
       snapshot: allProposals.filter(p => p.source === "snapshot").length,
+      polymarket: allProposals.filter(p => p.source === "polymarket").length,
       simulated: allProposals.filter(p => p.source === "simulated").length,
     },
   };

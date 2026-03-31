@@ -33,11 +33,15 @@ export default function SwarmPage() {
   const { children, loading, error, justVotedSet } = useSwarmData();
   const { client, explorerBase } = useChainContext();
   const [ipfsCid, setIpfsCid] = useState<string | null>(null);
+  const [filecoinStateCid, setFilecoinStateCid] = useState<string | null>(null);
+  const [filecoinAgentLogCid, setFilecoinAgentLogCid] = useState<string | null>(null);
   const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
   const [ensSubdomainCount, setEnsSubdomainCount] = useState<number | null>(null);
   // Maps child contract address (lowercase) → ERC-8004 agentId
   // Module-level cache to survive strict mode double-mounts
   const [erc8004Ids, setErc8004Ids] = useState<Map<string, bigint>>(erc8004IdsCache);
+  // Maps child ensLabel → filecoin.identity CID
+  const [filecoinIdentityCids, setFilecoinIdentityCids] = useState<Map<string, string>>(new Map());
 
   // Fetch IPFS CID from ENS text record
   useEffect(() => {
@@ -47,6 +51,33 @@ export default function SwarmPage() {
       functionName: "getTextRecord",
       args: ["parent", "ipfs.agent_log"],
     }).then((cid) => { if (cid) setIpfsCid(cid as string); }).catch(() => {});
+  }, [client]);
+
+  // Fetch Filecoin CIDs from ENS text records (state snapshot + agent log)
+  useEffect(() => {
+    const fetch = async () => {
+      try {
+        const [stateCid, logCid] = await Promise.all([
+          client.readContract({
+            address: ENS_REGISTRY,
+            abi: ENS_REGISTRY_ABI,
+            functionName: "getTextRecord",
+            args: ["parent", "filecoin.state"],
+          }),
+          client.readContract({
+            address: ENS_REGISTRY,
+            abi: ENS_REGISTRY_ABI,
+            functionName: "getTextRecord",
+            args: ["parent", "filecoin.agent_log"],
+          }),
+        ]);
+        if (stateCid) setFilecoinStateCid(stateCid as string);
+        if (logCid) setFilecoinAgentLogCid(logCid as string);
+      } catch {}
+    };
+    fetch();
+    const interval = setInterval(fetch, 60_000);
+    return () => clearInterval(interval);
   }, [client]);
 
   // Fetch delegation hashes + revocation status for all children (parallel)
@@ -72,6 +103,26 @@ export default function SwarmPage() {
       if (map.size > 0) setDelegationHashes(map);
     };
     if (children.length > 0) fetchDelegations();
+  }, [children, client]);
+
+  // Fetch filecoin.identity CID per agent from ENS text records
+  useEffect(() => {
+    if (children.length === 0) return;
+    const fetchFilecoinIdentities = async () => {
+      const map = new Map<string, string>();
+      await Promise.all(
+        children.map((child) =>
+          client.readContract({
+            address: ENS_REGISTRY,
+            abi: ENS_REGISTRY_ABI,
+            functionName: "getTextRecord",
+            args: [child.ensLabel, "filecoin.identity"],
+          }).then((cid) => { if (cid) map.set(child.ensLabel, cid as string); }).catch(() => {})
+        )
+      );
+      if (map.size > 0) setFilecoinIdentityCids(map);
+    };
+    fetchFilecoinIdentities();
   }, [children, client]);
 
   // Build childAddr → ERC-8004 agentId map by scanning the registry.
@@ -214,10 +265,51 @@ export default function SwarmPage() {
         </div>
       </div>
 
-      {/* IPFS + Delegation + ENS Status Bar */}
+      {/* Filecoin + IPFS + Delegation + ENS Status Bar */}
       {!loading && (
         <>
         <div className="flex flex-wrap gap-3 mb-6">
+          {/* Filecoin Calibration — state snapshot badge */}
+          {filecoinStateCid ? (
+            <a
+              href={`https://calibration.filfox.info/en/deal/${encodeURIComponent(filecoinStateCid)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 border border-blue-400/40 bg-blue-400/8 rounded-lg px-4 py-2 hover:bg-blue-400/15 transition-all"
+              title="Swarm state snapshot stored on Filecoin Calibration Testnet via Synapse SDK"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+              <span className="text-blue-300 text-sm font-semibold">Filecoin</span>
+              <span className="text-xs font-mono text-blue-200">State Snapshot Live</span>
+              <span className="text-[10px] font-mono text-blue-400/70">{filecoinStateCid.slice(0, 14)}…</span>
+              <span className="text-blue-400 text-xs">↗</span>
+            </a>
+          ) : (
+            <div
+              className="flex items-center gap-2 border border-blue-400/20 bg-blue-400/5 rounded-lg px-4 py-2"
+              title="Filecoin Calibration storage activates when FILECOIN_PRIVATE_KEY is set"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400/40" />
+              <span className="text-blue-400/60 text-sm font-semibold">Filecoin</span>
+              <span className="text-xs font-mono text-blue-300/50">Calibration Testnet</span>
+              <span className="text-[10px] font-mono text-blue-400/30">chain 314159</span>
+            </div>
+          )}
+          {/* Filecoin agent log badge */}
+          {filecoinAgentLogCid && (
+            <a
+              href={`https://calibration.filfox.info/en/deal/${encodeURIComponent(filecoinAgentLogCid)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 border border-cyan-400/30 bg-cyan-400/5 rounded-lg px-4 py-2 hover:bg-cyan-400/10 transition-all"
+              title="Agent execution log stored on Filecoin via Synapse SDK"
+            >
+              <span className="text-cyan-400 text-sm">FIL Log</span>
+              <span className="text-xs font-mono text-cyan-300">Agent Log on Filecoin</span>
+              <span className="text-[10px] font-mono text-cyan-400/60">{filecoinAgentLogCid.slice(0, 12)}…</span>
+              <span className="text-cyan-400 text-xs">↗</span>
+            </a>
+          )}
           {ipfsCid && (
             <a
               href={`https://ipfs.filebase.io/ipfs/${ipfsCid}`}
@@ -321,7 +413,7 @@ export default function SwarmPage() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {children.filter((c) => c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} delegationHash={delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} />
+                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} delegationHash={delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} filecoinCid={filecoinIdentityCids.get(child.ensLabel) ?? null} />
                 ))}
               </div>
             </div>
@@ -339,7 +431,7 @@ export default function SwarmPage() {
                 </summary>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 opacity-40">
                   {children.filter((c) => !c.active).slice(0, 12).map((child) => (
-                    <AgentCard key={child.childAddr} child={child} justVoted={false} delegationHash={delegationHashes.get(`${child.ensLabel}:revoked`) ? "REVOKED" : delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} />
+                    <AgentCard key={child.childAddr} child={child} justVoted={false} delegationHash={delegationHashes.get(`${child.ensLabel}:revoked`) ? "REVOKED" : delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} filecoinCid={filecoinIdentityCids.get(child.ensLabel) ?? null} />
                   ))}
                 </div>
                 {children.filter((c) => !c.active).length > 12 && (

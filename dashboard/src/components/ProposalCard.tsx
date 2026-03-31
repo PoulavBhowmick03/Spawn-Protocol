@@ -32,6 +32,12 @@ const TALLY_DAO_SLUGS: Record<string, string> = {
   "Wormhole": "wormhole",
 };
 
+function parsePolymarketSource(desc: string): { name: string; slug: string } | null {
+  const match = desc.match(/\[(.+?)\s*[—–-]\s*Prediction Market via Polymarket\]/);
+  if (!match) return null;
+  return { name: match[1], slug: match[1].toLowerCase().replace(/\s+/g, "-") };
+}
+
 function supportLabel(support: number): string {
   if (support === 1) return "FOR";
   if (support === 0) return "AGAINST";
@@ -74,8 +80,11 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
 
   // Clean description
   let displayDesc = proposal.description || "(No description)";
-  // Remove all [Source — Real Governance via Tally] tags
+  // Remove all [Source — Real Governance via Tally] and [Source — Prediction Market via Polymarket] tags
   displayDesc = displayDesc.replace(/\[.+?[—–-]\s*Real Governance via Tally\]\s*/g, "");
+  displayDesc = displayDesc.replace(/\[.+?[—–-]\s*Prediction Market via Polymarket\]\s*/g, "");
+  // Remove Polymarket metadata lines (Source:, Market Data:, Volume:, Resolution:)
+  displayDesc = displayDesc.replace(/^(Source|Market Data|Volume|Resolution):.*$/gm, "");
   // Remove leading bracketed tags like [Constitutional], [Uniswap Governance], etc.
   displayDesc = displayDesc.replace(/^(\[.+?\]\s*)+/g, "");
   // Remove any remaining internal bracketed tags
@@ -129,6 +138,13 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
   const tallySlug = proposal.sourceDaoName ? TALLY_DAO_SLUGS[proposal.sourceDaoName] : null;
   const tallyUrl = tallySlug ? `https://www.tally.xyz/gov/${tallySlug}` : null;
 
+  // Polymarket source
+  const polySource = parsePolymarketSource(proposal.description);
+  const isPolymarket = !!polySource;
+  // Extract polymarket event slug from description for link
+  const polySlugMatch = proposal.description.match(/polymarket\.com\/event\/([^\s\n]+)/);
+  const polyUrl = polySlugMatch ? `https://polymarket.com/event/${polySlugMatch[1]}` : null;
+
   return (
     <div className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all">
       {/* Header */}
@@ -160,6 +176,22 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
               <span className="text-[10px] border border-gray-700 text-gray-500 rounded px-1 py-0.5 font-mono uppercase">
                 via Tally
               </span>
+            )}
+            {isPolymarket && (
+              <>
+                <span className="text-xs border border-orange-400/30 bg-orange-400/5 text-orange-400 rounded px-1.5 py-0.5 font-mono flex items-center gap-1">
+                  {polyUrl ? (
+                    <a href={polyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                      {polySource.name} ↗
+                    </a>
+                  ) : (
+                    polySource.name
+                  )}
+                </span>
+                <span className="text-[10px] border border-gray-700 text-gray-500 rounded px-1 py-0.5 font-mono uppercase">
+                  via Polymarket
+                </span>
+              </>
             )}
             <span
               className={`text-xs border rounded px-1.5 py-0.5 font-mono ${stateColorClass}`}

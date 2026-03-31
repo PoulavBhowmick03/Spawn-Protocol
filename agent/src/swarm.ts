@@ -29,6 +29,14 @@ import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeD
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
 import { pinAgentLog, storeLogCIDOnchain, pinTerminationMemory } from "./ipfs.js";
+import {
+  storeAgentLog,
+  storeTerminationReport,
+  storeSwarmStateSnapshot,
+  storeAgentIdentityMetadata,
+  isFilecoinAvailable,
+  filecoinExplorerUrl,
+} from "./filecoin.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
 import { parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
@@ -661,34 +669,35 @@ async function evaluateChainChildren(config: ChainConfig) {
             console.log(`  [Memory] Failed to store: ${memErr?.message?.slice(0, 60)}`);
           }
 
-          // === IPFS LINEAGE PERSISTENCE (Agent 2) ===
+          // === FILECOIN LINEAGE PERSISTENCE — Filecoin primary, IPFS fallback ===
           try {
             const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
             const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
-            const memoryCid = await pinTerminationMemory({
-              lineageKey,
-              generation: gen,
+            const reportPayload = {
+              lineageKey, generation: gen,
               reason: postMortemText?.slice(0, 300) || `score_${clamped}`,
-              score: clamped,
-              childLabel: child.ensLabel,
-              // Full structured Venice analysis
-              summary: structuredReport?.summary,
-              lessons: structuredReport?.lessons,
-              avoidPatterns: structuredReport?.avoidPatterns,
-              recommendedFocus: structuredReport?.recommendedFocus,
-              // Actual voting record that caused the drift
-              votingHistory: historyForEval?.map((v: any) => ({
-                proposalId: v.proposalId?.toString(),
-                support: v.support,
-              })),
+              score: clamped, childLabel: child.ensLabel,
+              summary: structuredReport?.summary, lessons: structuredReport?.lessons,
+              avoidPatterns: structuredReport?.avoidPatterns, recommendedFocus: structuredReport?.recommendedFocus,
+              votingHistory: historyForEval?.map((v: any) => ({ proposalId: v.proposalId?.toString(), support: v.support })),
               ownerValues: values,
-            });
+            };
+            let memoryCid = await storeTerminationReport(reportPayload);
             if (memoryCid) {
               lastMemoryCid = memoryCid;
-              console.log(`  [Memory] Pinned to IPFS: ${memoryCid}`);
+              console.log(`  [Filecoin] Termination report stored: ${memoryCid}`);
+              console.log(`  [Filecoin] Explorer: ${filecoinExplorerUrl(memoryCid)}`);
+              try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
+            } else {
+              memoryCid = await pinTerminationMemory(reportPayload);
+              if (memoryCid) {
+                lastMemoryCid = memoryCid;
+                console.log(`  [IPFS] Termination report stored (fallback): ${memoryCid}`);
+                try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
+              }
             }
           } catch {}
-          // === END IPFS LINEAGE PERSISTENCE ===
+          // === END FILECOIN LINEAGE PERSISTENCE ===
 
           // Step 2: Respawn with new label + unique wallet
           const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
@@ -785,26 +794,25 @@ async function evaluateChainChildren(config: ChainConfig) {
           try { await deregisterSubdomain(child.ensLabel); } catch {}
           try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "onchain_score_below_threshold", score: onchainScore }, {}); } catch {}
 
-          // === IPFS LINEAGE PERSISTENCE (Agent 2) ===
+          // === FILECOIN LINEAGE PERSISTENCE — Filecoin primary, IPFS fallback ===
           try {
             const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
             const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
-            const memoryCid = await pinTerminationMemory({
-              lineageKey,
-              generation: gen,
-              reason: `onchain_score_${onchainScore}`,
-              score: onchainScore,
-              childLabel: child.ensLabel,
-            });
+            const reportPayload = { lineageKey, generation: gen, reason: `onchain_score_${onchainScore}`, score: onchainScore, childLabel: child.ensLabel };
+            let memoryCid = await storeTerminationReport(reportPayload);
             if (memoryCid) {
-              console.log(`  [Memory] Pinned to IPFS: ${memoryCid}`);
-              try {
-                await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid);
-                console.log(`  [Memory] ENS updated: ${lineageKey}.spawn.eth lineage-memory=${memoryCid}`);
-              } catch {}
+              console.log(`  [Filecoin] Termination report stored: ${memoryCid}`);
+              console.log(`  [Filecoin] Explorer: ${filecoinExplorerUrl(memoryCid)}`);
+              try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
+            } else {
+              memoryCid = await pinTerminationMemory(reportPayload);
+              if (memoryCid) {
+                console.log(`  [IPFS] Termination report stored (fallback): ${memoryCid}`);
+                try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
+              }
             }
           } catch {}
-          // === END IPFS LINEAGE PERSISTENCE ===
+          // === END FILECOIN LINEAGE PERSISTENCE ===
 
           // Store lineage memory for the next generation (fallback path)
           try {
@@ -964,6 +972,19 @@ async function dynamicScaling(config: ChainConfig) {
             }
           } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${childName}: ${(delErr as any)?.message?.slice(0, 60)}`); }
           spawnChildProcess(newChild.childAddr, gov.addr, childName, config.treasury, childWallet.privateKey, config.name, undefined, scalingDelegation);
+
+          // Store agent identity on Filecoin at spawn time
+          try {
+            const gen = parseInt(childName.match(/-v(\d+)$/)?.[1] || '1');
+            const identityCid = await storeAgentIdentityMetadata({
+              ensLabel: childName, address: newChild.childAddr, parentAddress: account.address,
+              governanceContract: gov.addr, governanceName: gov.name, generation: gen, spawnedAt: new Date().toISOString(),
+            });
+            if (identityCid) {
+              console.log(`  [Filecoin] Identity stored for ${childName}: ${identityCid}`);
+              try { await setChildTextRecord(childName, "filecoin.identity", identityCid); } catch {}
+            }
+          } catch {}
         }
 
         console.log(`[Scaling] Spawned ${childName} (wallet: ${childWallet.address})`);
@@ -1165,21 +1186,64 @@ async function main() {
       }
     } catch {}
 
-    // Pin agent log to IPFS and store CID onchain
-    if (process.env.FILEBASE_KEY) {
-      pinAgentLog()
-        .then(async (cid) => {
-          console.log(`[IPFS] Agent log pinned: ${cid}`);
+    // === FILECOIN STATE SNAPSHOT (every cycle) ===
+    // Checkpoint full swarm state to Filecoin Calibration Testnet.
+    try {
+      const snapshotChildren: any[] = [];
+      for (const cfg of [BASE_CONFIG]) {
+        const kids = (await cfg.readClient.readContract({
+          address: cfg.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+        })) as any[];
+        for (const c of kids) {
           try {
-            await storeLogCIDOnchain(cid);
-          } catch (err: any) {
-            console.warn(`[IPFS] Failed to store CID onchain: ${err?.message?.slice(0, 80) || "unknown"}`);
-          }
-        })
-        .catch((err) => {
-          console.warn(`[IPFS] Pin failed: ${err?.message?.slice(0, 80) || "unknown"}`);
-        });
+            const score = Number(await cfg.readClient.readContract({ address: c.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }));
+            const hist = (await cfg.readClient.readContract({ address: c.childAddr, abi: ChildGovernorABI, functionName: "getVotingHistory" })) as any[];
+            const gen = parseInt(c.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+            snapshotChildren.push({ label: c.ensLabel, address: c.childAddr, governance: c.governance, alignmentScore: score, voteCount: hist.length, budget: c.budget?.toString() ?? "0", generation: gen });
+          } catch {}
+        }
+      }
+      const ethBal = await publicClient.getBalance({ address: account.address });
+      const ownerVals = (await BASE_CONFIG.readClient.readContract({ address: BASE_CONFIG.treasury, abi: ParentTreasuryABI, functionName: "getGovernanceValues" })) as string;
+      const snapshotCid = await storeSwarmStateSnapshot({
+        cycleNumber: Math.floor(Date.now() / PARENT_CYCLE_MS),
+        activeAgents: snapshotChildren,
+        ownerValues: ownerVals,
+        totalVotes: snapshotChildren.reduce((a, c) => a + c.voteCount, 0),
+        terminatedThisCycle: [],
+        spawnedThisCycle: [],
+        ethBalance: ethBal.toString(),
+      });
+      if (snapshotCid) {
+        console.log(`[Filecoin] Swarm state snapshot: ${snapshotCid}`);
+        console.log(`[Filecoin] Explorer: ${filecoinExplorerUrl(snapshotCid)}`);
+        try { await setChildTextRecord("parent", "filecoin.state", snapshotCid); } catch {}
+        logParentAction("filecoin_snapshot", { agents: snapshotChildren.length }, { cid: snapshotCid });
+      }
+    } catch (err: any) {
+      console.warn(`[Filecoin] Snapshot failed: ${err?.message?.slice(0, 80)}`);
     }
+
+    // Store agent log — Filecoin primary, IPFS fallback
+    (async () => {
+      let cid: string | null = null;
+      try {
+        cid = await storeAgentLog();
+        console.log(`[Filecoin] Agent log stored: ${cid}`);
+        try { await setChildTextRecord("parent", "filecoin.agent_log", cid); } catch {}
+      } catch (filErr: any) {
+        console.warn(`[Filecoin] Agent log store failed (${filErr?.message?.slice(0, 60)}), trying IPFS fallback`);
+        if (process.env.FILEBASE_KEY) {
+          try {
+            cid = await pinAgentLog();
+            console.log(`[IPFS] Agent log pinned (fallback): ${cid}`);
+          } catch {}
+        }
+      }
+      if (cid) {
+        try { await storeLogCIDOnchain(cid); } catch {}
+      }
+    })();
 
     setTimeout(parentLoop, PARENT_CYCLE_MS);
   };

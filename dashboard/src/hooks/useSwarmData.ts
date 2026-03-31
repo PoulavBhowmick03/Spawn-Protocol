@@ -23,7 +23,6 @@ export interface ChildInfo {
 }
 
 export function useSwarmData() {
-  const { client } = useChainContext();
   const [children, setChildren] = useState<ChildInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,88 +30,21 @@ export function useSwarmData() {
   const prevVoteCounts = useRef<Map<string, number>>(new Map());
 
   const fetchData = useCallback(async () => {
-    const contracts = CONTRACTS;
     try {
-      // Step 1: Get active children via getActiveChildren() — single RPC call
-      const activeRaw = (await client.readContract({
-        address: contracts.SpawnFactory.address,
-        abi: contracts.SpawnFactory.abi,
-        functionName: "getActiveChildren",
-      })) as any[];
+      const res = await fetch("/api/swarm");
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
 
-      // Step 2: Enrich ONLY active children with alignment/vote data (9 agents × 3 calls = 27 calls)
-      const activeEnriched: ChildInfo[] = await Promise.all(
-        activeRaw.map(async (child) => {
-          let alignmentScore = BigInt(0);
-          let voteCount = BigInt(0);
-          let lastVoteTimestamp = BigInt(0);
-          let forVotes = 0, againstVotes = 0, abstainVotes = 0;
-          try {
-            const [score, cnt, history] = await Promise.all([
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount" }),
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVotingHistory" }),
-            ]);
-            alignmentScore = score;
-            voteCount = cnt;
-            if (history.length > 0) lastVoteTimestamp = history[history.length - 1].timestamp;
-            for (const v of history) {
-              if (v.support === 1) forVotes++;
-              else if (v.support === 0) againstVotes++;
-              else abstainVotes++;
-            }
-          } catch {}
-          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: true, alignmentScore, voteCount, lastVoteTimestamp, forVotes, againstVotes, abstainVotes };
-        })
-      );
-
-      // Step 3: Fetch recent terminated children (last 40 by ID, lightweight — no enrichment needed for most)
-      const totalCount = Number(await client.readContract({
-        address: contracts.SpawnFactory.address,
-        abi: contracts.SpawnFactory.abi,
-        functionName: "childCount",
+      const enriched: ChildInfo[] = data.map((c: any) => ({
+        ...c,
+        id: BigInt(c.id),
+        budget: BigInt(c.budget),
+        maxGasPerVote: BigInt(c.maxGasPerVote),
+        alignmentScore: BigInt(c.alignmentScore),
+        voteCount: BigInt(c.voteCount),
+        lastVoteTimestamp: BigInt(c.lastVoteTimestamp),
       }));
-
-      const activeIds = new Set(activeRaw.map((c: any) => Number(c.id)));
-      const terminatedStart = Math.max(1, totalCount - 60); // only check last 60
-      const terminatedBatch: ChildInfo[] = [];
-
-      // Fetch all terminated children in parallel (single batch)
-      const allTerminatedIds: number[] = [];
-      for (let i = terminatedStart; i <= totalCount; i++) {
-        if (!activeIds.has(i)) allTerminatedIds.push(i);
-      }
-
-      const rawTerminated = await Promise.all(
-        allTerminatedIds.map((childId) =>
-          client.readContract({
-            address: contracts.SpawnFactory.address,
-            abi: contracts.SpawnFactory.abi,
-            functionName: "getChild",
-            args: [BigInt(childId)],
-          }).catch(() => null)
-        )
-      );
-
-      // Enrich all terminated children in parallel
-      const enrichedTerminated = await Promise.all(
-        rawTerminated.filter((child): child is NonNullable<typeof child> => !!child && !activeIds.has(Number(child.id))).map(async (child) => {
-          let alignmentScore = BigInt(0);
-          let voteCount = BigInt(0);
-          try {
-            const [score, cnt] = await Promise.all([
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount" }),
-            ]);
-            alignmentScore = score;
-            voteCount = cnt;
-          } catch {}
-          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: child.active, alignmentScore, voteCount, lastVoteTimestamp: BigInt(0), forVotes: 0, againstVotes: 0, abstainVotes: 0 } as ChildInfo;
-        })
-      );
-      terminatedBatch.push(...enrichedTerminated);
-
-      const enriched = [...activeEnriched, ...terminatedBatch];
 
       // Detect which children just had their vote count increase
       const newlyVoted = new Set<string>();
@@ -144,11 +76,10 @@ export function useSwarmData() {
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
-    setChildren([]);
     fetchData();
     const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
@@ -213,9 +144,7 @@ export function useChildData(childId: string) {
           timestamp: v.timestamp,
           revealed: v.revealed,
         }));
-      } catch {
-        // ignore
-      }
+      } catch {}
 
       const lastVoteTimestamp =
         history.length > 0 ? history[history.length - 1].timestamp : BigInt(0);
