@@ -50,6 +50,12 @@ function supportColor(support: number): string {
   return "text-yellow-400";
 }
 
+function supportChipColor(support: number): string {
+  if (support === 1) return "text-green-300 border-green-400/30 bg-green-400/10";
+  if (support === 0) return "text-red-300 border-red-400/30 bg-red-400/10";
+  return "text-yellow-300 border-yellow-400/30 bg-yellow-400/10";
+}
+
 export function ProposalCard({ proposal }: ProposalCardProps) {
   const total =
     Number(proposal.forVotes) +
@@ -267,7 +273,7 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
             {proposal.voters.map((v, i) => (
               <span
                 key={i}
-                className={`text-xs font-mono border rounded px-1.5 py-0.5 ${supportColor(v.support)} border-gray-700 bg-gray-900`}
+                className={`text-xs font-mono border rounded px-1.5 py-0.5 ${supportChipColor(v.support)}`}
                 title={`${v.childAddr}`}
               >
                 {ensName(v.childLabel) ?? formatAddress(v.childAddr)}: {supportLabel(v.support)}

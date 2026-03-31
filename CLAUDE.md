@@ -3,17 +3,18 @@
 ## What this is
 A parent AI agent that autonomously spawns, funds, monitors, and terminates
 child governance agents. Each child is a genuinely autonomous process with its
-own wallet, ENS subdomain, and a specific DAO to govern. Children read
+own wallet, ENS label, and a specific DAO to govern. Children read
 proposals, reason privately via Venice (no data retention), cast votes, and
 encrypt their rationale via Lit Protocol until after voting closes. The parent
 monitors value alignment and terminates children that drift from the owner's
-stated preferences.
+stated preferences. The current PL Genesis branch also includes a deterministic
+judge-flow controller that demonstrates the full lifecycle end-to-end.
 
 ## Architecture
 
 ### Smart Contracts (Foundry, in `contracts/`)
 
-Deployed to **Base Sepolia (primary)** + **Celo Sepolia (secondary)**.
+Deployed to **Base Sepolia**.
 
 1. **`MockGovernor.sol`**
    - Simplified governance with configurable voting periods (default 5 min / 300s)
@@ -58,6 +59,8 @@ Deployed to **Base Sepolia (primary)** + **Celo Sepolia (secondary)**.
 
 6. **`SpawnENSRegistry.sol`** — onchain ENS subdomain registry for agent identity
 7. **`StETHTreasury.sol`** — Lido stETH yield-based treasury (yield-only spending)
+8. **`ReputationRegistry.sol`** — ERC-8004 reputation feedback for child agents
+9. **`ValidationRegistry.sol`** — ERC-8004 validation request/response workflow
 
 ### Agent Runtime (TypeScript, in `agent/`)
 
@@ -69,7 +72,7 @@ while (true) {
   1. Read owner's governance values from ParentTreasury contract
   2. Get list of active children from SpawnFactory
   3. For each child: resolve ENS name, fetch votes, evaluate alignment via Venice (0-100)
-  4. If alignment < 60: terminate → deregister ENS → Venice post-mortem → pin termination report to IPFS → store CID as ENS text record → respawn with operator + ENS + lineage memory (last 3 termination reports) + process
+  4. If alignment < 60: terminate → Venice post-mortem → store termination report to Filecoin → optionally mirror lineage CID to ENS text records / ERC-8004 metadata → respawn with operator + lineage memory + process
   5. Dynamic scaling:
      - Check if any governor lacks a child → auto-spawn
      - Check if any child is idle (0 new votes for 5 cycles + no active proposals) → auto-recall
@@ -78,6 +81,19 @@ while (true) {
   7. Log Venice usage metrics (calls + tokens)
   8. Sleep 90 seconds
 }
+```
+
+**Judge Flow Controller** (`agent/src/judge-flow.ts` + `agent/src/swarm.ts`) — separate control path:
+```
+every 2 seconds:
+  1. Poll judge_flow_state.json (or JUDGE_FLOW_CONTROL_PATH override)
+  2. If a queued run exists: spawn dedicated proof child with judge-proof-<runId> label
+  3. Seed one judge-marked proposal on the Base Sepolia Uniswap mock governor
+  4. Wait for proof child to cast one private vote
+  5. Force alignment score to 15 for that proof child only
+  6. Require a Filecoin termination report
+  7. Write ERC-8004 reputation (validation remains best-effort)
+  8. Terminate child, respawn replacement, and wait for judge_lineage_loaded
 ```
 
 **ChildAgent** (`agent/src/child.ts`) — one process per DAO:
@@ -113,9 +129,9 @@ const venice = new OpenAI({
 
 **MetaMask Delegation Framework** — ERC-7715 scoped delegations: `AllowedTargetsEnforcer` + `AllowedMethodsEnforcer` + `LimitedCallsEnforcer`
 
-**ERC-8004** — onchain agent identity for parent + all children on Base Sepolia
+**ERC-8004** — identity + reputation + validation registries wired into the runtime on Base Sepolia
 
-**ENS Subdomains** — each child gets `{dao-name}.spawn.eth` via `SpawnENSRegistry.sol`
+**ENS Labels** — each child gets `{dao-name}.spawn.eth` via `SpawnENSRegistry.sol`; the backend still uses ENS for labels and some mirrored metadata
 
 **Lido stETH** — treasury earns yield; operating costs funded from yield, not principal
 
@@ -127,8 +143,9 @@ const venice = new OpenAI({
 - **Proposal difficulty scoring**: Easy/Medium/Hard based on vote split, voter count, complexity
 - **Reasoning verification**: keccak256 hash of revealed rationale shown for E2EE integrity proof
 - **Multi-source proposals**: Tally (9 DAOs) + Snapshot (12 spaces) + simulated
-- **IPFS**: Agent log pinned to decentralized storage, CID stored onchain as ENS text record
-- **Lineage Memory**: termination reports pinned to IPFS, CID stored as ENS text record (`lineage-memory` key), respawned agents inherit last 3 predecessor reports as Venice system prompt context
+- **Judge Flow**: `/judge-flow` page plus `/api/judge-flow` and `/api/judge-flow/start` routes expose the canonical proof timeline, tx hashes, Filecoin CID, respawn label, and lineage confirmation
+- **Filecoin**: agent log, swarm snapshots, identity metadata, and termination reports are stored to Filecoin Calibration; judge runs require Filecoin primary success
+- **Lineage Memory**: termination reports are Filecoin-backed, can be mirrored into ENS text records and ERC-8004 metadata, and respawned agents inherit predecessor lessons as Venice system prompt context
 - **ERC-7715 delegation lifecycle**: create → scope → evaluate → revoke, shown per agent with badges
 - **DeleGator smart account**: parent uses MetaMask DeleGator for onchain delegation enforcement
 - Timeline of all governance actions with tx links
@@ -148,27 +165,20 @@ const venice = new OpenAI({
 | SpawnENSRegistry | `0x29170A43352D65329c462e6cDacc1c002419331D` |
 | StETHTreasury | `0x7434531B76aa98bDC5d4b03306dE29fadc88A06c` |
 | TimeLock | `0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23` |
-
-### Celo Sepolia (chain 11142220)
-| Contract | Address |
-|----------|---------|
-| MockGovernor (Uniswap) | `0xB51Ad04efBb05607214d1B19b3F9686156f1A025` |
-| MockGovernor (Lido) | `0x3B4D24aD2203641CE895ad9A4c9254F4f7291822` |
-| MockGovernor (ENS) | `0xc01FDE9e1CC1d7319fA03861304eb626cAF9A5be` |
-| ParentTreasury | `0x5Bb4b18CDFF5Dbac874235d7067B414F0709C444` |
-| ChildGovernor (impl) | `0xff392223115Aef74e67b7aabF62659B86f486ce6` |
-| SpawnFactory | `0xC06E6615E2bBBf795ae17763719dCB9b82cd781C` |
-| TimeLock | `0x68686865af7287137818C12E5680AA04A8Fd525a` |
+| ERC-8004 Identity Registry | `0x8004A818BFB912233c491871b3d84c89A494BD9e` |
+| ReputationRegistry | `0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14` |
+| ValidationRegistry | `0x3caE87f24e15970a8e19831CeCD5FAe3c087a546` |
 
 ## Tech Stack
 - **Contracts:** Foundry + Solidity (OpenZeppelin for Clones, Governor interface)
 - **Agent Runtime:** TypeScript + viem + openai (with Venice base URL)
-- **Private Reasoning:** Venice API (llama-3.3-70b, E2EE enabled on all models, zero data retention)
+- **Private Reasoning:** Venice API (`e2ee-qwen3-30b-a3b-p` primary, `e2ee-gemma-3-27b-p` fallback, zero data retention)
 - **Encryption:** Lit Protocol SDK (@lit-protocol/lit-node-client)
 - **Delegations:** MetaMask Delegation Toolkit (@metamask/delegation-toolkit)
-- **Identity:** ERC-8004 on Base Sepolia
+- **Identity:** ERC-8004 identity + reputation + validation on Base Sepolia
+- **Storage:** Filecoin Calibration via `@filoz/synapse-sdk`
 - **Dashboard:** Next.js 14 + React + viem + Tailwind CSS
-- **Chains:** Base Sepolia (primary) + Celo Sepolia (secondary)
+- **Chains:** Base Sepolia
 
 ## Project Structure
 ```
@@ -176,12 +186,12 @@ synthesis/
 ├── CLAUDE.md                 (this file — project spec)
 ├── contracts/                (Foundry project)
 │   ├── src/                  (MockGovernor, SpawnFactory, ChildGovernor, ParentTreasury, TimeLock, SpawnENSRegistry, StETHTreasury)
-│   ├── test/                 (62 tests passing)
+│   ├── test/                 (97 tests passing)
 │   ├── script/               (DeployMultiDAO.s.sol)
 │   └── broadcast/            (Foundry deployment receipts — verifiable evidence)
 ├── agent/
-│   └── src/                  (swarm, child, venice, lit, delegation, ens, identity, lido, chain, wallet-manager)
-├── dashboard/                (Next.js real-time swarm visualization)
+│   └── src/                  (swarm, judge-flow, child, venice, lit, delegation, ens, identity, filecoin, lido, chain, wallet-manager)
+├── dashboard/                (Next.js real-time swarm visualization + judge flow page)
 ├── agent.json                (Machine-readable agent manifest)
 ├── agent_log.json            (Execution log with tx hashes)
 └── README.md
@@ -194,3 +204,4 @@ synthesis/
 - **Each child agent runs as its own OS process.** Genuinely independent reasoning loops via `fork()`.
 - **Mock governance with 5-min voting periods for demo.** Real DAO interface compatibility for production.
 - **Self-funding treasury.** Lido stETH yield covers Venice API costs.
+- **Judge flow is deterministic, not synthetic.** The proof path runs on the same live Base Sepolia runtime and Filecoin integration as the normal swarm.

@@ -4,9 +4,11 @@ import { ChildGovernorABI, MockGovernorABI } from "./abis.js";
 import { reasonAboutProposal, summarizeProposal, assessProposalRisk } from "./venice.js";
 import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./lit.js";
 import { getDelegationsForChild, redeemVoteDelegation, importDelegation } from "./delegation.js";
+import { getAgentTrustDecision } from "./identity.js";
 import { toHex, type Hex, type Address } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 import { logChildAction } from "./logger.js";
+import { readJudgeFlowState } from "./judge-flow.js";
 
 /**
  * Log a child action via IPC if running as a forked process (single-writer pattern),
@@ -23,11 +25,22 @@ function ipcLog(childLabel: string, action: string, inputs: Record<string, any>,
 }
 
 // Add jitter to cycle interval so children don't all poll simultaneously
-const CYCLE_INTERVAL_MS = 30_000 + Math.floor(Math.random() * 10_000); // 30-40s
+function getCycleIntervalMs() {
+  const override = Number(process.env.CHILD_CYCLE_INTERVAL_MS || "");
+  if (Number.isFinite(override) && override > 0) return override;
+  return 30_000 + Math.floor(Math.random() * 10_000); // 30-40s
+}
+
+function getStartDelayMs() {
+  const override = Number(process.env.CHILD_START_DELAY_MS || "");
+  if (Number.isFinite(override) && override >= 0) return override;
+  return Math.floor(Math.random() * 15000) + 5000; // 5-20s random delay
+}
 
 // Lit Protocol: lazy-init on first use (module-level so childCycle can access it)
 let litAvailable = false;
 let litInitAttempted = false;
+const lastTrustStatusByChild = new Map<string, string>();
 async function ensureLit(): Promise<boolean> {
   if (litInitAttempted) return litAvailable;
   litInitAttempted = true;
@@ -105,7 +118,7 @@ Be decisive and provide clear reasoning for your votes.
 Your owner's governance values: ${governanceValues}`;
 
   // Stagger child startup to avoid RPC + Venice rate limiting
-  const startDelay = Math.floor(Math.random() * 15000) + 5000; // 5-20s random delay
+  const startDelay = getStartDelayMs();
   console.log(`[Child:${childLabel}] Starting in ${(startDelay/1000).toFixed(0)}s (staggered to avoid rate limits)`);
   await sleep(startDelay);
 
@@ -132,7 +145,7 @@ Your owner's governance values: ${governanceValues}`;
         console.error(`[Child:${childLabel}] Cycle error: ${msg.slice(0, 120)}`);
       }
     }
-    await sleep(CYCLE_INTERVAL_MS);
+    await sleep(getCycleIntervalMs());
   }
 }
 
@@ -146,16 +159,88 @@ async function childCycle(
   childWalletClient: any = walletClient,
   readClient: any = publicClient
 ) {
+  const currentJudgeRunId = process.env.JUDGE_FLOW_RUN_ID;
+  const childAgentId = process.env.ERC8004_AGENT_ID ? BigInt(process.env.ERC8004_AGENT_ID) : undefined;
+  if (!currentJudgeRunId) {
+    const judgeState = readJudgeFlowState();
+    if (judgeState.status === "running") {
+      console.log(`[Child:${childLabel}] Judge flow active — pausing normal child cycle`);
+      return;
+    }
+  }
+
+  let votingBlockedByTrust = false;
+  if (!currentJudgeRunId && childAgentId !== undefined) {
+    try {
+      const trustDecision = await getAgentTrustDecision(childAgentId);
+      const trustSnapshot = `${trustDecision.status}:${trustDecision.reason}:${trustDecision.reputation?.averageScore ?? "na"}:${trustDecision.validation?.averageScore ?? "na"}:${trustDecision.validation?.rejected ?? "na"}`;
+      const previousTrustSnapshot = lastTrustStatusByChild.get(childLabel);
+
+      if (previousTrustSnapshot !== trustSnapshot) {
+        if (trustDecision.allowed) {
+          console.log(`[Child:${childLabel}] ERC-8004 trust gate cleared (${trustDecision.reason})`);
+          ipcLog(
+            childLabel,
+            "trust_gate_restored",
+            {
+              erc8004AgentId: childAgentId.toString(),
+              reason: trustDecision.reason,
+            },
+            {
+              allowed: true,
+              reason: trustDecision.reason,
+              reputationAverage: trustDecision.reputation?.averageScore,
+              validationAverage: trustDecision.validation?.averageScore,
+              validationRejected: trustDecision.validation?.rejected,
+            }
+          );
+        } else {
+          console.log(`[Child:${childLabel}] ERC-8004 trust gate active (${trustDecision.reason})`);
+          ipcLog(
+            childLabel,
+            "trust_gate_blocked",
+            {
+              erc8004AgentId: childAgentId.toString(),
+              reason: trustDecision.reason,
+            },
+            {
+              allowed: false,
+              reason: trustDecision.reason,
+              reputationAverage: trustDecision.reputation?.averageScore,
+              validationAverage: trustDecision.validation?.averageScore,
+              validationRejected: trustDecision.validation?.rejected,
+            }
+          );
+        }
+        lastTrustStatusByChild.set(childLabel, trustSnapshot);
+      }
+
+      votingBlockedByTrust = !trustDecision.allowed;
+    } catch (trustErr: any) {
+      console.warn(`[Child:${childLabel}] Trust check failed (${trustErr?.message?.slice(0, 60)})`);
+    }
+  }
+
   // 1. Get total proposal count
-  const proposalCount = (await readClient.readContract({
+  const observedProposalCount = (await readClient.readContract({
     address: governanceAddr,
     abi: MockGovernorABI,
     functionName: "proposalCount",
   })) as bigint;
+  const judgeProposalId = currentJudgeRunId && process.env.JUDGE_PROPOSAL_ID
+    ? BigInt(process.env.JUDGE_PROPOSAL_ID)
+    : undefined;
+  const proposalCount = judgeProposalId && judgeProposalId > 0n
+    ? judgeProposalId
+    : observedProposalCount;
 
   // ── PASS 1: Vote on active proposals (scan backwards, break early) ──
   let consecutiveInactive = 0;
   for (let i = proposalCount; i >= 1n; i--) {
+    if (votingBlockedByTrust) {
+      break;
+    }
+
     const state = (await readClient.readContract({
       address: governanceAddr,
       abi: MockGovernorABI,
@@ -186,6 +271,18 @@ async function childCycle(
         functionName: "getProposal",
         args: [i],
       })) as ProposalInfo;
+
+      const proposalJudgeRunId = proposal.description.match(/\[JUDGE_FLOW:([^\]]+)\]/)?.[1] || null;
+      if (currentJudgeRunId) {
+        if (judgeProposalId && i !== judgeProposalId) {
+          continue;
+        }
+        if (proposalJudgeRunId !== currentJudgeRunId) {
+          continue;
+        }
+      } else if (proposalJudgeRunId) {
+        continue;
+      }
 
       console.log(
         `[Child:${childLabel}] Evaluating proposal ${i}: ${proposal.description}`
@@ -252,6 +349,12 @@ async function childCycle(
         console.log(`[Child:${childLabel}] Rationale hex-encoded (Lit unavailable — keccak256 hash still onchain)`);
       }
 
+      if (currentJudgeRunId) {
+        // Judge mode only needs a compact onchain receipt. The full Lit ciphertext
+        // stays private/off-chain while the hash proves the exact reasoning blob.
+        encryptedRationale = reasoningHash;
+      }
+
       // Cast vote onchain — try delegation redemption first, fall back to direct call
       let hash: `0x${string}`;
       const childAccount = childWalletClient.account;
@@ -259,7 +362,7 @@ async function childCycle(
 
       // Try to vote via DelegationManager redemption (ERC-7715 enforced onchain)
       let usedDelegation = false;
-      if (childAddress) {
+      if (childAddress && !currentJudgeRunId) {
         const delegations = getDelegationsForChild(childAddress);
         // Match by childAddr (ChildGovernor clone) — governanceContract stores the delegation
         // target which is the ChildGovernor address, not the MockGovernor (governanceAddr)
@@ -294,7 +397,10 @@ async function childCycle(
       // `parent` in onlyAuthorized) is used. On celo-sepolia operator = child wallet still.
       if (!usedDelegation) {
         const fallbackChain = process.env.CHILD_CHAIN || "base-sepolia";
-        const fallbackWallet = fallbackChain === "celo-sepolia" ? childWalletClient : walletClient;
+        const fallbackWallet =
+          fallbackChain === "celo-sepolia"
+            ? childWalletClient
+            : walletClient;
         hash = await fallbackWallet.writeContract({
           address: childAddr,
           abi: ChildGovernorABI,
@@ -307,7 +413,29 @@ async function childCycle(
       console.log(
         `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${usedDelegation ? " [via delegation]" : ""}`
       );
-      try { ipcLog(childLabel, "cast_vote", { proposalId: Number(i), decision, litEncrypted: usedLit, reasoningHash: reasoningHash.slice(0, 18) }, { txHash: receipt.transactionHash }, receipt.transactionHash); } catch {}
+      try {
+        const judgePayload = currentJudgeRunId
+          ? {
+              judgeRunId: currentJudgeRunId,
+              judgeStep: "judge_vote_cast",
+              proofChild: true,
+              proofStatus: "vote_cast",
+            }
+          : {};
+        ipcLog(
+          childLabel,
+          currentJudgeRunId ? "judge_vote_cast" : "cast_vote",
+          {
+            proposalId: Number(i),
+            decision,
+            litEncrypted: usedLit,
+            reasoningHash: reasoningHash.slice(0, 18),
+            ...judgePayload,
+          },
+          { txHash: receipt.transactionHash, ...judgePayload },
+          receipt.transactionHash
+        );
+      } catch {}
     }
   }
 

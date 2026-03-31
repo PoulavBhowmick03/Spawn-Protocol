@@ -118,6 +118,10 @@ const localRegistry = new Map<string, RegisteredAgent>();
 // URIs already registered this process lifetime — prevents parent re-registering on every restart
 const registeredUris = new Set<string>();
 
+function findRegisteredAgentByUri(uri: string): RegisteredAgent | null {
+  return Array.from(localRegistry.values()).find((agent) => agent.uri === uri) || null;
+}
+
 // Serialize all onchain writes through a single queue to prevent nonce conflicts.
 // The swarm spawns multiple children concurrently — without this, concurrent
 // writeContract calls from the same EOA collide on nonce and silently revert.
@@ -141,53 +145,14 @@ export async function registerAgent(
 ): Promise<RegisteredAgent> {
   if (registeredUris.has(uri)) {
     console.log(`[ERC-8004] Skipping duplicate registration: ${uri}`);
-    return registerLocal(uri, metadata);
+    return findRegisteredAgentByUri(uri) || registerLocal(uri, metadata);
   }
-  registeredUris.add(uri);
   console.log(`[ERC-8004] Queuing registration: ${uri} (type=${metadata.agentType})`);
 
   if (AGENT_REGISTRY_ADDRESS !== "0x0000000000000000000000000000000000000000") {
     try {
-      const agent = await enqueueWrite(async () => {
-        const txHash = await walletClient.writeContract({
-          address: AGENT_REGISTRY_ADDRESS,
-          abi: ERC8004_ABI,
-          functionName: "register",
-          args: [uri],
-        });
-
-        console.log(`[ERC-8004] Registration TX sent: ${txHash}`);
-
-        const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-
-        // Extract agentId from AgentRegistered event (0xca52e62c...).
-        // The ERC-721 Transfer event is emitted first with topics[1]=from (0x0),
-        // so we must find the AgentRegistered event specifically, not the first log.
-        const AGENT_REGISTERED_SIG = "0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a";
-        let agentId = BigInt(0);
-        for (const log of receipt.logs) {
-          if (
-            log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase() &&
-            log.topics[0] === AGENT_REGISTERED_SIG &&
-            log.topics[1]
-          ) {
-            try { agentId = BigInt(log.topics[1]); } catch {}
-            break;
-          }
-        }
-
-        const agent: RegisteredAgent = {
-          agentId,
-          uri,
-          metadata,
-          owner: account.address,
-          registeredAt: Date.now(),
-          txHash,
-        };
-        localRegistry.set(agentId.toString(), agent);
-        console.log(`[ERC-8004] Registered onchain ID #${agentId}: ${uri}`);
-        return agent;
-      });
+      const agent = await registerAgentOnchain(uri, metadata);
+      if (!agent) throw new Error("Onchain registration returned null");
       return agent;
     } catch (error: any) {
       console.log(`[ERC-8004] Registration failed for ${uri}: ${error?.message?.slice(0, 80)}`);
@@ -195,7 +160,69 @@ export async function registerAgent(
   }
 
   // Fallback: local registration
-  return registerLocal(uri, metadata);
+  registeredUris.add(uri);
+  return findRegisteredAgentByUri(uri) || registerLocal(uri, metadata);
+}
+
+export async function registerAgentOnchain(
+  uri: string,
+  metadata: AgentMetadata
+): Promise<RegisteredAgent | null> {
+  if (AGENT_REGISTRY_ADDRESS === "0x0000000000000000000000000000000000000000") {
+    return null;
+  }
+
+  try {
+    const agent = await enqueueWrite(async () => {
+      const txHash = await walletClient.writeContract({
+        address: AGENT_REGISTRY_ADDRESS,
+        abi: ERC8004_ABI,
+        functionName: "register",
+        args: [uri],
+      });
+
+      console.log(`[ERC-8004] Registration TX sent: ${txHash}`);
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      // Extract agentId from AgentRegistered event (0xca52e62c...).
+      // The ERC-721 Transfer event is emitted first with topics[1]=from (0x0),
+      // so we must find the AgentRegistered event specifically, not the first log.
+      const AGENT_REGISTERED_SIG = "0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a";
+      let agentId = BigInt(0);
+      for (const log of receipt.logs) {
+        if (
+          log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase() &&
+          log.topics[0] === AGENT_REGISTERED_SIG &&
+          log.topics[1]
+        ) {
+          try { agentId = BigInt(log.topics[1]); } catch {}
+          break;
+        }
+      }
+
+      if (agentId <= 0n) {
+        throw new Error("AgentRegistered event missing agentId");
+      }
+
+      const agent: RegisteredAgent = {
+        agentId,
+        uri,
+        metadata,
+        owner: account.address,
+        registeredAt: Date.now(),
+        txHash,
+      };
+      localRegistry.set(agentId.toString(), agent);
+      registeredUris.add(uri);
+      console.log(`[ERC-8004] Registered onchain ID #${agentId}: ${uri}`);
+      return agent;
+    });
+    return agent;
+  } catch (error: any) {
+    console.log(`[ERC-8004] Onchain registration failed for ${uri}: ${error?.message?.slice(0, 80)}`);
+    return null;
+  }
 }
 
 /**
@@ -271,6 +298,44 @@ export async function updateAgentMetadata(
     JSON.stringify(metadata)
   );
   return true;
+}
+
+/**
+ * Judge-mode helper: set a single metadata key and return the tx hash.
+ * This is used when the proof flow needs explicit onchain receipts.
+ */
+export async function setAgentMetadataValue(
+  agentId: bigint,
+  key: string,
+  value: string
+): Promise<string | null> {
+  if (AGENT_REGISTRY_ADDRESS === "0x0000000000000000000000000000000000000000") {
+    return null;
+  }
+
+  try {
+    return await enqueueWrite(async () => {
+      const hash = await walletClient.writeContract({
+        address: AGENT_REGISTRY_ADDRESS,
+        abi: ERC8004_ABI,
+        functionName: "setMetadata",
+        args: [agentId, key, value],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+      console.log(`[ERC-8004] setMetadata ${key}=${value} for agent ${agentId} (tx: ${hash})`);
+      return hash;
+    });
+  } catch (err: any) {
+    console.log(`[ERC-8004] setMetadata ${key} failed for ${agentId}: ${err?.message?.slice(0, 60)}`);
+    return null;
+  }
+}
+
+export async function getAgentMetadataValue(
+  agentId: bigint,
+  key: string
+): Promise<string | null> {
+  return fetchMetadata(agentId, key);
 }
 
 /**
@@ -750,6 +815,79 @@ export async function getValidationSummary(agentId: bigint): Promise<{
   } catch {
     return null;
   }
+}
+
+const TRUST_MIN_REPUTATION = Number(process.env.ERC8004_TRUST_MIN_REPUTATION || 45);
+const TRUST_MIN_VALIDATION_SCORE = Number(process.env.ERC8004_TRUST_MIN_VALIDATION_SCORE || 40);
+const TRUST_MAX_REJECTIONS = Number(process.env.ERC8004_TRUST_MAX_REJECTIONS || 0);
+const TRUST_CACHE_TTL_MS = Number(process.env.ERC8004_TRUST_CACHE_TTL_MS || 15_000);
+
+export interface AgentTrustDecision {
+  allowed: boolean;
+  status: "healthy" | "gated";
+  reason: string;
+  checkedAt: number;
+  reputation: Awaited<ReturnType<typeof getReputationSummary>>;
+  validation: Awaited<ReturnType<typeof getValidationSummary>>;
+}
+
+const trustDecisionCache = new Map<string, { expiresAt: number; decision: AgentTrustDecision }>();
+
+/**
+ * Evaluate whether an agent should retain autonomous voting authority.
+ * This is intentionally conservative: if the agent has no trust history yet,
+ * it remains allowed. Once it accumulates negative ERC-8004 signals, runtime
+ * callers can gate delegation or voting behavior.
+ */
+export async function getAgentTrustDecision(agentId: bigint): Promise<AgentTrustDecision> {
+  const cacheKey = agentId.toString();
+  const cached = trustDecisionCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.decision;
+  }
+
+  const [reputation, validation] = await Promise.all([
+    getReputationSummary(agentId),
+    getValidationSummary(agentId),
+  ]);
+
+  let allowed = true;
+  let reason = "trust_healthy";
+
+  if (validation && validation.rejected > TRUST_MAX_REJECTIONS) {
+    allowed = false;
+    reason = `validation_rejected_${validation.rejected}`;
+  } else if (
+    validation &&
+    validation.validated > 0 &&
+    validation.averageScore < TRUST_MIN_VALIDATION_SCORE
+  ) {
+    allowed = false;
+    reason = `validation_score_${validation.averageScore}`;
+  } else if (
+    reputation &&
+    reputation.activeFeedback > 0 &&
+    reputation.averageScore < TRUST_MIN_REPUTATION
+  ) {
+    allowed = false;
+    reason = `reputation_score_${reputation.averageScore}`;
+  }
+
+  const decision: AgentTrustDecision = {
+    allowed,
+    status: allowed ? "healthy" : "gated",
+    reason,
+    checkedAt: Date.now(),
+    reputation,
+    validation,
+  };
+
+  trustDecisionCache.set(cacheKey, {
+    expiresAt: Date.now() + TRUST_CACHE_TTL_MS,
+    decision,
+  });
+
+  return decision;
 }
 
 /**

@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: "/proposals", label: "Proposals", icon: "◈" },
   { href: "/leaderboard", label: "Leaderboard", icon: "▲" },
   { href: "/timeline", label: "Timeline", icon: "≡" },
+  { href: "/judge-flow", label: "Judge Flow", icon: "◇" },
   { href: "/logs", label: "Exec Log", icon: "◉" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ];

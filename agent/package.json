@@ -8,8 +8,7 @@
     "child": "tsx src/child.ts",
     "demo": "tsx src/demo.ts",
     "spawn-child": "tsx src/spawn-child.ts",
-    "swarm": "tsx src/swarm.ts",
-    "demo:crosschain": "tsx src/demo-crosschain.ts"
+    "swarm": "tsx src/swarm.ts"
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",

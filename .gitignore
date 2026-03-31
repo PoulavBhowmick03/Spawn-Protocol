@@ -7,3 +7,4 @@ cache/
 grok.md
 AGENTS.md
 agent/.next/
+judge_flow_state.json

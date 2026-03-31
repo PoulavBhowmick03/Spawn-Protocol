@@ -15,6 +15,7 @@ import {
   supportColor,
   ensName,
   governorName,
+  storageViewerPath,
 } from "@/lib/contracts";
 
 const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
@@ -45,9 +46,48 @@ interface Erc8004Data {
   owner: Address;
 }
 
+type LitPayload = {
+  ciphertext: string;
+  dataToEncryptHash: string;
+  litEncrypted: true;
+};
+
 // Module-level cache — survives React strict mode double-mounts and re-renders.
 // Key = ensLabel, value = resolved ERC-8004 data.
 const erc8004Cache = new Map<string, Erc8004Data>();
+
+function parseHexUtf8(hex?: `0x${string}` | string) {
+  if (!hex || hex === "0x") return null;
+  try {
+    return Buffer.from(hex.slice(2), "hex").toString("utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function parseLitPayload(hex?: `0x${string}` | string): LitPayload | null {
+  const decoded = parseHexUtf8(hex);
+  if (!decoded) return null;
+  try {
+    const parsed = JSON.parse(decoded);
+    if (parsed?.litEncrypted === true && parsed?.ciphertext && parsed?.dataToEncryptHash) {
+      return parsed as LitPayload;
+    }
+  } catch {}
+  return null;
+}
+
+function parsePlaintextRationale(hex?: `0x${string}` | string): string | null {
+  const decoded = parseHexUtf8(hex);
+  if (!decoded) return null;
+  try {
+    const parsed = JSON.parse(decoded);
+    if (parsed?.litEncrypted === true && parsed?.ciphertext) {
+      return null;
+    }
+  } catch {}
+  return decoded;
+}
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -66,6 +106,7 @@ export default function AgentDetailPage({ params }: PageProps) {
     ensLabel ? erc8004Cache.get(ensLabel) ?? null : null
   );
   const [erc8004Loading, setErc8004Loading] = useState(false);
+  const isLineagePieceCid = lineageMemoryCid?.startsWith("bafkzci") ?? false;
 
   // Resolve ERC-8004 identity by scanning tokenURI on the shared public registry.
   // Uses module-level cache to survive strict mode double-mounts and re-renders.
@@ -160,44 +201,43 @@ export default function AgentDetailPage({ params }: PageProps) {
     return () => { cancelled = true; };
   }, [ensLabel, client]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch delegation + revocation from ENS text records
+  // Fetch delegation + revocation from ENS text records, with lineage CID
+  // falling back to ERC-8004 metadata when available.
   useEffect(() => {
     if (!child) return;
     const label = child.ensLabel;
-    // Fetch delegation, revocation, and lineage memory all in parallel
     const baseLabel = label.replace(/-v\d+$/, "");
+    const agentId = erc8004Data?.agentId;
     Promise.all([
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation"] }).catch(() => ""),
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation.revoked"] }).catch(() => ""),
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "lineage-memory"] }).catch(() => ""),
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [baseLabel, "lineage-memory"] }).catch(() => ""),
-    ]).then(([del, rev, lineageSelf, lineageBase]) => {
+      agentId != null
+        ? client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "lineage-memory"] }).catch(() => "")
+        : Promise.resolve(""),
+    ]).then(([del, rev, lineageSelf, lineageBase, lineageMetadata]) => {
       if (del) try { setDelegation(JSON.parse(del as string)); } catch { setDelegation({ raw: del }); }
       if (rev) try { setRevocation(JSON.parse(rev as string)); } catch { setRevocation({ raw: rev }); }
-      const cid = (lineageSelf || lineageBase) as string;
+      const cid = (lineageSelf || lineageBase || lineageMetadata) as string;
       if (cid) {
         setLineageMemoryCid(cid);
-        // Try multiple IPFS gateways
-        const gateways = [
-          `https://ipfs.filebase.io/ipfs/${cid}`,
-          `https://ipfs.io/ipfs/${cid}`,
-          `https://cloudflare-ipfs.com/ipfs/${cid}`,
-          `https://dweb.link/ipfs/${cid}`,
-        ];
+        setLineageReport(null);
         (async () => {
-          for (const url of gateways) {
-            try {
-              const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-              if (res.ok) {
-                const data = await res.json();
-                if (data) { setLineageReport(data); return; }
-              }
-            } catch {}
-          }
+          try {
+            const res = await fetch(`/api/storage?cid=${encodeURIComponent(cid)}`, {
+              cache: "no-store",
+            });
+            if (!res.ok) return;
+            const payload = await res.json();
+            if (payload?.data) {
+              setLineageReport(payload.data);
+            }
+          } catch {}
         })();
       }
     }).catch(() => {});
-  }, [child, client]);
+  }, [child, client, erc8004Data]);
 
   if (loading) {
     return (
@@ -247,11 +287,6 @@ export default function AgentDetailPage({ params }: PageProps) {
             </div>
             <h1 className="text-lg md:text-xl font-mono font-bold text-green-400 mb-1 flex items-center gap-2 flex-wrap">
               {ensDisplay}
-              {ensName(child.ensLabel) && (
-                <span className="text-[10px] border border-green-500/30 bg-green-500/10 text-green-400 rounded px-1.5 py-0.5 font-mono uppercase">
-                  ENS
-                </span>
-              )}
               {delegation && !revocation && (
                 <span className="text-[10px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1.5 py-0.5 font-mono uppercase">
                   ERC-7715
@@ -425,8 +460,15 @@ export default function AgentDetailPage({ params }: PageProps) {
           <div className="border border-cyan-400/30 bg-cyan-400/5 rounded-lg p-5 mb-6">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-xs font-mono text-cyan-400 uppercase tracking-widest">Lineage Memory</h2>
-              <a href={`https://ipfs.filebase.io/ipfs/${lineageMemoryCid}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-purple-400 hover:text-purple-300 border border-purple-400/30 rounded px-1.5 py-0.5">
-                IPFS {lineageMemoryCid.slice(0, 12)}... ↗
+              <a
+                href={storageViewerPath(lineageMemoryCid)}
+                className={`text-[10px] font-mono border rounded px-1.5 py-0.5 ${
+                  isLineagePieceCid
+                    ? "text-blue-300 hover:text-blue-200 border-blue-400/30"
+                    : "text-purple-400 hover:text-purple-300 border-purple-400/30"
+                }`}
+              >
+                {isLineagePieceCid ? "FIL" : "IPFS"} {lineageMemoryCid.slice(0, 12)}... ↗
               </a>
             </div>
             <p className="text-xs text-gray-400 mb-3">
@@ -499,7 +541,11 @@ export default function AgentDetailPage({ params }: PageProps) {
             )}
 
             {!lineageReport && (
-              <p className="text-[10px] text-gray-600 font-mono">Loading memory from IPFS...</p>
+              <p className="text-[10px] text-gray-600 font-mono">
+                {isLineagePieceCid
+                  ? "Loading lineage memory from Filecoin..."
+                  : "Loading memory from IPFS..."}
+              </p>
             )}
           </div>
         ) : null;
@@ -557,26 +603,13 @@ export default function AgentDetailPage({ params }: PageProps) {
           <div className="space-y-3">
             {[...voteHistory].reverse().map((vote, i) => {
               const supportNum = Number(vote.support);
-              let rationale: string | null = null;
-              let litCiphertext: { ciphertext: string; dataToEncryptHash: string } | null = null;
-              if (vote.revealed && vote.decryptedRationale && vote.decryptedRationale !== "0x") {
-                let decoded = "";
-                try {
-                  decoded = new TextDecoder().decode(
-                    Buffer.from(vote.decryptedRationale.slice(2), "hex")
-                  );
-                  // Check if the revealed bytes are actually a Lit ciphertext JSON
-                  // (happens when Lit decryption at reveal time fails — ciphertext stored as-is)
-                  const parsed = JSON.parse(decoded);
-                  if (parsed?.litEncrypted === true && parsed?.ciphertext) {
-                    litCiphertext = { ciphertext: parsed.ciphertext, dataToEncryptHash: parsed.dataToEncryptHash };
-                  } else {
-                    rationale = decoded;
-                  }
-                } catch {
-                  rationale = decoded;
-                }
-              }
+              const litCiphertext =
+                parseLitPayload(vote.encryptedRationale) ||
+                parseLitPayload(vote.decryptedRationale);
+              const rationale =
+                vote.revealed && vote.decryptedRationale && vote.decryptedRationale !== "0x"
+                  ? parsePlaintextRationale(vote.decryptedRationale)
+                  : null;
 
               return (
                 <div
@@ -607,22 +640,6 @@ export default function AgentDetailPage({ params }: PageProps) {
                     </span>
                   </div>
 
-                  {rationale && (
-                    <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
-                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Rationale</p>
-                      <p className="text-sm text-gray-300">{rationale}</p>
-                      <div className="mt-2 pt-2 border-t border-gray-800">
-                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
-                        <p className="font-mono text-[10px] text-green-400/60 break-all">
-                          {keccak256(toBytes(rationale))}
-                        </p>
-                        <p className="text-[10px] text-gray-700 mt-0.5">
-                          Compare with reasoning hash committed before vote to verify E2EE integrity
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
                   {litCiphertext && (
                     <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-purple-500/20">
                       <div className="flex items-center gap-2 mb-2">
@@ -630,8 +647,7 @@ export default function AgentDetailPage({ params }: PageProps) {
                         <span className="text-[10px] font-mono text-purple-400/60 border border-purple-400/20 px-1.5 py-0.5 rounded">E2EE</span>
                       </div>
                       <p className="text-[11px] text-gray-500 mb-2">
-                        Reasoning was encrypted before the vote using Lit Protocol with a TimeLock access condition.
-                        The ciphertext is stored onchain — decryptable via Lit SDK once the voting period ends.
+                        This vote used Lit Protocol before execution. The ciphertext and pre-vote hash remain visible even after reveal.
                       </p>
                       <div className="font-mono text-[10px] text-purple-300/50 break-all bg-purple-900/10 p-2 rounded border border-purple-500/10">
                         {litCiphertext.ciphertext.slice(0, 80)}…
@@ -643,6 +659,24 @@ export default function AgentDetailPage({ params }: PageProps) {
                         </p>
                         <p className="text-[10px] text-gray-700 mt-1">
                           Pre-vote reasoning hash committed onchain — proves private reasoning before public vote
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {rationale && (
+                    <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                        {litCiphertext ? "Decrypted Rationale" : "Rationale"}
+                      </p>
+                      <p className="text-sm text-gray-300">{rationale}</p>
+                      <div className="mt-2 pt-2 border-t border-gray-800">
+                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
+                        <p className="font-mono text-[10px] text-green-400/60 break-all">
+                          {keccak256(toBytes(rationale))}
+                        </p>
+                        <p className="text-[10px] text-gray-700 mt-0.5">
+                          Compare with reasoning hash committed before vote to verify E2EE integrity
                         </p>
                       </div>
                     </div>

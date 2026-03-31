@@ -4,15 +4,13 @@ import { useState, useEffect } from "react";
 import { type Address } from "viem";
 import { useSwarmData } from "@/hooks/useSwarmData";
 import { AgentCard } from "@/components/AgentCard";
-import { CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
+import { CONTRACTS, explorerAddress, formatAddress, storageViewerPath } from "@/lib/contracts";
 import { useChainContext } from "@/context/ChainContext";
 
-// ENS Registry for reading IPFS CID, delegation hashes, subdomain count, and subdomain list
+// ENS Registry for reading runtime-published text records
 const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
 const ENS_REGISTRY_ABI = [
   { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
-  { type: "function", name: "subdomainCount", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
-  { type: "function", name: "getAllSubdomains", inputs: [], outputs: [{ name: "names", type: "string[]" }, { name: "addresses", type: "address[]" }], stateMutability: "view" },
 ] as const;
 
 // ERC-8004 Agent Registry on Base Sepolia
@@ -36,7 +34,6 @@ export default function SwarmPage() {
   const [filecoinStateCid, setFilecoinStateCid] = useState<string | null>(null);
   const [filecoinAgentLogCid, setFilecoinAgentLogCid] = useState<string | null>(null);
   const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
-  const [ensSubdomainCount, setEnsSubdomainCount] = useState<number | null>(null);
   // Maps child contract address (lowercase) → ERC-8004 agentId
   // Module-level cache to survive strict mode double-mounts
   const [erc8004Ids, setErc8004Ids] = useState<Map<string, bigint>>(erc8004IdsCache);
@@ -180,23 +177,6 @@ export default function SwarmPage() {
     return () => { cancelled = true; };
   }, [childLabelsKey, client]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch ENS subdomain count for the badge
-  useEffect(() => {
-    const fetchCount = async () => {
-      try {
-        const count = await client.readContract({
-          address: ENS_REGISTRY,
-          abi: ENS_REGISTRY_ABI,
-          functionName: "subdomainCount",
-        });
-        setEnsSubdomainCount(Number(count));
-      } catch {}
-    };
-    fetchCount();
-    const interval = setInterval(fetchCount, 30_000);
-    return () => clearInterval(interval);
-  }, [client]);
-
   const activeCount = children.filter((c) => c.active).length;
   const totalCount = children.length;
   const totalVotes = children.reduce((sum, c) => sum + Number(c.voteCount), 0);
@@ -265,16 +245,14 @@ export default function SwarmPage() {
         </div>
       </div>
 
-      {/* Filecoin + IPFS + Delegation + ENS Status Bar */}
+      {/* Filecoin + IPFS + Delegation Status Bar */}
       {!loading && (
         <>
         <div className="flex flex-wrap gap-3 mb-6">
           {/* Filecoin Calibration — state snapshot badge */}
           {filecoinStateCid ? (
             <a
-              href={`https://calibration.filfox.info/en/deal/${encodeURIComponent(filecoinStateCid)}`}
-              target="_blank"
-              rel="noopener noreferrer"
+              href={storageViewerPath(filecoinStateCid)}
               className="flex items-center gap-2 border border-blue-400/40 bg-blue-400/8 rounded-lg px-4 py-2 hover:bg-blue-400/15 transition-all"
               title="Swarm state snapshot stored on Filecoin Calibration Testnet via Synapse SDK"
             >
@@ -298,9 +276,7 @@ export default function SwarmPage() {
           {/* Filecoin agent log badge */}
           {filecoinAgentLogCid && (
             <a
-              href={`https://calibration.filfox.info/en/deal/${encodeURIComponent(filecoinAgentLogCid)}`}
-              target="_blank"
-              rel="noopener noreferrer"
+              href={storageViewerPath(filecoinAgentLogCid)}
               className="flex items-center gap-2 border border-cyan-400/30 bg-cyan-400/5 rounded-lg px-4 py-2 hover:bg-cyan-400/10 transition-all"
               title="Agent execution log stored on Filecoin via Synapse SDK"
             >
@@ -355,21 +331,6 @@ export default function SwarmPage() {
             </span>
             <span className="text-[10px] font-mono text-indigo-400/60">{ERC8004_REGISTRY.slice(0, 6)}…{ERC8004_REGISTRY.slice(-4)}</span>
             <span className="text-indigo-400 text-xs">↗</span>
-          </a>
-
-          {/* ENS Registry live badge */}
-          <a
-            href={`https://sepolia.basescan.org/address/${ENS_REGISTRY}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 border border-teal-400/30 bg-teal-400/5 rounded-lg px-4 py-2 hover:bg-teal-400/10 transition-all"
-          >
-            <span className="text-teal-400 text-sm">ENS</span>
-            <span className="text-xs font-mono text-teal-300">
-              {`${activeCount} active agent subdomain${activeCount !== 1 ? "s" : ""} on spawn.eth`}
-            </span>
-            <span className="text-[10px] font-mono text-teal-400/60">SpawnENSRegistry {ENS_REGISTRY.slice(0, 6)}…{ENS_REGISTRY.slice(-4)}</span>
-            <span className="text-teal-400 text-xs">↗</span>
           </a>
         </div>
 

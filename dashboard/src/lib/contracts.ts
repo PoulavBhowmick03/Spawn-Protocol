@@ -76,6 +76,14 @@ export function explorerAddress(address: string): string {
   return `${EXPLORER_BASE}/address/${address}`;
 }
 
+export function isFilecoinPieceCid(cid: string): boolean {
+  return cid.startsWith("bafkzci");
+}
+
+export function storageViewerPath(cid: string): string {
+  return `/storage/${encodeURIComponent(cid)}`;
+}
+
 export function formatAddress(address: string): string {
   if (!address || address.length < 10) return address;
   return `${address.slice(0, 6)}...${address.slice(-4)}`;

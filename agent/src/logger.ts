@@ -50,6 +50,14 @@ interface ExecutionLogEntry {
   subdomains?: string[];
   contractsVerified?: number;
   verifier?: string;
+  judgeRunId?: string;
+  judgeStep?: string;
+  proofChild?: boolean;
+  proofStatus?: string;
+  filecoinCid?: string;
+  filecoinUrl?: string;
+  validationRequestId?: string;
+  lineageSourceCid?: string;
 }
 
 interface Metrics {
@@ -161,6 +169,7 @@ function initLog(): AgentLog {
 
 /** Map an action string to a dashboard phase */
 function inferPhase(action: string): string {
+  if (/^judge_/i.test(action)) return "judge";
   if (/deploy|contract/i.test(action)) return "deployment";
   if (/spawn|register_child/i.test(action)) return "spawn";
   if (/vote|cast/i.test(action)) return "voting";
@@ -244,6 +253,35 @@ export function logAction(entry: Omit<LogEntry, "timestamp">) {
   if (entry.outputs?.decision) execEntry.decision = entry.outputs.decision;
   if (entry.outputs?.ensLabel) execEntry.ensLabel = entry.outputs.ensLabel;
   if (entry.inputs?.ensLabel) execEntry.ensLabel = entry.inputs.ensLabel;
+  if (entry.inputs?.judgeRunId || entry.outputs?.judgeRunId) {
+    execEntry.judgeRunId = entry.inputs?.judgeRunId ?? entry.outputs?.judgeRunId;
+  }
+  if (entry.inputs?.judgeStep || entry.outputs?.judgeStep) {
+    execEntry.judgeStep = entry.inputs?.judgeStep ?? entry.outputs?.judgeStep;
+  }
+  if (entry.inputs?.proofChild !== undefined || entry.outputs?.proofChild !== undefined) {
+    execEntry.proofChild = entry.inputs?.proofChild ?? entry.outputs?.proofChild;
+  }
+  if (entry.inputs?.proofStatus || entry.outputs?.proofStatus) {
+    execEntry.proofStatus = entry.inputs?.proofStatus ?? entry.outputs?.proofStatus;
+  }
+  if (entry.inputs?.filecoinCid || entry.outputs?.filecoinCid) {
+    execEntry.filecoinCid = entry.inputs?.filecoinCid ?? entry.outputs?.filecoinCid;
+  }
+  if (entry.inputs?.filecoinUrl || entry.outputs?.filecoinUrl) {
+    execEntry.filecoinUrl = entry.inputs?.filecoinUrl ?? entry.outputs?.filecoinUrl;
+  }
+  if (entry.inputs?.validationRequestId || entry.outputs?.validationRequestId) {
+    execEntry.validationRequestId = String(entry.inputs?.validationRequestId ?? entry.outputs?.validationRequestId);
+  }
+  if (entry.inputs?.respawnedChild || entry.outputs?.respawnedChild) {
+    execEntry.respawnedChild = entry.inputs?.respawnedChild ?? entry.outputs?.respawnedChild;
+  }
+  if (entry.inputs?.lineageSourceCid || entry.outputs?.lineageSourceCid) {
+    execEntry.lineageSourceCid = entry.inputs?.lineageSourceCid ?? entry.outputs?.lineageSourceCid;
+  }
+  if (entry.outputs?.erc8004AgentId !== undefined) execEntry.erc8004AgentId = entry.outputs.erc8004AgentId;
+  if (entry.inputs?.erc8004AgentId !== undefined) execEntry.erc8004AgentId = entry.inputs.erc8004AgentId;
 
   // Venice reasoning tags
   if (/vote|align|evaluat|proposal|reason|assess|summarize|report|termin/i.test(entry.action)) {

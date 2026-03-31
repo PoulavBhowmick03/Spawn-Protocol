@@ -1,0 +1,73 @@
+import { NextResponse } from "next/server";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+
+export const dynamic = "force-dynamic";
+
+const CONTROL_PATH =
+  process.env.JUDGE_FLOW_CONTROL_PATH ||
+  join(process.cwd(), "..", "judge_flow_state.json");
+
+const EMPTY_STATE = {
+  runId: null,
+  status: "idle",
+  governor: "uniswap",
+  forcedScore: 15,
+  events: [],
+};
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const current = existsSync(CONTROL_PATH)
+      ? { ...EMPTY_STATE, ...JSON.parse(readFileSync(CONTROL_PATH, "utf-8")) }
+      : EMPTY_STATE;
+
+    if (current.status === "queued" || current.status === "running") {
+      return NextResponse.json(
+        { error: `Judge flow already ${current.status}`, current },
+        { status: 409 }
+      );
+    }
+
+    const runId = body.runId || `judge-${Date.now()}`;
+    const next = {
+      runId,
+      status: "queued",
+      governor: body.governor || "uniswap",
+      forcedScore: Number(body.forcedScore || 15),
+      requestedAt: new Date().toISOString(),
+      startedAt: undefined,
+      completedAt: undefined,
+      durationMs: undefined,
+      failureReason: undefined,
+      proofChildLabel: undefined,
+      proofChildAgentId: undefined,
+      respawnedChildLabel: undefined,
+      respawnedChildAgentId: undefined,
+      proposalId: undefined,
+      proposalDescription: undefined,
+      filecoinCid: undefined,
+      filecoinUrl: undefined,
+      validationRequestId: undefined,
+      validationTxHash: undefined,
+      validationResponseTxHash: undefined,
+      reputationTxHash: undefined,
+      alignmentTxHash: undefined,
+      terminationTxHash: undefined,
+      proposalTxHash: undefined,
+      respawnTxHash: undefined,
+      voteTxHash: undefined,
+      lineageSourceCid: undefined,
+      events: [],
+    };
+
+    writeFileSync(CONTROL_PATH, JSON.stringify(next, null, 2));
+    return NextResponse.json(next);
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: err?.message || "Failed to queue judge flow" },
+      { status: 500 }
+    );
+  }
+}

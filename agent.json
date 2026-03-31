@@ -2,7 +2,7 @@
   "manifest_version": "1.0",
   "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   "name": "Spawn Protocol",
-  "description": "Autonomous DAO governance agent swarm. A parent AI agent spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning via Venice AI (E2EE, zero data retention), encrypted rationale via Lit Protocol, and onchain execution. Parent evaluates alignment every 90s and kills/respawns drifting agents with lineage memory.",
+  "description": "Autonomous DAO governance agent swarm. A parent AI agent spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning via Venice AI (E2EE, zero data retention), encrypted rationale via Lit Protocol, and onchain execution. The parent evaluates alignment every 90s, writes ERC-8004 receipts, stores Filecoin-backed termination memory, and can run a deterministic judge-flow lifecycle.",
   "version": "2.0.0",
   "author": {
     "name": "Poulav Bhowmick",
@@ -13,13 +13,13 @@
       "id": "parent",
       "name": "Spawn Parent Agent",
       "type": "parent",
-      "description": "Spawns child agents, evaluates alignment via Venice AI, terminates misaligned children, respawns replacements with lineage memory. Manages ENS subdomains, ERC-8004 identities across all 3 registries, and MetaMask ERC-7715 delegations.",
+      "description": "Spawns child agents, evaluates alignment via Venice AI, terminates misaligned children, respawns replacements with Filecoin-backed lineage memory, and can run the canonical judge flow. Manages ENS labels, ERC-8004 identities across all 3 registries, and MetaMask ERC-7715 delegations.",
       "entrypoint": "agent/src/swarm.ts",
       "agent_loops": {
-        "planning": "Read owner governance values from ParentTreasury, enumerate active children from SpawnFactory, resolve ENS subdomains, fetch voting histories",
-        "execution": "Spawn children via SpawnFactory EIP-1167 clones, fund child wallets, register ENS subdomains, create ERC-8004 identities, issue ERC-7715 scoped delegations",
-        "verification": "Evaluate each child's voting record against owner values via Venice AI (0-100 alignment score), write score to ChildGovernor.updateAlignmentScore(), submit feedback to ReputationRegistry, validate voting record in ValidationRegistry",
-        "decision": "If alignment < 40 for 2 cycles: terminate (revoke delegation, recall onchain, deregister ENS, pin IPFS post-mortem, store CID as ENS text record), respawn with lineage memory injected as Venice system context"
+        "planning": "Read owner governance values from ParentTreasury, enumerate active children from SpawnFactory, resolve ENS labels, fetch voting histories, and poll judge-flow control state when enabled",
+        "execution": "Spawn children via SpawnFactory EIP-1167 clones, fund child wallets, register ENS labels, create ERC-8004 identities, issue ERC-7715 scoped delegations, and seed judge-marked proof proposals when judge mode is requested",
+        "verification": "Evaluate each child's voting record against owner values via Venice AI (0-100 alignment score), write score to ChildGovernor.updateAlignmentScore(), submit feedback to ReputationRegistry, attempt validation in ValidationRegistry, and require Filecoin termination receipts in judge mode",
+        "decision": "If alignment < 40 for 2 cycles: terminate (revoke delegation, recall onchain, generate post-mortem, store Filecoin termination report, optionally mirror lineage CID to ENS text records), respawn with lineage memory injected as Venice system context"
       },
       "capabilities": [
         "spawn_child_agents",
@@ -27,6 +27,7 @@
         "terminate_children",
         "respawn_children",
         "inject_lineage_memory",
+        "run_canonical_judge_flow",
         "register_ens_subdomain",
         "register_erc8004_identity",
         "submit_reputation_feedback",
@@ -43,7 +44,8 @@
         "ens_registry",
         "metamask_delegation_toolkit",
         "lit_protocol",
-        "ipfs_pinning",
+        "filecoin_synapse_sdk",
+        "ipfs_fallback_pinning",
         "lido_steth"
       ],
       "erc8004": {
@@ -57,10 +59,10 @@
       "id": "child",
       "name": "Spawn Child Agent",
       "type": "child",
-      "description": "One process per DAO. Reads active proposals, reasons privately via Venice AI (E2EE), encrypts rationale via Lit Protocol with time-lock access control, casts vote onchain via ERC-7715 scoped delegation, reveals rationale after voting ends. Inherits predecessor termination reports as lineage memory.",
+      "description": "One process per DAO. Reads active proposals, reasons privately via Venice AI (E2EE), encrypts rationale via Lit Protocol with time-lock access control, casts vote onchain via ERC-7715 scoped delegation, reveals rationale after voting ends, and can inherit predecessor termination reports as lineage memory.",
       "entrypoint": "agent/src/child.ts",
       "agent_loops": {
-        "planning": "Fetch active proposals from assigned governance contract, filter unvoted proposals, load lineage memory from predecessor IPFS CIDs",
+        "planning": "Fetch active proposals from assigned governance contract, filter unvoted proposals, ignore judge proposals that belong to other runs, and load lineage memory from predecessor Filecoin-backed reports",
         "execution": "Summarize proposal via Venice, assess risk via Venice, reason FOR/AGAINST/ABSTAIN via Venice with owner values + lineage context, encrypt reasoning via Lit Protocol (time-locked), cast vote onchain",
         "verification": "After voting period ends: decrypt rationale via Lit Protocol (time condition met), call revealRationale() onchain, verify keccak256 hash matches committed pre-vote hash",
         "decision": "Skip vote if Venice unavailable (no fallback reasoning). Inherit predecessor lessons if lineage memory available."
@@ -109,7 +111,7 @@
       "chain": "base-sepolia",
       "chainId": 84532,
       "standard": "ERC-8004",
-      "description": "Parent requests validation of each child's voting record, then responds as validator. Creates a two-step onchain proof: request (content hash of vote digest) + response (score + approved). Pending cross-child peer validation in Phase 4.",
+      "description": "Parent requests validation of each child's voting record, then responds as validator. Creates a two-step onchain proof: request (content hash of vote digest) + response (score + approved). In the canonical judge flow this path is best-effort and surfaced when available.",
       "operations": ["validationRequest", "validationResponse", "getValidationStatus", "getSummary"],
       "example_tx": "0xdb238bbfd479fcab18fcd6a8a4bb61bd6c5a6b6298506ebd0a9c4b06e3468f2b"
     }
@@ -128,16 +130,6 @@
       "TimeLock": "0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23",
       "ReputationRegistry": "0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14",
       "ValidationRegistry": "0x3caE87f24e15970a8e19831CeCD5FAe3c087a546"
-    },
-    "celo-sepolia": {
-      "chainId": 11142220,
-      "UniswapGovernor": "0xB51Ad04efBb05607214d1B19b3F9686156f1A025",
-      "LidoGovernor": "0x3B4D24aD2203641CE895ad9A4c9254F4f7291822",
-      "ENSGovernor": "0xc01FDE9e1CC1d7319fA03861304eb626cAF9A5be",
-      "ParentTreasury": "0x5Bb4b18CDFF5Dbac874235d7067B414F0709C444",
-      "ChildGovernor": "0xff392223115Aef74e67b7aabF62659B86f486ce6",
-      "SpawnFactory": "0xC06E6615E2bBBf795ae17763719dCB9b82cd781C",
-      "TimeLock": "0x68686865af7287137818C12E5680AA04A8Fd525a"
     }
   },
   "reasoning": {
@@ -194,7 +186,7 @@
     }
   },
   "onchain_verifiability": {
-    "description": "Every agent action produces a verifiable onchain transaction. Judges can query BaseScan for real-time activity.",
+    "description": "Every important agent action produces a verifiable receipt. Judges can inspect BaseScan for onchain activity and Filscan for Filecoin-backed termination memory.",
     "deployer": "0x15896e731c51ecB7BdB1447600DF126ea1d6969A",
     "explorer": "https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A",
     "example_transactions": {
@@ -205,7 +197,7 @@
       "validation_request": "ValidationRegistry.validationRequest() — 0xdb238bbfd479fcab18fcd6a8a4bb61bd6c5a6b6298506ebd0a9c4b06e3468f2b",
       "validation_response": "ValidationRegistry.validationResponse() — 0x34d50890db40db6b64058a0729628e5e13963b3faf08efe1efd42d217678cd6c",
       "ens_subdomain": "SpawnENSRegistry.registerSubdomain() — per-child ENS name",
-      "lineage_memory": "SpawnENSRegistry.setTextRecord(lineage-memory, ipfsCID) — termination reports persisted"
+      "lineage_memory": "Filecoin termination report piece CID on Filscan, optionally mirrored into ENS text records and ERC-8004 metadata for dashboard retrieval"
     }
   },
   "treasury": {

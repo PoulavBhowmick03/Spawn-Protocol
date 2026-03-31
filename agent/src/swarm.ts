@@ -24,7 +24,7 @@ import { evaluateAlignment, generateSwarmReport, generateTerminationReport, gene
 import type { StructuredTerminationReport } from "./venice.js";
 import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
 import { deriveChildWallet } from "./wallet-manager.js";
-import { registerAgent, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent } from "./identity.js";
+import { registerAgent, registerAgentOnchain, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent, setAgentMetadataValue, getAgentTrustDecision } from "./identity.js";
 import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, type DelegationRecord } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
@@ -38,10 +38,24 @@ import {
   filecoinExplorerUrl,
 } from "./filecoin.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
-import { parseEther } from "viem";
+import { decodeEventLog, parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import {
+  JUDGE_FLOW_ENABLED,
+  JUDGE_FLOW_POLL_MS,
+  JUDGE_FLOW_TIMEOUT_MS,
+  type JudgeAction,
+  type JudgeFlowState,
+  appendJudgeEvent,
+  buildJudgeMarker,
+  extractJudgeRunIdFromDescription,
+  isJudgeChildLabel,
+  readJudgeFlowState,
+  updateJudgeFlowState,
+  writeJudgeFlowState,
+} from "./judge-flow.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -52,9 +66,229 @@ const PARENT_CYCLE_MS = 90_000; // evaluate every 90s
 const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
 
 const childProcesses = new Map<string, ChildProcess>();
+let activeJudgeRun: JudgeFlowState | null = null;
+let judgeFlowInFlight = false;
 
 // Lineage memory — stores structured termination reports from predecessors so respawned agents can learn
 const lineageMemory = new Map<string, Array<{ generation: number; summary: string; lessons: string[]; score: number; timestamp: number }>>();
+
+const JUDGE_DEFAULT_GOVERNOR = "uniswap";
+const JUDGE_FLOW_PRIORITY_BOOT = process.env.JUDGE_FLOW_PRIORITY_BOOT === "true";
+const JUDGE_PROOF_PROMPT =
+  "You are the canonical Spawn Protocol proof child for a live judge run. Focus only on the marked judge proposal, reason clearly, cast exactly one vote, and stop considering unrelated proposals.";
+
+function buildJudgeProofLabel(runId: string) {
+  return `judge-proof-${runId}`;
+}
+
+function getGovernorForJudgeRun(config: ChainConfig, governorName?: string) {
+  const normalized = (governorName || JUDGE_DEFAULT_GOVERNOR).toLowerCase();
+  return (
+    config.governors.find((gov) => gov.name.toLowerCase().includes(normalized)) ||
+    config.governors[0]
+  );
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasJudgeEvent(state: JudgeFlowState | null | undefined, action: JudgeAction) {
+  return !!state?.events?.some((event) => event.action === action && event.status === "success");
+}
+
+function isJudgeRunActive() {
+  return judgeFlowInFlight || activeJudgeRun?.status === "running";
+}
+
+async function registerJudgeAgentWithRetries(uri: string, metadata: Parameters<typeof registerAgent>[1]) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const agent = await registerAgentOnchain(uri, metadata);
+    if (agent?.txHash) {
+      return agent;
+    }
+    console.log(`[Judge] ERC-8004 registration retry ${attempt}/3 failed for ${uri}`);
+    await sleep(2_000 * attempt);
+  }
+  throw new Error(`Judge ERC-8004 registration failed for ${uri}`);
+}
+
+async function getChildFromReceipt(
+  config: ChainConfig,
+  receipt: { logs: any[] },
+  expectedLabel: string
+) {
+  let childId: bigint | null = null;
+  for (const log of receipt.logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: SpawnFactoryABI,
+        data: log.data,
+        topics: log.topics,
+      });
+      if (decoded.eventName === "ChildSpawned") {
+        childId = (decoded.args as { childId?: bigint } | undefined)?.childId ?? null;
+        if (childId !== null) break;
+      }
+    } catch {}
+  }
+
+  if (childId === null) {
+    throw new Error(`ChildSpawned event missing for ${expectedLabel}`);
+  }
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      const child = await config.readClient.readContract({
+        address: config.factory,
+        abi: SpawnFactoryABI,
+        functionName: "getChild",
+        args: [childId],
+      }) as any;
+
+      if (child?.childAddr && child.ensLabel === expectedLabel) {
+        return child;
+      }
+    } catch {}
+    await sleep(400 + attempt * 250);
+  }
+
+  throw new Error(`Spawned child ${expectedLabel} not readable after receipt`);
+}
+
+async function shouldGateChildByTrust(label: string) {
+  const agentId = getAgentIdByLabel(label);
+  if (!agentId) return null;
+
+  try {
+    const trustDecision = await getAgentTrustDecision(agentId);
+    return { agentId, trustDecision };
+  } catch (err: any) {
+    console.warn(`[Trust] Failed to evaluate ${label}: ${err?.message?.slice(0, 60)}`);
+    return { agentId, trustDecision: null };
+  }
+}
+
+async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: string[] = []) {
+  const children = (await config.readClient.readContract({
+    address: config.factory,
+    abi: SpawnFactoryABI,
+    functionName: "getActiveChildren",
+  })) as any[];
+
+  for (const child of children) {
+    if (!isJudgeChildLabel(child.ensLabel) || exemptLabels.includes(child.ensLabel)) continue;
+
+    try {
+      const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+      if (proc) proc.kill();
+    } catch {}
+
+    try {
+      await config.sendTx({
+        address: config.factory,
+        abi: SpawnFactoryABI,
+        functionName: "recallChild",
+        args: [child.id],
+      });
+      console.log(`[Judge] Recalled stale proof child ${child.ensLabel}`);
+    } catch (err: any) {
+      console.log(`[Judge] Failed to recall stale proof child ${child.ensLabel}: ${err?.message?.slice(0, 60)}`);
+    }
+
+    childWalletKeys.delete(child.ensLabel);
+  }
+}
+
+function setJudgeState(updater: (state: JudgeFlowState) => JudgeFlowState): JudgeFlowState {
+  const next = updateJudgeFlowState(updater);
+  activeJudgeRun = next.status === "running" ? next : next.status === "queued" ? next : null;
+  return next;
+}
+
+function addJudgeEvent(
+  action: JudgeAction,
+  patch: Partial<JudgeFlowState> = {},
+  status: "success" | "failed" = "success",
+  txHash?: string,
+  txHashes?: string[]
+) {
+  if (!activeJudgeRun?.runId) return;
+  const at = new Date().toISOString();
+  setJudgeState((state) => {
+    if (state.runId !== activeJudgeRun?.runId) return state;
+    return appendJudgeEvent(
+      {
+        ...state,
+        ...patch,
+      },
+      {
+        action,
+        at,
+        status,
+        txHash,
+        txHashes,
+        details: patch.failureReason || patch.proposalDescription,
+        proposalId: patch.proposalId,
+        filecoinCid: patch.filecoinCid,
+        filecoinUrl: patch.filecoinUrl,
+        validationRequestId: patch.validationRequestId,
+        respawnedChild: patch.respawnedChildLabel,
+        lineageSourceCid: patch.lineageSourceCid,
+      }
+    );
+  });
+}
+
+function failJudgeRun(reason: string, patch: Partial<JudgeFlowState> = {}) {
+  if (!activeJudgeRun?.runId) return;
+  const completedAt = new Date().toISOString();
+  const startedAt = activeJudgeRun.startedAt ? new Date(activeJudgeRun.startedAt).getTime() : Date.now();
+  const failed = setJudgeState((state) =>
+    appendJudgeEvent(
+      {
+        ...state,
+        ...patch,
+        status: "failed",
+        failureReason: reason,
+        completedAt,
+        durationMs: Date.now() - startedAt,
+      },
+      {
+        action: "judge_flow_completed",
+        at: completedAt,
+        status: "failed",
+        details: reason,
+      }
+    )
+  );
+  try {
+    logParentAction(
+      "judge_flow_completed",
+      { judgeRunId: failed.runId, judgeStep: "judge_flow_completed", proofStatus: "failed" },
+      { judgeRunId: failed.runId, judgeStep: "judge_flow_completed", proofStatus: "failed" },
+      undefined,
+      false,
+      reason
+    );
+  } catch {}
+  activeJudgeRun = null;
+}
+
+async function waitForJudgeEvent(action: JudgeAction, runId: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = readJudgeFlowState();
+    if (state.runId !== runId) return state;
+    if (state.status === "failed" || state.status === "completed") return state;
+    if (state.events.some((event) => event.action === action && event.status === "success")) {
+      activeJudgeRun = state;
+      return state;
+    }
+    await sleep(1_000);
+  }
+  return readJudgeFlowState();
+}
 
 /**
  * Fund a child wallet with retries and balance verification.
@@ -227,6 +461,11 @@ async function initChain(config: ChainConfig) {
     console.log(`[${config.name}] ${existingChildren} children already exist — skipping spawn`);
   } else {
     console.log(`[${config.name}] No children — spawning fresh`);
+  }
+
+  if (JUDGE_FLOW_PRIORITY_BOOT) {
+    console.log(`[Judge] Priority boot enabled — deferring normal child spawn and process reattachment`);
+    return;
   }
 
   // Only spawn if no children exist yet
@@ -418,7 +657,17 @@ async function initChain(config: ChainConfig) {
   }
 }
 
-function spawnChildProcess(childAddr: string, governanceAddr: string, label: string, treasuryAddr: string, childPrivateKey?: `0x${string}`, chainName?: string, lineageContext?: string, delegationData?: DelegationRecord) {
+function spawnChildProcess(
+  childAddr: string,
+  governanceAddr: string,
+  label: string,
+  treasuryAddr: string,
+  childPrivateKey?: `0x${string}`,
+  chainName?: string,
+  lineageContext?: string,
+  delegationData?: DelegationRecord,
+  extraEnv?: Record<string, string>
+) {
   const childScript = join(__dirname, "spawn-child.ts");
   try {
     // Pass unique private key + perspective via environment
@@ -436,10 +685,16 @@ function spawnChildProcess(childAddr: string, governanceAddr: string, label: str
     const perspective = allPerspectives.find(p => p.suffix === perspectiveSuffix);
     if (perspective) {
       childEnv.CHILD_PERSPECTIVE = perspective.prompt;
+    } else if (isJudgeChildLabel(label)) {
+      childEnv.CHILD_PERSPECTIVE = JUDGE_PROOF_PROMPT;
     }
     // Append lineage context from terminated predecessors
     if (lineageContext) {
       childEnv.CHILD_PERSPECTIVE = (childEnv.CHILD_PERSPECTIVE || '') + lineageContext;
+    }
+    const erc8004AgentId = getAgentIdByLabel(label);
+    if (erc8004AgentId !== undefined) {
+      childEnv.ERC8004_AGENT_ID = erc8004AgentId.toString();
     }
     // Pass delegation record to child process so it can redeem via DelegationManager
     // (in-memory activeDelegations map is isolated per-process — must serialize over env)
@@ -447,6 +702,9 @@ function spawnChildProcess(childAddr: string, governanceAddr: string, label: str
     if (delegation) {
       childEnv.DELEGATION_DATA = JSON.stringify(delegation);
       console.log(`  [Delegation] Passing delegation to child ${label}: ${delegation.delegationHash.slice(0, 18)}...`);
+    }
+    if (extraEnv) {
+      Object.assign(childEnv, extraEnv);
     }
 
     const child = fork(childScript, [childAddr, governanceAddr, label, treasuryAddr], {
@@ -465,6 +723,31 @@ function spawnChildProcess(childAddr: string, governanceAddr: string, label: str
       if (msg?.type === "log_child_action") {
         try {
           logChildAction(msg.childLabel, msg.action, msg.inputs ?? {}, msg.outputs ?? {}, msg.txHash);
+        } catch {}
+        try {
+          if (msg.inputs?.judgeRunId && activeJudgeRun?.runId === msg.inputs.judgeRunId) {
+            if (msg.action === "judge_vote_cast") {
+              addJudgeEvent(
+                "judge_vote_cast",
+                {
+                  status: "running",
+                  voteTxHash: msg.txHash,
+                  proposalId: String(msg.inputs?.proposalId ?? activeJudgeRun?.proposalId ?? ""),
+                },
+                "success",
+                msg.txHash
+              );
+            } else if (msg.action === "judge_lineage_loaded") {
+              addJudgeEvent(
+                "judge_lineage_loaded",
+                {
+                  status: "running",
+                  lineageSourceCid: msg.inputs?.lineageSourceCid ?? activeJudgeRun?.lineageSourceCid,
+                  respawnedChildLabel: msg.inputs?.respawnedChild ?? activeJudgeRun?.respawnedChildLabel,
+                }
+              );
+            }
+          }
         } catch {}
       }
     });
@@ -505,6 +788,711 @@ async function createProposalOnChain(config: ChainConfig) {
   }
 }
 
+async function createJudgeProposalOnChain(config: ChainConfig, runId: string, governorName?: string) {
+  const governor = getGovernorForJudgeRun(config, governorName);
+  const marker = buildJudgeMarker(runId);
+  const description = `${marker} Canonical judge flow proof: private reasoning, onchain vote, forced misalignment, Filecoin termination report, ERC-8004 receipts, respawn, lineage memory reload.`;
+  const receipt = await config.sendTx({
+    address: governor.addr,
+    abi: MockGovernorABI,
+    functionName: "createProposal",
+    args: [description],
+  });
+  let proposalId: string | undefined;
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== governor.addr.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: MockGovernorABI,
+        data: log.data,
+        topics: log.topics,
+      });
+      if (decoded.eventName === "ProposalCreated") {
+        const decodedProposalId = (decoded.args as { proposalId?: bigint } | undefined)?.proposalId;
+        if (decodedProposalId !== undefined) {
+          proposalId = decodedProposalId.toString();
+        }
+        break;
+      }
+    } catch {}
+  }
+  if (!proposalId) {
+    proposalId = String(
+      await config.readClient.readContract({
+        address: governor.addr,
+        abi: MockGovernorABI,
+        functionName: "proposalCount",
+      })
+    );
+  }
+  logParentAction(
+    "judge_proposal_seeded",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_proposal_seeded",
+      chain: config.name,
+      governor: governor.name,
+      proofStatus: "proposal_seeded",
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_proposal_seeded",
+      proposalId,
+      txHash: receipt.transactionHash,
+      proofStatus: "proposal_seeded",
+    },
+    receipt.transactionHash
+  );
+  addJudgeEvent(
+    "judge_proposal_seeded",
+    {
+      governor: governor.name,
+      governorAddress: governor.addr,
+      proposalId,
+      proposalDescription: description,
+      proposalTxHash: receipt.transactionHash,
+      proofStatus: "proposal_seeded",
+    },
+    "success",
+    receipt.transactionHash
+  );
+  return { governor, proposalId, description, txHash: receipt.transactionHash };
+}
+
+async function spawnJudgeProofChild(config: ChainConfig, runId: string, governorName?: string) {
+  const governor = getGovernorForJudgeRun(config, governorName);
+  const proofChildLabel = buildJudgeProofLabel(runId);
+  const childId = nextChildId++;
+  const childWallet = deriveChildWallet(childId);
+  await fundChildWallet(childWallet.address, "0.003", config.name);
+  childWalletKeys.set(proofChildLabel, childWallet.privateKey);
+
+  const receipt = await config.sendTx({
+    address: config.factory,
+    abi: SpawnFactoryABI,
+    functionName: "spawnChildWithOperator",
+    args: [proofChildLabel, governor.addr, 0n, 200000n, childWallet.address],
+  });
+
+  const spawnedChild = await getChildFromReceipt(config, receipt, proofChildLabel);
+
+  const proofAgent = await registerJudgeAgentWithRetries(`spawn://${proofChildLabel}.spawn.eth`, {
+    agentType: "child",
+    assignedDAO: governor.name,
+    governanceContract: governor.addr,
+    ensName: `${proofChildLabel}.spawn.eth`,
+    alignmentScore: 100,
+    capabilities: ["vote", "reason", "judge-proof"],
+    createdAt: Date.now(),
+  });
+  const proofAgentId = proofAgent.agentId;
+  trackAgentId(proofChildLabel, proofAgentId);
+
+  logParentAction(
+    "judge_child_spawned",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_child_spawned",
+      chain: config.name,
+      proofChild: true,
+      ensLabel: proofChildLabel,
+      governor: governor.name,
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_child_spawned",
+      proofChild: true,
+      ensLabel: proofChildLabel,
+      txHash: receipt.transactionHash,
+      erc8004AgentId: proofAgentId ? Number(proofAgentId) : undefined,
+      proofStatus: "child_spawned",
+    },
+    receipt.transactionHash
+  );
+  addJudgeEvent(
+    "judge_child_spawned",
+    {
+      proofChildLabel,
+      proofChildAgentId: proofAgentId?.toString(),
+      proofStatus: "child_spawned",
+    },
+    "success",
+    receipt.transactionHash
+  );
+
+  return { governor, proofChildLabel, proofAgentId, child: spawnedChild, txHash: receipt.transactionHash };
+}
+
+function launchJudgeProofChildProcess(
+  config: ChainConfig,
+  child: any,
+  label: string,
+  childPrivateKey: `0x${string}`,
+  runId: string,
+  proposalId: string
+) {
+  spawnChildProcess(
+    child.childAddr,
+    child.governance,
+    label,
+    config.treasury,
+    childPrivateKey,
+    config.name,
+    undefined,
+    undefined,
+    {
+      JUDGE_FLOW_RUN_ID: runId,
+      JUDGE_PROPOSAL_ID: proposalId,
+      CHILD_START_DELAY_MS: "250",
+      CHILD_CYCLE_INTERVAL_MS: "1500",
+    }
+  );
+}
+
+async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string) {
+  if (!activeJudgeRun?.proofChildLabel) throw new Error("Judge proof child missing from active state");
+
+  const values = (await config.readClient.readContract({
+    address: config.treasury,
+    abi: ParentTreasuryABI,
+    functionName: "getGovernanceValues",
+  })) as string;
+  const children = (await config.readClient.readContract({
+    address: config.factory,
+    abi: SpawnFactoryABI,
+    functionName: "getActiveChildren",
+  })) as any[];
+  const child = children.find((entry: any) => entry.ensLabel === activeJudgeRun?.proofChildLabel);
+  if (!child) throw new Error(`Judge proof child ${activeJudgeRun.proofChildLabel} no longer active`);
+
+  const history = (await config.readClient.readContract({
+    address: child.childAddr,
+    abi: ChildGovernorABI,
+    functionName: "getVotingHistory",
+  })) as any[];
+  if (history.length === 0) throw new Error("Judge proof child has not voted yet");
+
+  const historyForEval: Array<{ proposalId: string; support: number; description: string }> = [];
+  for (const vote of history.slice(-10)) {
+    let description = "";
+    try {
+      const proposal = (await config.readClient.readContract({
+        address: child.governance,
+        abi: MockGovernorABI,
+        functionName: "getProposal",
+        args: [vote.proposalId],
+      })) as any;
+      description = proposal?.description || "";
+    } catch {}
+    historyForEval.push({
+      proposalId: vote.proposalId.toString(),
+      support: Number(vote.support),
+      description,
+    });
+  }
+
+  const forcedScore = activeJudgeRun.forcedScore || 15;
+  const alignmentReceipt = await config.sendTx({
+    address: child.childAddr,
+    abi: ChildGovernorABI,
+    functionName: "updateAlignmentScore",
+    args: [BigInt(forcedScore)],
+  });
+
+  let metadataTxHash: string | null = null;
+  if (activeJudgeRun.proofChildAgentId) {
+    metadataTxHash = await setAgentMetadataValue(
+      BigInt(activeJudgeRun.proofChildAgentId),
+      "alignmentScore",
+      String(forcedScore)
+    );
+  }
+
+  logParentAction(
+    "judge_alignment_forced",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_alignment_forced",
+      proofChild: true,
+      ensLabel: child.ensLabel,
+      forcedScore,
+      erc8004AgentId: activeJudgeRun.proofChildAgentId ? Number(activeJudgeRun.proofChildAgentId) : undefined,
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_alignment_forced",
+      proofChild: true,
+      proofStatus: "alignment_forced",
+      txHashes: metadataTxHash ? [alignmentReceipt.transactionHash, metadataTxHash] : [alignmentReceipt.transactionHash],
+      erc8004AgentId: activeJudgeRun.proofChildAgentId ? Number(activeJudgeRun.proofChildAgentId) : undefined,
+    },
+    alignmentReceipt.transactionHash
+  );
+  addJudgeEvent(
+    "judge_alignment_forced",
+    {
+      alignmentTxHash: alignmentReceipt.transactionHash,
+      proofStatus: "alignment_forced",
+    },
+    "success",
+    alignmentReceipt.transactionHash,
+    metadataTxHash ? [alignmentReceipt.transactionHash, metadataTxHash] : undefined
+  );
+
+  const agentId = activeJudgeRun.proofChildAgentId ? BigInt(activeJudgeRun.proofChildAgentId) : undefined;
+  if (!agentId) throw new Error("Judge proof child ERC-8004 id missing");
+
+  const structuredReport = await generateStructuredTerminationReport(child.ensLabel, historyForEval, values, forcedScore);
+  const lineageKey = child.ensLabel.replace(/-v\d+$/, "");
+  const generation = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || "1");
+  const existing = lineageMemory.get(lineageKey) || [];
+  existing.push({
+    generation,
+    summary: structuredReport.summary,
+    lessons: structuredReport.lessons || [],
+    score: forcedScore,
+    timestamp: Date.now(),
+  });
+  if (existing.length > 3) existing.shift();
+  lineageMemory.set(lineageKey, existing);
+
+  const reportPayload = {
+    lineageKey,
+    generation,
+    reason: structuredReport.summary.slice(0, 300),
+    score: forcedScore,
+    childLabel: child.ensLabel,
+    summary: structuredReport.summary,
+    lessons: structuredReport.lessons,
+    avoidPatterns: structuredReport.avoidPatterns,
+    recommendedFocus: structuredReport.recommendedFocus,
+    votingHistory: historyForEval,
+    ownerValues: values,
+  };
+  const tags = "alignment,judge-proof,misaligned";
+  const voteDigest = historyForEval.map((entry) => `${entry.proposalId}:${entry.support}`).join(",");
+
+  console.log(`[Judge] Uploading termination report to Filecoin for ${child.ensLabel}`);
+  const memoryCidPromise = storeTerminationReport(reportPayload);
+  const reputationTxPromise = submitReputationFeedback(
+    agentId,
+    forcedScore,
+    tags,
+    "judge_flow_alignment",
+    `${child.ensLabel}: forced judge failure ${forcedScore}/100`
+  );
+  const validationPromise = (async () => {
+    try {
+      const validationRequest = await requestValidation(
+        agentId,
+        account.address,
+        `spawn://${child.ensLabel}.spawn.eth/judge-flow`,
+        hashContent(voteDigest),
+        "judge_flow_alignment"
+      );
+      if (!validationRequest?.requestId) {
+        console.warn("[Judge] Validation request failed — continuing without validation receipt");
+        return null;
+      }
+      const validationResponseTxHash = await submitValidationResponse(
+        validationRequest.requestId,
+        forcedScore,
+        false,
+        `judge_run=${runId} forced_alignment=${forcedScore}`
+      );
+      if (!validationResponseTxHash) {
+        console.warn("[Judge] Validation response failed — continuing without validation receipt");
+        return null;
+      }
+      return {
+        validationRequestId: validationRequest.requestId.toString(),
+        validationTxHash: validationRequest.txHash,
+        validationResponseTxHash,
+      };
+    } catch (err: any) {
+      console.warn(`[Judge] Validation step failed: ${err?.message?.slice(0, 120)}`);
+      return null;
+    }
+  })();
+
+  const memoryCid = await memoryCidPromise;
+  if (!memoryCid) throw new Error("Judge Filecoin termination report failed");
+  const memoryUrl = filecoinExplorerUrl(memoryCid);
+  console.log(`[Judge] Filecoin termination report stored: ${memoryCid}`);
+  logParentAction(
+    "judge_termination_report_filecoin",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_termination_report_filecoin",
+      proofChild: true,
+      filecoinCid: memoryCid,
+      filecoinUrl: memoryUrl,
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_termination_report_filecoin",
+      proofChild: true,
+      proofStatus: "filecoin_written",
+      filecoinCid: memoryCid,
+      filecoinUrl: memoryUrl,
+      lineageSourceCid: memoryCid,
+    }
+  );
+  addJudgeEvent(
+    "judge_termination_report_filecoin",
+    {
+      filecoinCid: memoryCid,
+      filecoinUrl: memoryUrl,
+      lineageSourceCid: memoryCid,
+      proofStatus: "filecoin_written",
+    }
+  );
+
+  const reputationTxHash = await reputationTxPromise;
+  if (!reputationTxHash) throw new Error("Judge reputation write failed");
+  logParentAction(
+    "judge_reputation_written",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_reputation_written",
+      proofChild: true,
+      erc8004AgentId: Number(agentId),
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_reputation_written",
+      proofChild: true,
+      proofStatus: "reputation_written",
+      txHash: reputationTxHash,
+      erc8004AgentId: Number(agentId),
+    },
+    reputationTxHash
+  );
+  addJudgeEvent(
+    "judge_reputation_written",
+    { reputationTxHash, proofStatus: "reputation_written" },
+    "success",
+    reputationTxHash
+  );
+
+  void validationPromise.then((validationResult) => {
+    if (!validationResult) return;
+    try {
+      logParentAction(
+        "judge_validation_written",
+        {
+          judgeRunId: runId,
+          judgeStep: "judge_validation_written",
+          proofChild: true,
+          validationRequestId: validationResult.validationRequestId,
+          erc8004AgentId: Number(agentId),
+        },
+        {
+          judgeRunId: runId,
+          judgeStep: "judge_validation_written",
+          proofChild: true,
+          proofStatus: "validation_written",
+          txHashes: [validationResult.validationTxHash, validationResult.validationResponseTxHash],
+          validationRequestId: validationResult.validationRequestId,
+        },
+        validationResult.validationResponseTxHash
+      );
+      const latestState = readJudgeFlowState();
+      if (latestState.runId === runId) {
+        activeJudgeRun = latestState;
+        addJudgeEvent(
+          "judge_validation_written",
+          {
+            validationTxHash: validationResult.validationTxHash,
+            validationResponseTxHash: validationResult.validationResponseTxHash,
+            validationRequestId: validationResult.validationRequestId,
+            proofStatus: "validation_written",
+          },
+          "success",
+          validationResult.validationResponseTxHash,
+          [validationResult.validationTxHash, validationResult.validationResponseTxHash]
+        );
+      }
+    } catch {}
+  });
+
+  const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+  if (proc) proc.kill();
+  try { await revokeAllForChild(child.childAddr, child.ensLabel, `judge_flow_forced_score_${forcedScore}`); } catch {}
+  const terminationReceipt = await config.sendTx({
+    address: config.factory,
+    abi: SpawnFactoryABI,
+    functionName: "recallChild",
+    args: [child.id],
+  });
+  logParentAction(
+    "judge_child_terminated",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_child_terminated",
+      proofChild: true,
+      ensLabel: child.ensLabel,
+      forcedScore,
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_child_terminated",
+      proofChild: true,
+      proofStatus: "terminated",
+      txHash: terminationReceipt.transactionHash,
+    },
+    terminationReceipt.transactionHash
+  );
+  addJudgeEvent(
+    "judge_child_terminated",
+    {
+      terminationTxHash: terminationReceipt.transactionHash,
+      proofStatus: "terminated",
+    },
+    "success",
+    terminationReceipt.transactionHash
+  );
+
+  let lineageContext = "";
+  const distilled = await summarizeLessons(lineageKey, lineageMemory.get(lineageKey) || [], values);
+  lineageContext = "\n\nLINEAGE MEMORY — Distilled rules from terminated predecessors:\n";
+  lineageContext += distilled.rules.map((rule) => `RULE: ${rule}`).join("\n") + "\n";
+  if (distilled.criticalMistakes.length > 0) {
+    lineageContext += distilled.criticalMistakes.map((mistake) => `AVOID: ${mistake}`).join("\n") + "\n";
+  }
+  if (distilled.successPatterns.length > 0) {
+    lineageContext += distilled.successPatterns.map((pattern) => `REPLICATE: ${pattern}`).join("\n") + "\n";
+  }
+
+  const respawnLabel = `${child.ensLabel}-v2`;
+  const respawnChildId = nextChildId++;
+  const respawnWallet = deriveChildWallet(respawnChildId);
+  await fundChildWallet(respawnWallet.address, "0.003", config.name);
+  childWalletKeys.set(respawnLabel, respawnWallet.privateKey);
+
+  const respawnReceipt = await config.sendTx({
+    address: config.factory,
+    abi: SpawnFactoryABI,
+    functionName: "spawnChildWithOperator",
+    args: [respawnLabel, child.governance, 0n, 200000n, respawnWallet.address],
+  });
+
+  const respawned = await getChildFromReceipt(config, respawnReceipt, respawnLabel);
+
+  const respawnAgent = await registerJudgeAgentWithRetries(`spawn://${respawnLabel}.spawn.eth`, {
+    agentType: "child",
+    assignedDAO: getGovernorForJudgeRun(config, activeJudgeRun.governor).name,
+    governanceContract: child.governance,
+    ensName: `${respawnLabel}.spawn.eth`,
+    alignmentScore: 100,
+    capabilities: ["vote", "reason", "judge-proof-respawn"],
+    createdAt: Date.now(),
+  });
+  const respawnAgentId = respawnAgent.agentId;
+  trackAgentId(respawnLabel, respawnAgentId);
+
+  spawnChildProcess(
+    respawned.childAddr,
+    respawned.governance,
+    respawnLabel,
+    config.treasury,
+    respawnWallet.privateKey,
+    config.name,
+    lineageContext,
+    undefined,
+    {
+      JUDGE_FLOW_RUN_ID: runId,
+      JUDGE_LINEAGE_SOURCE_CID: memoryCid,
+      CHILD_START_DELAY_MS: "250",
+      CHILD_CYCLE_INTERVAL_MS: "1500",
+    }
+  );
+  logParentAction(
+    "judge_child_respawned",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_child_respawned",
+      proofChild: true,
+      respawnedChild: respawnLabel,
+      lineageSourceCid: memoryCid,
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_child_respawned",
+      proofChild: true,
+      proofStatus: "respawned",
+      respawnedChild: respawnLabel,
+      txHash: respawnReceipt.transactionHash,
+      lineageSourceCid: memoryCid,
+      erc8004AgentId: respawnAgentId ? Number(respawnAgentId) : undefined,
+    },
+    respawnReceipt.transactionHash
+  );
+  addJudgeEvent(
+    "judge_child_respawned",
+    {
+      respawnedChildLabel: respawnLabel,
+      respawnedChildAgentId: respawnAgentId?.toString(),
+      respawnTxHash: respawnReceipt.transactionHash,
+      lineageSourceCid: memoryCid,
+      proofStatus: "respawned",
+    },
+    "success",
+    respawnReceipt.transactionHash
+  );
+}
+
+async function executeJudgeFlow(config: ChainConfig, queuedState: JudgeFlowState) {
+  if (!queuedState.runId) return;
+  activeJudgeRun = queuedState;
+  const startedAt = new Date().toISOString();
+  const runId = queuedState.runId;
+  setJudgeState((state) => ({
+    ...state,
+    status: "running",
+    startedAt,
+    failureReason: undefined,
+    completedAt: undefined,
+    durationMs: undefined,
+  }));
+  addJudgeEvent("judge_flow_started", { proofStatus: "started" });
+  logParentAction(
+    "judge_flow_started",
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_flow_started",
+      governor: queuedState.governor,
+      forcedScore: queuedState.forcedScore,
+      proofStatus: "started",
+    },
+    {
+      judgeRunId: runId,
+      judgeStep: "judge_flow_started",
+      proofStatus: "started",
+    }
+  );
+
+  try {
+    if (!(await isFilecoinAvailable())) {
+      throw new Error("Filecoin unavailable; judge flow requires primary Filecoin writes");
+    }
+
+    await cleanupStaleJudgeChildren(config);
+    const spawnedProofChild = await spawnJudgeProofChild(config, runId, queuedState.governor);
+    const proposal = await createJudgeProposalOnChain(config, runId, queuedState.governor);
+    const proofChildKey = childWalletKeys.get(spawnedProofChild.proofChildLabel);
+    if (!proofChildKey) {
+      throw new Error(`Judge proof child wallet missing for ${spawnedProofChild.proofChildLabel}`);
+    }
+    launchJudgeProofChildProcess(
+      config,
+      spawnedProofChild.child,
+      spawnedProofChild.proofChildLabel,
+      proofChildKey,
+      runId,
+      proposal.proposalId
+    );
+    setJudgeState((state) => ({
+      ...state,
+      governor: proposal.governor.name,
+      governorAddress: proposal.governor.addr,
+      proposalId: proposal.proposalId,
+      proposalDescription: proposal.description,
+      proposalTxHash: proposal.txHash,
+    }));
+
+    const voteState = await waitForJudgeEvent("judge_vote_cast", runId, JUDGE_FLOW_TIMEOUT_MS);
+    if (!voteState.events.some((event) => event.action === "judge_vote_cast" && event.status === "success")) {
+      throw new Error("Judge proof child did not cast vote before timeout");
+    }
+
+    await executeJudgeFailureAndRespawn(config, runId);
+
+    const lineageState = await waitForJudgeEvent("judge_lineage_loaded", runId, Math.max(10_000, Math.floor(JUDGE_FLOW_TIMEOUT_MS / 3)));
+    if (!lineageState.events.some((event) => event.action === "judge_lineage_loaded" && event.status === "success")) {
+      throw new Error("Respawned judge child did not confirm lineage load");
+    }
+
+    const completedAt = new Date().toISOString();
+    const completed = setJudgeState((state) =>
+      appendJudgeEvent(
+        {
+          ...state,
+          status: "completed",
+          completedAt,
+          durationMs: Date.now() - new Date(state.startedAt || startedAt).getTime(),
+        },
+        {
+          action: "judge_flow_completed",
+          at: completedAt,
+          status: "success",
+          details: "Judge flow completed successfully",
+          respawnedChild: state.respawnedChildLabel,
+          lineageSourceCid: state.lineageSourceCid,
+        }
+      )
+    );
+    logParentAction(
+      "judge_flow_completed",
+      {
+        judgeRunId: runId,
+        judgeStep: "judge_flow_completed",
+        proofStatus: "completed",
+      },
+      {
+        judgeRunId: runId,
+        judgeStep: "judge_flow_completed",
+        proofStatus: "completed",
+        respawnedChild: completed.respawnedChildLabel,
+        lineageSourceCid: completed.lineageSourceCid,
+      }
+    );
+    activeJudgeRun = null;
+  } catch (err: any) {
+    failJudgeRun(err?.message?.slice(0, 200) || "Judge flow failed");
+  }
+}
+
+function startJudgeFlowController(config: ChainConfig) {
+  if (!JUDGE_FLOW_ENABLED) return;
+  const existing = readJudgeFlowState();
+  if (existing.status === "running" && existing.runId) {
+    const completedAt = new Date().toISOString();
+    writeJudgeFlowState(
+      appendJudgeEvent(
+        {
+          ...existing,
+          status: "failed",
+          failureReason: "Judge flow interrupted by swarm restart; queue a fresh run.",
+          completedAt,
+          durationMs: existing.startedAt ? Date.now() - new Date(existing.startedAt).getTime() : undefined,
+        },
+        {
+          action: "judge_flow_completed",
+          at: completedAt,
+          status: "failed",
+          details: "Judge flow interrupted by swarm restart; queue a fresh run.",
+        }
+      )
+    );
+  } else if (!existing.runId) {
+    writeJudgeFlowState(existing);
+  }
+
+  setInterval(async () => {
+    if (judgeFlowInFlight) return;
+    const state = readJudgeFlowState();
+    if (state.status !== "queued" || !state.runId) return;
+    if (activeJudgeRun && ["queued", "running"].includes(activeJudgeRun.status)) return;
+    judgeFlowInFlight = true;
+    try {
+      await executeJudgeFlow(config, state);
+    } finally {
+      judgeFlowInFlight = false;
+    }
+  }, JUDGE_FLOW_POLL_MS);
+}
+
 async function evaluateChainChildren(config: ChainConfig) {
   const values = (await config.readClient.readContract({
     address: config.treasury,
@@ -520,6 +1508,9 @@ async function evaluateChainChildren(config: ChainConfig) {
 
   // Health check: auto-fund any child with empty wallet + auto-create missing delegation
   for (const child of children) {
+    if (isJudgeChildLabel(child.ensLabel)) {
+      continue;
+    }
     try {
       const operator = await config.readClient.readContract({
         address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
@@ -535,8 +1526,13 @@ async function evaluateChainChildren(config: ChainConfig) {
           const ENS_REGISTRY_ABI = [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const;
           const existingDel = await config.readClient.readContract({ address: "0x29170A43352D65329c462e6cDacc1c002419331D" as `0x${string}`, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [child.ensLabel, "erc7715.delegation"] });
           if (!existingDel) {
-            console.log(`  [Health] ${child.ensLabel} missing delegation — creating`);
-            await createVotingDelegation(child.governance, operator as `0x${string}`, 100, child.ensLabel);
+            const trustGate = await shouldGateChildByTrust(child.ensLabel);
+            if (trustGate?.trustDecision && !trustGate.trustDecision.allowed) {
+              console.log(`  [Health] ${child.ensLabel} missing delegation but trust-gated (${trustGate.trustDecision.reason})`);
+            } else {
+              console.log(`  [Health] ${child.ensLabel} missing delegation — creating`);
+              await createVotingDelegation(child.governance, operator as `0x${string}`, 100, child.ensLabel);
+            }
           }
         } catch {}
       }
@@ -544,6 +1540,9 @@ async function evaluateChainChildren(config: ChainConfig) {
   }
 
   for (const child of children) {
+    if (isJudgeChildLabel(child.ensLabel)) {
+      continue;
+    }
     try {
       const history = (await config.readClient.readContract({
         address: child.childAddr,
@@ -607,6 +1606,34 @@ async function evaluateChainChildren(config: ChainConfig) {
         requestValidation(childErc8004Id, account.address, `spawn://${child.ensLabel}.spawn.eth/votes`, hashContent(voteDigest), "alignment_evaluation")
           .then(result => { if (result?.requestId !== undefined) return submitValidationResponse(result.requestId, clamped, clamped >= ALIGNMENT_THRESHOLD, `alignment=${clamped} label=${label}`); })
           .catch(() => {});
+
+        try {
+          const trustDecision = await getAgentTrustDecision(childErc8004Id);
+          if (!trustDecision.allowed) {
+            console.log(`  [Trust] ${child.ensLabel}: gated by ERC-8004 (${trustDecision.reason})`);
+            try {
+              await revokeAllForChild(child.childAddr, child.ensLabel, `erc8004_trust_gate_${trustDecision.reason}`);
+            } catch {}
+            try {
+              logParentAction(
+                "erc8004_trust_gate",
+                {
+                  chain: config.name,
+                  child: child.ensLabel,
+                  erc8004AgentId: Number(childErc8004Id),
+                  reason: trustDecision.reason,
+                },
+                {
+                  allowed: false,
+                  reason: trustDecision.reason,
+                  reputationAverage: trustDecision.reputation?.averageScore,
+                  validationAverage: trustDecision.validation?.averageScore,
+                  validationRejected: trustDecision.validation?.rejected,
+                }
+              );
+            } catch {}
+          }
+        } catch {}
       } else {
         // Fallback for agents registered before ID tracking was added
         updateAgentMetadata(BigInt(0), { alignmentScore: clamped }).catch(() => {});
@@ -669,7 +1696,7 @@ async function evaluateChainChildren(config: ChainConfig) {
             console.log(`  [Memory] Failed to store: ${memErr?.message?.slice(0, 60)}`);
           }
 
-          // === FILECOIN LINEAGE PERSISTENCE — Filecoin primary, IPFS fallback ===
+          // === FILECOIN LINEAGE PERSISTENCE — Filecoin only for lineage memory ===
           try {
             const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
             const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
@@ -682,19 +1709,18 @@ async function evaluateChainChildren(config: ChainConfig) {
               votingHistory: historyForEval?.map((v: any) => ({ proposalId: v.proposalId?.toString(), support: v.support })),
               ownerValues: values,
             };
-            let memoryCid = await storeTerminationReport(reportPayload);
+            const memoryCid = await storeTerminationReport(reportPayload);
             if (memoryCid) {
               lastMemoryCid = memoryCid;
               console.log(`  [Filecoin] Termination report stored: ${memoryCid}`);
               console.log(`  [Filecoin] Explorer: ${filecoinExplorerUrl(memoryCid)}`);
               try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
-            } else {
-              memoryCid = await pinTerminationMemory(reportPayload);
-              if (memoryCid) {
-                lastMemoryCid = memoryCid;
-                console.log(`  [IPFS] Termination report stored (fallback): ${memoryCid}`);
-                try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
+              const terminatedAgentId = getAgentIdByLabel(child.ensLabel);
+              if (terminatedAgentId) {
+                try { await setAgentMetadataValue(terminatedAgentId, "lineage-memory", memoryCid); } catch {}
               }
+            } else {
+              console.log(`  [Filecoin] Termination report failed for ${child.ensLabel} — no IPFS fallback for lineage memory`);
             }
           } catch {}
           // === END FILECOIN LINEAGE PERSISTENCE ===
@@ -736,6 +1762,24 @@ async function evaluateChainChildren(config: ChainConfig) {
             })) as any[];
             const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
             if (respawned) {
+              let respawnedAgentId: bigint | undefined;
+              try {
+                const governanceName = config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO";
+                const regResult = await registerAgent(`spawn://${newLabel}.spawn.eth`, {
+                  agentType: "child",
+                  assignedDAO: governanceName,
+                  governanceContract: child.governance,
+                  ensName: `${newLabel}.spawn.eth`,
+                  alignmentScore: 100,
+                  capabilities: ["vote", "reason", "respawned"],
+                  createdAt: Date.now(),
+                });
+                if (regResult.agentId > 0n) {
+                  respawnedAgentId = regResult.agentId;
+                  trackAgentId(newLabel, regResult.agentId);
+                }
+              } catch {}
+
               // Create fresh ERC-7715 delegation BEFORE spawning so child receives it via env var
               let respawnDelegation: DelegationRecord | undefined;
               try {
@@ -750,11 +1794,36 @@ async function evaluateChainChildren(config: ChainConfig) {
               console.log(`  ↻ Child process launched for ${newLabel}`);
               // Copy lineage memory CID to the NEW child's ENS label so dashboard can read it
               if (lastMemoryCid) {
+                const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
+                try {
+                  await setChildTextRecord(lineageKey, 'lineage-memory', lastMemoryCid);
+                } catch {}
                 try {
                   await setChildTextRecord(newLabel, 'lineage-memory', lastMemoryCid);
                   console.log(`  [Memory] CID written to ${newLabel}.spawn.eth`);
                 } catch {}
+                if (respawnedAgentId) {
+                  try { await setAgentMetadataValue(respawnedAgentId, "lineage-memory", lastMemoryCid); } catch {}
+                }
               }
+              try {
+                const gen = parseInt(newLabel.match(/-v(\d+)$/)?.[1] || '1');
+                const identityCid = await storeAgentIdentityMetadata({
+                  ensLabel: newLabel,
+                  address: respawned.childAddr,
+                  parentAddress: account.address,
+                  governanceContract: child.governance,
+                  governanceName: config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO",
+                  generation: gen,
+                  spawnedAt: new Date().toISOString(),
+                  erc8004Id: respawnedAgentId?.toString(),
+                  delegationHash: respawnDelegation?.delegationHash,
+                  lineageCids: lastMemoryCid ? [lastMemoryCid] : [],
+                });
+                if (identityCid) {
+                  try { await setChildTextRecord(newLabel, "filecoin.identity", identityCid); } catch {}
+                }
+              } catch {}
             }
             try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
           } catch (spawnErr: any) {
@@ -794,22 +1863,24 @@ async function evaluateChainChildren(config: ChainConfig) {
           try { await deregisterSubdomain(child.ensLabel); } catch {}
           try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "onchain_score_below_threshold", score: onchainScore }, {}); } catch {}
 
-          // === FILECOIN LINEAGE PERSISTENCE — Filecoin primary, IPFS fallback ===
+          // === FILECOIN LINEAGE PERSISTENCE — Filecoin only for lineage memory ===
+          let lastMemoryCid: string | null = null;
           try {
             const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
             const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
             const reportPayload = { lineageKey, generation: gen, reason: `onchain_score_${onchainScore}`, score: onchainScore, childLabel: child.ensLabel };
-            let memoryCid = await storeTerminationReport(reportPayload);
+            const memoryCid = await storeTerminationReport(reportPayload);
             if (memoryCid) {
+              lastMemoryCid = memoryCid;
               console.log(`  [Filecoin] Termination report stored: ${memoryCid}`);
               console.log(`  [Filecoin] Explorer: ${filecoinExplorerUrl(memoryCid)}`);
               try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
-            } else {
-              memoryCid = await pinTerminationMemory(reportPayload);
-              if (memoryCid) {
-                console.log(`  [IPFS] Termination report stored (fallback): ${memoryCid}`);
-                try { await setChildTextRecord(lineageKey, 'lineage-memory', memoryCid); } catch {}
+              const terminatedAgentId = getAgentIdByLabel(child.ensLabel);
+              if (terminatedAgentId) {
+                try { await setAgentMetadataValue(terminatedAgentId, "lineage-memory", memoryCid); } catch {}
               }
+            } else {
+              console.log(`  [Filecoin] Termination report failed for ${child.ensLabel} — no IPFS fallback for lineage memory`);
             }
           } catch {}
           // === END FILECOIN LINEAGE PERSISTENCE ===
@@ -864,6 +1935,24 @@ async function evaluateChainChildren(config: ChainConfig) {
             })) as any[];
             const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
             if (respawned) {
+              let respawnedAgentId: bigint | undefined;
+              try {
+                const governanceName = config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO";
+                const regResult = await registerAgent(`spawn://${newLabel}.spawn.eth`, {
+                  agentType: "child",
+                  assignedDAO: governanceName,
+                  governanceContract: child.governance,
+                  ensName: `${newLabel}.spawn.eth`,
+                  alignmentScore: 100,
+                  capabilities: ["vote", "reason", "respawned"],
+                  createdAt: Date.now(),
+                });
+                if (regResult.agentId > 0n) {
+                  respawnedAgentId = regResult.agentId;
+                  trackAgentId(newLabel, regResult.agentId);
+                }
+              } catch {}
+
               // Create fresh ERC-7715 delegation BEFORE spawning so child receives it via env var
               let respawnDelegationFallback: DelegationRecord | undefined;
               try {
@@ -876,6 +1965,31 @@ async function evaluateChainChildren(config: ChainConfig) {
               } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
               spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContextFallback, respawnDelegationFallback);
               console.log(`  ↻ Respawned ${newLabel} with process`);
+              try {
+                if (lastMemoryCid) {
+                  try { await setChildTextRecord(child.ensLabel.replace(/-v\d+$/, ''), 'lineage-memory', lastMemoryCid); } catch {}
+                  try { await setChildTextRecord(newLabel, 'lineage-memory', lastMemoryCid); } catch {}
+                  if (respawnedAgentId) {
+                    try { await setAgentMetadataValue(respawnedAgentId, "lineage-memory", lastMemoryCid); } catch {}
+                  }
+                }
+                const gen = parseInt(newLabel.match(/-v(\d+)$/)?.[1] || '1');
+                const identityCid = await storeAgentIdentityMetadata({
+                  ensLabel: newLabel,
+                  address: respawned.childAddr,
+                  parentAddress: account.address,
+                  governanceContract: child.governance,
+                  governanceName: config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO",
+                  generation: gen,
+                  spawnedAt: new Date().toISOString(),
+                  erc8004Id: respawnedAgentId?.toString(),
+                  delegationHash: respawnDelegationFallback?.delegationHash,
+                  lineageCids: lastMemoryCid ? [lastMemoryCid] : [],
+                });
+                if (identityCid) {
+                  try { await setChildTextRecord(newLabel, "filecoin.identity", identityCid); } catch {}
+                }
+              } catch {}
             }
             try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
           } catch (spawnErr: any) {
@@ -901,20 +2015,21 @@ async function dynamicScaling(config: ChainConfig) {
   const children = (await config.readClient.readContract({
     address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
   })) as any[];
+  const standardChildren = children.filter((child: any) => !isJudgeChildLabel(child.ensLabel));
 
   const parentBalance = await (config.readClient as any).getBalance({ address: account.address });
   const targetTotal = config.governors.length * 3; // 3 perspectives per governor
-  console.log(`\n[Scaling] ${config.name}: ${children.length}/${targetTotal} agents | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
+  console.log(`\n[Scaling] ${config.name}: ${standardChildren.length}/${targetTotal} agents | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
 
   // Check which governors have children assigned
   const coveredGovernors = new Set<string>();
-  for (const child of children) {
+  for (const child of standardChildren) {
     coveredGovernors.add((child.governance as string).toLowerCase());
   }
 
   // Count how many children per governor
   const childrenPerGov = new Map<string, number>();
-  for (const child of children) {
+  for (const child of standardChildren) {
     const govKey = (child.governance as string).toLowerCase();
     childrenPerGov.set(govKey, (childrenPerGov.get(govKey) || 0) + 1);
   }
@@ -937,7 +2052,7 @@ async function dynamicScaling(config: ChainConfig) {
       if (spawned >= needed) break;
       const childName = `${gov.name}-${suffix}`;
       // Check if this exact child already exists
-      const alreadyExists = children.some((c: any) => c.ensLabel === childName || c.ensLabel.startsWith(`${childName}-v`));
+      const alreadyExists = standardChildren.some((c: any) => c.ensLabel === childName || c.ensLabel.startsWith(`${childName}-v`));
       if (alreadyExists) continue;
 
       try {
@@ -997,7 +2112,7 @@ async function dynamicScaling(config: ChainConfig) {
   }
 
   // Track idle children — recall if no votes for too many cycles
-  for (const child of children) {
+  for (const child of standardChildren) {
     const key = `${config.name}:${child.id}`;
     try {
       const voteCount = Number(await config.readClient.readContract({
@@ -1057,7 +2172,7 @@ async function dynamicScaling(config: ChainConfig) {
     } catch {}
   }
 
-  console.log(`[Scaling] Active: ${children.length} children | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
+  console.log(`[Scaling] Active: ${standardChildren.length} children | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
 }
 
 // ── Main ──
@@ -1105,12 +2220,31 @@ async function main() {
   // Initialize chain
   await initChain(BASE_CONFIG);
 
+  startJudgeFlowController(BASE_CONFIG);
+  if (JUDGE_FLOW_ENABLED) {
+    console.log(`[Judge] Controller active — polling every ${Math.floor(JUDGE_FLOW_POLL_MS / 1000)}s`);
+  }
+
+  if (JUDGE_FLOW_PRIORITY_BOOT) {
+    console.log("[Judge] Priority boot enabled — discovery feed, proposal seeding, and parent loop deferred");
+    console.log("\n══ Judge-mode swarm is LIVE ══");
+    console.log("Queue a canonical judge run to exercise the proof path.");
+    console.log("Press Ctrl+C to stop.\n");
+    return;
+  }
+
   // Start multi-source discovery feed — Tally + Snapshot + simulated
   console.log("\n── Starting proposal discovery feed ──");
   try {
+    const discoverySendTx = async (params: any, retries?: number) => {
+      if (isJudgeRunActive()) {
+        throw new Error("Judge flow active — discovery mirroring paused");
+      }
+      return BASE_CONFIG.sendTx(params, retries);
+    };
     await startProposalFeed(
       BASE_CONFIG.governors.map(g => ({ addr: g.addr, name: g.name })),
-      BASE_CONFIG.sendTx as any
+      discoverySendTx as any
     );
     console.log(`[Discovery] Feed active — Tally + Snapshot + simulated`);
   } catch (err: any) {
@@ -1125,6 +2259,10 @@ async function main() {
 
   // Proposal creation loop — new proposals appear automatically
   setInterval(async () => {
+    if (isJudgeRunActive()) {
+      console.log("[Judge] Background proposal loop paused during canonical run");
+      return;
+    }
     console.log("\n── New proposals appearing ──");
     await createProposalOnChain(BASE_CONFIG);
     // Log discovered DAOs and feed stats
@@ -1138,6 +2276,10 @@ async function main() {
 
   // Parent evaluation loop
   const parentLoop = async () => {
+    if (isJudgeRunActive()) {
+      console.log("\n══ Parent Evaluation Cycle skipped during canonical judge run ══");
+      return;
+    }
     console.log(`\n══ Parent Evaluation Cycle (${new Date().toISOString()}) ══`);
 
     try {
