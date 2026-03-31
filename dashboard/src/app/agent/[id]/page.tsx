@@ -77,9 +77,9 @@ const VALIDATION_REGISTRY_ABI = [
   },
 ] as const;
 
-// Our tokens start at ~2200 on this shared public registry. Scan 2200–2900.
+// Scan 2200–3500: covers original agents (~2220) and recent judge proof children (~3225–3243).
 const ERC8004_SCAN_START = 2200;
-const ERC8004_SCAN_END = 2900;
+const ERC8004_SCAN_END = 3500;
 
 interface Erc8004Data {
   agentId: bigint;
@@ -578,37 +578,46 @@ export default function AgentDetailPage({ params }: PageProps) {
                 </div>
               )}
 
-              {trustSummary && (
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div className="rounded border border-emerald-400/20 bg-emerald-400/5 p-3">
-                    <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 mb-2">Reputation Summary</p>
-                    {trustSummary.reputation ? (
-                      <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                        <div className="text-gray-300">Avg: <span className="text-emerald-300">{trustSummary.reputation.averageScore}</span></div>
-                        <div className="text-gray-300">Active: <span className="text-emerald-300">{trustSummary.reputation.activeFeedback}</span></div>
-                        <div className="text-gray-300">Total: <span className="text-emerald-300">{trustSummary.reputation.totalFeedback}</span></div>
-                        <div className="text-gray-300">Range: <span className="text-emerald-300">{trustSummary.reputation.lowestScore}-{trustSummary.reputation.highestScore}</span></div>
+              {trustSummary && (() => {
+                const hasReputation = trustSummary.reputation && trustSummary.reputation.totalFeedback > 0;
+                const hasValidation = trustSummary.validation && trustSummary.validation.totalRequests > 0;
+                if (!hasReputation && !hasValidation) {
+                  return (
+                    <p className="mt-3 text-[10px] font-mono text-gray-600">
+                      No onchain reputation or validation receipts yet — written during judge flow runs.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    {hasReputation && (
+                      <div className="rounded border border-emerald-400/20 bg-emerald-400/5 p-3">
+                        <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 mb-2">Reputation Summary</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                          <div className="text-gray-300">Avg score: <span className="text-emerald-300 font-bold">{trustSummary.reputation!.averageScore}</span></div>
+                          <div className="text-gray-300">Active: <span className="text-emerald-300">{trustSummary.reputation!.activeFeedback}</span></div>
+                          <div className="text-gray-300">Total: <span className="text-emerald-300">{trustSummary.reputation!.totalFeedback}</span></div>
+                          <div className="text-gray-300">Range: <span className="text-emerald-300">{trustSummary.reputation!.lowestScore}–{trustSummary.reputation!.highestScore}</span></div>
+                        </div>
                       </div>
-                    ) : (
-                      <p className="text-xs text-gray-500">No reputation summary available.</p>
+                    )}
+                    {hasValidation && (
+                      <div className="rounded border border-cyan-400/20 bg-cyan-400/5 p-3">
+                        <p className="text-[10px] uppercase tracking-wider text-cyan-400/70 mb-2">Validation Summary</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                          <div className="text-gray-300">Avg score: <span className="text-cyan-300 font-bold">{trustSummary.validation!.averageScore}</span></div>
+                          <div className="text-gray-300">Total: <span className="text-cyan-300">{trustSummary.validation!.totalRequests}</span></div>
+                          <div className="text-gray-300">Validated: <span className="text-cyan-300">{trustSummary.validation!.validated}</span></div>
+                          <div className="text-gray-300">Rejected: <span className="text-cyan-300">{trustSummary.validation!.rejected}</span></div>
+                          {trustSummary.validation!.pending > 0 && (
+                            <div className="text-gray-300 col-span-2">Pending: <span className="text-cyan-300">{trustSummary.validation!.pending}</span></div>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
-                  <div className="rounded border border-cyan-400/20 bg-cyan-400/5 p-3">
-                    <p className="text-[10px] uppercase tracking-wider text-cyan-400/70 mb-2">Validation Summary</p>
-                    {trustSummary.validation ? (
-                      <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                        <div className="text-gray-300">Avg: <span className="text-cyan-300">{trustSummary.validation.averageScore}</span></div>
-                        <div className="text-gray-300">Total: <span className="text-cyan-300">{trustSummary.validation.totalRequests}</span></div>
-                        <div className="text-gray-300">Validated: <span className="text-cyan-300">{trustSummary.validation.validated}</span></div>
-                        <div className="text-gray-300">Rejected: <span className="text-cyan-300">{trustSummary.validation.rejected}</span></div>
-                        <div className="text-gray-300 col-span-2">Pending: <span className="text-cyan-300">{trustSummary.validation.pending}</span></div>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-gray-500">No validation summary available.</p>
-                    )}
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </>
           )}
         </div>
