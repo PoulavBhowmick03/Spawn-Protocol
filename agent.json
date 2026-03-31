@@ -155,7 +155,7 @@
   },
   "encryption": {
     "provider": "lit-protocol",
-    "network": "datil-dev",
+    "network": "datil",
     "sdk_version": "7.4.0",
     "accessControl": "evmContractConditions",
     "timeLockContract": "TimeLock.isAfterTimestamp()",

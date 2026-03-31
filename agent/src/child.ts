@@ -472,6 +472,9 @@ async function childCycle(
         // Decrypt rationale — try Lit Protocol first, fall back to raw hex
         let decryptedRationaleHex: `0x${string}` = record.encryptedRationale;
 
+        // Ensure Lit is initialized before reveal — previously only called on first vote,
+        // so early-cycle reveals were always hitting litAvailable=false even when Lit works.
+        await ensureLit();
         if (litAvailable) {
           try {
             const storedStr = Buffer.from(
@@ -495,14 +498,14 @@ async function childCycle(
               );
               decryptedRationaleHex = toHex(decryptedText);
               console.log(`[Child:${childLabel}] Rationale decrypted via Lit Protocol`);
+            } else {
+              console.log(`[Child:${childLabel}] Revealing plain-text rationale (stored before Lit encryption was active)`);
             }
           } catch {
             // Keep as raw hex fallback
           }
-        }
-
-        if (!litAvailable) {
-          console.log(`[Child:${childLabel}] Revealing hex-encoded rationale (Lit unavailable — no decryption needed)`);
+        } else {
+          console.log(`[Child:${childLabel}] Revealing rationale (Lit init failed — using stored hex)`);
         }
 
         const hash = await childWalletClient.writeContract({
