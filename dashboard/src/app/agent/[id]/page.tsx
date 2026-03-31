@@ -648,64 +648,63 @@ export default function AgentDetailPage({ params }: PageProps) {
 
             {lineageReport && (
               <div className="space-y-2">
-                {/* Termination reason */}
-                {lineageReport.reason && (
-                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
-                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Predecessor Terminated</p>
-                    <p className="text-xs text-gray-300">{lineageReport.reason}</p>
-                  </div>
-                )}
-                {lineageReport.summary && (
-                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
-                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Cause of Death</p>
-                    <p className="text-xs text-gray-300">{lineageReport.summary}</p>
-                  </div>
-                )}
-                {/* Lessons */}
-                {lineageReport.lessons && lineageReport.lessons.length > 0 && (
-                  <div className="p-2 bg-yellow-400/5 border border-yellow-400/20 rounded">
-                    <p className="text-[10px] text-yellow-400/70 uppercase tracking-wider mb-1">Lessons Inherited</p>
-                    <ul className="text-xs text-gray-300 space-y-1">
-                      {lineageReport.lessons.map((l: string, i: number) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className="text-yellow-400/60 shrink-0">→</span>
-                          <span>{l}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {/* Avoid Patterns */}
-                {lineageReport.avoidPatterns && lineageReport.avoidPatterns.length > 0 && (
-                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
-                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Patterns to Avoid</p>
-                    <ul className="text-xs text-gray-300 space-y-1">
-                      {lineageReport.avoidPatterns.map((p: string, i: number) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className="text-red-400/60 shrink-0">✕</span>
-                          <span>{p}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {/* Recommended Focus */}
+                {/* Termination cause — deduplicate reason/summary if they're the same text */}
+                {(() => {
+                  const cause = lineageReport.summary || lineageReport.reason;
+                  if (!cause) return null;
+                  return (
+                    <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                      <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Cause of Termination</p>
+                      <p className="text-xs text-gray-300">{cause}</p>
+                    </div>
+                  );
+                })()}
+
+                {/* Lessons + Patterns side by side */}
+                <div className="grid gap-2 md:grid-cols-2">
+                  {lineageReport.lessons && lineageReport.lessons.length > 0 && (
+                    <div className="p-2 bg-yellow-400/5 border border-yellow-400/20 rounded">
+                      <p className="text-[10px] text-yellow-400/70 uppercase tracking-wider mb-1">Lessons Inherited</p>
+                      <ul className="text-xs text-gray-300 space-y-1">
+                        {lineageReport.lessons.map((l: string, i: number) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="text-yellow-400/60 shrink-0">→</span>
+                            <span>{l}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {lineageReport.avoidPatterns && lineageReport.avoidPatterns.length > 0 && (
+                    <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                      <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Patterns to Avoid</p>
+                      <ul className="text-xs text-gray-300 space-y-1">
+                        {lineageReport.avoidPatterns.map((p: string, i: number) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="text-red-400/60 shrink-0">✕</span>
+                            <span>{p}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
                 {lineageReport.recommendedFocus && (
                   <div className="p-2 bg-green-400/5 border border-green-400/20 rounded">
-                    <p className="text-[10px] text-green-400/70 uppercase tracking-wider mb-1">Recommended Focus for This Generation</p>
+                    <p className="text-[10px] text-green-400/70 uppercase tracking-wider mb-1">Recommended Focus</p>
                     <p className="text-xs text-gray-300">{lineageReport.recommendedFocus}</p>
                   </div>
                 )}
-                {/* Score + Owner Values */}
-                <div className="flex items-center gap-4 text-xs">
+
+                <div className="flex items-center gap-4 text-xs pt-1">
                   {lineageReport.score !== undefined && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-gray-600">Predecessor score:</span>
-                      <span className={`font-mono font-bold ${lineageReport.score >= 50 ? "text-yellow-400" : "text-red-400"}`}>{lineageReport.score}/100</span>
-                    </div>
+                    <span className="text-gray-600">
+                      Predecessor score: <span className={`font-mono font-bold ${lineageReport.score >= 50 ? "text-yellow-400" : "text-red-400"}`}>{lineageReport.score}/100</span>
+                    </span>
                   )}
                   {lineageReport.generation && (
-                    <span className="text-gray-600">Gen {lineageReport.generation} → Gen {Number(lineageReport.generation) + 1}</span>
+                    <span className="text-gray-600 font-mono">Gen {lineageReport.generation} → Gen {Number(lineageReport.generation) + 1}</span>
                   )}
                 </div>
               </div>
@@ -811,128 +810,84 @@ export default function AgentDetailPage({ params }: PageProps) {
                     </span>
                   </div>
 
-                  {/* Venice Reasoning Chain */}
+                  {/* Venice decision + rationale (compact) */}
                   {(() => {
                     const venice = veniceByProposal.get(Number(vote.proposalId));
-                    if (!venice) return null;
-                    const isE2EE = venice.reasoningModel?.includes("e2ee") || venice.reasoningProvider === "venice";
+                    const isE2EE = !venice || venice.reasoningModel?.includes("e2ee") || venice.reasoningProvider === "venice";
+                    const decision = venice?.decision ?? supportLabel(supportNum);
                     return (
-                      <div className="mt-2 p-3 bg-[#08080f] rounded border border-violet-500/20">
-                        <div className="flex flex-wrap items-center gap-2 mb-3">
-                          <p className="text-xs text-violet-400 uppercase tracking-wider font-mono">Venice Reasoning Chain</p>
-                          {isE2EE && (
-                            <span className="text-[10px] font-mono text-violet-300 border border-violet-400/30 bg-violet-400/5 px-1.5 py-0.5 rounded">E2EE</span>
-                          )}
-                          <span className="text-[10px] font-mono text-gray-500 border border-gray-700 px-1.5 py-0.5 rounded">
-                            {venice.reasoningModel ?? "e2ee-qwen3-30b-a3b-p"}
+                      <div className="mt-2 rounded border border-violet-500/15 bg-[#08080f] px-3 py-2">
+                        {/* Single header row */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
+                          <span className="text-[10px] text-violet-400 font-mono uppercase tracking-wider">Venice E2EE</span>
+                          {isE2EE && <span className="text-[10px] font-mono text-violet-300 border border-violet-400/25 px-1 py-0.5 rounded">E2EE</span>}
+                          <span className="text-[10px] font-mono text-gray-600 border border-gray-800 px-1 py-0.5 rounded">
+                            {venice?.reasoningModel ?? "e2ee-qwen3-30b-a3b-p"}
                           </span>
-                          <span className="text-[10px] font-mono text-gray-600">zero data retention</span>
-                        </div>
-                        <div className="space-y-2">
-                          <div className="flex items-start gap-2">
-                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-16">Step 1</span>
-                            <div>
-                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Summarize Proposal</p>
-                              <p className="text-xs text-gray-400">Proposal #{vote.proposalId.toString()} — context extracted and structured for evaluation</p>
-                            </div>
-                          </div>
-                          <div className="flex items-start gap-2">
-                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-16">Step 2</span>
-                            <div>
-                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Risk Assessment</p>
-                              <p className="text-xs text-gray-400">Treasury, centralization, and alignment risk evaluated against owner values</p>
-                            </div>
-                          </div>
-                          <div className="flex items-start gap-2">
-                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-16">Step 3</span>
-                            <div>
-                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Decision</p>
-                              <p className={`text-sm font-bold font-mono ${
-                                venice.decision === "FOR" ? "text-green-400" :
-                                venice.decision === "AGAINST" ? "text-red-400" :
-                                "text-yellow-400"
-                              }`}>
-                                {venice.decision ?? supportLabel(supportNum)}
-                              </p>
-                              {vote.revealed && rationale && (
-                                <p className="text-xs text-gray-300 mt-1">{rationale}</p>
-                              )}
-                              {!vote.revealed && (
-                                <p className="text-[11px] text-gray-600 mt-1 italic">Rationale encrypted via Lit Protocol until voting period ends</p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        {venice.txHash && (
-                          <div className="mt-3 pt-2 border-t border-gray-800">
-                            <a
-                              href={explorerTx(venice.txHash)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[10px] font-mono text-violet-400/60 hover:text-violet-300"
-                            >
-                              Vote TX: {venice.txHash.slice(0, 18)}… ↗
+                          <span className="text-[10px] text-gray-700">·</span>
+                          <span className="text-[10px] font-mono text-gray-700">summarize → risk → decide</span>
+                          {venice?.txHash && (
+                            <a href={explorerTx(venice.txHash)} target="_blank" rel="noopener noreferrer"
+                              className="ml-auto text-[10px] font-mono text-violet-400/50 hover:text-violet-300">
+                              {venice.txHash.slice(0, 14)}… ↗
                             </a>
-                          </div>
+                          )}
+                        </div>
+                        {/* Decision + rationale */}
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-[10px] font-mono text-gray-600 shrink-0">Decision</span>
+                          <span className={`text-sm font-bold font-mono ${
+                            decision === "FOR" ? "text-green-400" :
+                            decision === "AGAINST" ? "text-red-400" :
+                            "text-yellow-400"
+                          }`}>{decision}</span>
+                        </div>
+                        {vote.revealed && rationale && (
+                          <p className="text-xs text-gray-300 mt-1.5 leading-relaxed">{rationale}</p>
+                        )}
+                        {!vote.revealed && (
+                          <p className="text-[11px] text-gray-600 mt-1 italic">Rationale Lit-encrypted until voting period ends</p>
+                        )}
+                        {/* keccak proof — compact, only when revealed */}
+                        {rationale && (
+                          <p className="mt-2 font-mono text-[10px] text-green-400/40 break-all border-t border-gray-900 pt-1.5">
+                            keccak256 {keccak256(toBytes(rationale))}
+                          </p>
                         )}
                       </div>
                     );
                   })()}
 
+                  {/* Lit Protocol proof — collapsed by default */}
                   {litCiphertext && (
-                    <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-purple-500/20">
-                      <div className="flex items-center gap-2 mb-2">
-                        <p className="text-xs text-purple-400 uppercase tracking-wider">Lit Protocol — Time-locked Rationale</p>
-                        <span className="text-[10px] font-mono text-purple-400/60 border border-purple-400/20 px-1.5 py-0.5 rounded">E2EE</span>
+                    <details className="mt-1 group">
+                      <summary className="flex items-center gap-2 px-3 py-1.5 rounded border border-purple-500/15 bg-[#0a0a0f] cursor-pointer list-none text-[10px] text-purple-400/60 hover:text-purple-300 font-mono select-none">
+                        <span className="group-open:hidden">▶</span>
+                        <span className="hidden group-open:inline">▼</span>
+                        Lit Protocol E2EE proof
+                        <span className="ml-auto text-gray-700">{litCiphertext.dataToEncryptHash.slice(0, 14)}…</span>
+                      </summary>
+                      <div className="px-3 pt-2 pb-3 border border-t-0 border-purple-500/15 rounded-b bg-[#0a0a0f] space-y-2">
+                        <div>
+                          <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Ciphertext (truncated)</p>
+                          <p className="font-mono text-[10px] text-purple-300/40 break-all">{litCiphertext.ciphertext.slice(0, 80)}…</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">dataToEncryptHash</p>
+                          <p className="font-mono text-[10px] text-purple-400/50 break-all">{litCiphertext.dataToEncryptHash}</p>
+                          <p className="text-[10px] text-gray-700 mt-0.5">Pre-vote hash committed onchain — proves reasoning preceded vote</p>
+                        </div>
                       </div>
-                      <p className="text-[11px] text-gray-500 mb-2">
-                        This vote used Lit Protocol before execution. The ciphertext and pre-vote hash remain visible even after reveal.
-                      </p>
-                      <div className="font-mono text-[10px] text-purple-300/50 break-all bg-purple-900/10 p-2 rounded border border-purple-500/10">
-                        {litCiphertext.ciphertext.slice(0, 80)}…
-                      </div>
-                      <div className="mt-2 pt-2 border-t border-gray-800">
-                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Ciphertext Hash (dataToEncryptHash)</p>
-                        <p className="font-mono text-[10px] text-purple-400/60 break-all">
-                          {litCiphertext.dataToEncryptHash}
-                        </p>
-                        <p className="text-[10px] text-gray-700 mt-1">
-                          Pre-vote reasoning hash committed onchain — proves private reasoning before public vote
-                        </p>
-                      </div>
-                    </div>
+                    </details>
                   )}
 
+                  {/* Fallback rationale when no Venice log entry */}
                   {rationale && !veniceByProposal.has(Number(vote.proposalId)) && (
                     <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
-                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-                        {litCiphertext ? "Decrypted Rationale" : "Rationale"}
-                      </p>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Rationale</p>
                       <p className="text-sm text-gray-300">{rationale}</p>
-                      <div className="mt-2 pt-2 border-t border-gray-800">
-                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
-                        <p className="font-mono text-[10px] text-green-400/60 break-all">
-                          {keccak256(toBytes(rationale))}
-                        </p>
-                        <p className="text-[10px] text-gray-700 mt-0.5">
-                          Compare with reasoning hash committed before vote to verify E2EE integrity
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  {rationale && veniceByProposal.has(Number(vote.proposalId)) && (
-                    <div className="mt-1 px-3 py-2 rounded border border-gray-800 bg-[#0a0a0f]">
-                      <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
-                      <p className="font-mono text-[10px] text-green-400/60 break-all">{keccak256(toBytes(rationale))}</p>
-                      <p className="text-[10px] text-gray-700 mt-0.5">Pre-vote hash committed onchain — verifies E2EE integrity</p>
-                    </div>
-                  )}
-
-                  {!vote.revealed && vote.encryptedRationale && vote.encryptedRationale !== "0x" && (
-                    <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
-                      <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Encrypted Rationale (Lit Protocol)</p>
-                      <p className="font-mono text-xs text-gray-700 break-all">
-                        {vote.encryptedRationale.slice(0, 64)}…
+                      <p className="mt-2 font-mono text-[10px] text-green-400/40 break-all border-t border-gray-900 pt-1.5">
+                        keccak256 {keccak256(toBytes(rationale))}
                       </p>
                     </div>
                   )}
