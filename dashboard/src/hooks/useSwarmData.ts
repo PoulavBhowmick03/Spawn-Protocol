@@ -25,6 +25,8 @@ export interface ChildInfo {
 export interface BudgetState {
   policy: "normal" | "throttled" | "paused";
   reasons: string[];
+  context?: string;
+  parentEthBalanceWei?: string;
   parentEthBalance: string;
   warningEth: string;
   pauseEth: string;
