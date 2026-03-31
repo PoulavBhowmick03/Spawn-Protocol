@@ -811,21 +811,20 @@ export default function AgentDetailPage({ params }: PageProps) {
                   </div>
 
                   {/* Venice decision + rationale (compact) */}
+                  {/* Venice Reasoning Chain */}
                   {(() => {
                     const venice = veniceByProposal.get(Number(vote.proposalId));
                     const isE2EE = !venice || venice.reasoningModel?.includes("e2ee") || venice.reasoningProvider === "venice";
                     const decision = venice?.decision ?? supportLabel(supportNum);
                     return (
-                      <div className="mt-2 rounded border border-violet-500/15 bg-[#08080f] px-3 py-2">
-                        {/* Single header row */}
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-2">
-                          <span className="text-[10px] text-violet-400 font-mono uppercase tracking-wider">Venice E2EE</span>
-                          {isE2EE && <span className="text-[10px] font-mono text-violet-300 border border-violet-400/25 px-1 py-0.5 rounded">E2EE</span>}
-                          <span className="text-[10px] font-mono text-gray-600 border border-gray-800 px-1 py-0.5 rounded">
+                      <div className="mt-2 p-3 bg-[#08080f] rounded border border-violet-500/20">
+                        <div className="flex flex-wrap items-center gap-2 mb-3">
+                          <p className="text-xs text-violet-400 uppercase tracking-wider font-mono">Venice Reasoning Chain</p>
+                          {isE2EE && <span className="text-[10px] font-mono text-violet-300 border border-violet-400/30 bg-violet-400/5 px-1.5 py-0.5 rounded">E2EE</span>}
+                          <span className="text-[10px] font-mono text-gray-500 border border-gray-700 px-1.5 py-0.5 rounded">
                             {venice?.reasoningModel ?? "e2ee-qwen3-30b-a3b-p"}
                           </span>
-                          <span className="text-[10px] text-gray-700">·</span>
-                          <span className="text-[10px] font-mono text-gray-700">summarize → risk → decide</span>
+                          <span className="text-[10px] font-mono text-gray-600">zero data retention</span>
                           {venice?.txHash && (
                             <a href={explorerTx(venice.txHash)} target="_blank" rel="noopener noreferrer"
                               className="ml-auto text-[10px] font-mono text-violet-400/50 hover:text-violet-300">
@@ -833,27 +832,44 @@ export default function AgentDetailPage({ params }: PageProps) {
                             </a>
                           )}
                         </div>
-                        {/* Decision + rationale */}
-                        <div className="flex items-baseline gap-2">
-                          <span className="text-[10px] font-mono text-gray-600 shrink-0">Decision</span>
-                          <span className={`text-sm font-bold font-mono ${
-                            decision === "FOR" ? "text-green-400" :
-                            decision === "AGAINST" ? "text-red-400" :
-                            "text-yellow-400"
-                          }`}>{decision}</span>
+                        <div className="space-y-2">
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-14">Step 1</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Summarize Proposal</p>
+                              <p className="text-xs text-gray-400">Proposal #{vote.proposalId.toString()} — context extracted and structured for evaluation</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-14">Step 2</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Risk Assessment</p>
+                              <p className="text-xs text-gray-400">Treasury, centralization, and alignment risk evaluated against owner values</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-14">Step 3</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Decision</p>
+                              <p className={`text-sm font-bold font-mono ${
+                                decision === "FOR" ? "text-green-400" :
+                                decision === "AGAINST" ? "text-red-400" :
+                                "text-yellow-400"
+                              }`}>{decision}</p>
+                              {vote.revealed && rationale && (
+                                <p className="text-xs text-gray-300 mt-1 leading-relaxed">{rationale}</p>
+                              )}
+                              {!vote.revealed && (
+                                <p className="text-[11px] text-gray-600 mt-1 italic">Rationale Lit-encrypted until voting period ends</p>
+                              )}
+                              {rationale && (
+                                <p className="mt-2 font-mono text-[10px] text-green-400/40 break-all border-t border-gray-900 pt-1.5">
+                                  keccak256 {keccak256(toBytes(rationale))}
+                                </p>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        {vote.revealed && rationale && (
-                          <p className="text-xs text-gray-300 mt-1.5 leading-relaxed">{rationale}</p>
-                        )}
-                        {!vote.revealed && (
-                          <p className="text-[11px] text-gray-600 mt-1 italic">Rationale Lit-encrypted until voting period ends</p>
-                        )}
-                        {/* keccak proof — compact, only when revealed */}
-                        {rationale && (
-                          <p className="mt-2 font-mono text-[10px] text-green-400/40 break-all border-t border-gray-900 pt-1.5">
-                            keccak256 {keccak256(toBytes(rationale))}
-                          </p>
-                        )}
                       </div>
                     );
                   })()}
