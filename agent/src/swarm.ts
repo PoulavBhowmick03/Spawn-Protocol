@@ -24,7 +24,7 @@ import { evaluateAlignment, generateSwarmReport, generateTerminationReport, gene
 import type { StructuredTerminationReport } from "./venice.js";
 import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
 import { deriveChildWallet } from "./wallet-manager.js";
-import { registerAgent, registerAgentOnchain, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent, setAgentMetadataValue, getAgentTrustDecision } from "./identity.js";
+import { registerAgent, registerAgentOnchain, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent, setAgentMetadataValue, getAgentTrustDecision, resolveAgentIdByLabelOnchain } from "./identity.js";
 import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, type DelegationRecord } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
@@ -56,6 +56,7 @@ import {
   updateJudgeFlowState,
   writeJudgeFlowState,
 } from "./judge-flow.js";
+import { writeFileSync } from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -76,6 +77,55 @@ const JUDGE_DEFAULT_GOVERNOR = "uniswap";
 const JUDGE_FLOW_PRIORITY_BOOT = process.env.JUDGE_FLOW_PRIORITY_BOOT === "true";
 const JUDGE_PROOF_PROMPT =
   "You are the canonical Spawn Protocol proof child for a live judge run. Focus only on the marked judge proposal, reason clearly, cast exactly one vote, and stop considering unrelated proposals.";
+const RUNTIME_BUDGET_STATE_PATH = join(__dirname, "..", "..", "runtime_budget_state.json");
+const RUNTIME_BUDGET_WARNING_ETH = parseEther(process.env.RUNTIME_BUDGET_WARNING_ETH || "0.03");
+const RUNTIME_BUDGET_PAUSE_ETH = parseEther(process.env.RUNTIME_BUDGET_PAUSE_ETH || "0.015");
+const COMPUTE_BUDGET_WARNING_TOKENS = Number(process.env.COMPUTE_BUDGET_WARNING_TOKENS || 200_000);
+const COMPUTE_BUDGET_PAUSE_TOKENS = Number(process.env.COMPUTE_BUDGET_PAUSE_TOKENS || 350_000);
+
+type RuntimeBudgetPolicy = "normal" | "throttled" | "paused";
+
+type RuntimeBudgetState = {
+  policy: RuntimeBudgetPolicy;
+  reasons: string[];
+  context: string;
+  parentEthBalanceWei: string;
+  parentEthBalance: string;
+  warningEth: string;
+  pauseEth: string;
+  veniceCalls: number;
+  veniceTokens: number;
+  warningTokens: number;
+  pauseTokens: number;
+  activeChildren: number;
+  filecoinAvailable: boolean;
+  pauseProposalCreation: boolean;
+  pauseScaling: boolean;
+  pauseJudgeFlow: boolean;
+  lastUpdatedAt: string;
+};
+
+let runtimeBudgetState: RuntimeBudgetState = {
+  policy: "normal",
+  reasons: [],
+  context: "boot",
+  parentEthBalanceWei: "0",
+  parentEthBalance: "0.0000",
+  warningEth: (Number(RUNTIME_BUDGET_WARNING_ETH) / 1e18).toFixed(4),
+  pauseEth: (Number(RUNTIME_BUDGET_PAUSE_ETH) / 1e18).toFixed(4),
+  veniceCalls: 0,
+  veniceTokens: 0,
+  warningTokens: COMPUTE_BUDGET_WARNING_TOKENS,
+  pauseTokens: COMPUTE_BUDGET_PAUSE_TOKENS,
+  activeChildren: 0,
+  filecoinAvailable: false,
+  pauseProposalCreation: false,
+  pauseScaling: false,
+  pauseJudgeFlow: false,
+  lastUpdatedAt: new Date().toISOString(),
+};
+let swarmVeniceCalls = 0;
+let swarmVeniceTokens = 0;
 
 function buildJudgeProofLabel(runId: string) {
   return `judge-proof-${runId}`;
@@ -91,6 +141,140 @@ function getGovernorForJudgeRun(config: ChainConfig, governorName?: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function persistRuntimeBudgetState() {
+  try {
+    writeFileSync(RUNTIME_BUDGET_STATE_PATH, JSON.stringify(runtimeBudgetState, null, 2));
+  } catch {}
+}
+
+async function refreshRuntimeBudgetState(config: ChainConfig, context: string): Promise<RuntimeBudgetState> {
+  const [parentBalance, filecoinAvailable, rawChildren] = await Promise.all([
+    publicClient.getBalance({ address: account.address }).catch(() => 0n),
+    isFilecoinAvailable().catch(() => false),
+    config.readClient.readContract({
+      address: config.factory,
+      abi: SpawnFactoryABI,
+      functionName: "getActiveChildren",
+    }).catch(() => [] as any[]),
+  ]);
+
+  const veniceMetrics = getVeniceMetrics();
+  swarmVeniceCalls = Math.max(swarmVeniceCalls, veniceMetrics.totalCalls);
+  swarmVeniceTokens = Math.max(swarmVeniceTokens, veniceMetrics.totalTokens);
+  let policy: RuntimeBudgetPolicy = "normal";
+  const reasons: string[] = [];
+
+  if (parentBalance <= RUNTIME_BUDGET_PAUSE_ETH) {
+    policy = "paused";
+    reasons.push("low_parent_eth");
+  } else if (parentBalance <= RUNTIME_BUDGET_WARNING_ETH) {
+    policy = "throttled";
+    reasons.push("low_parent_eth_warning");
+  }
+
+  if (swarmVeniceTokens >= COMPUTE_BUDGET_PAUSE_TOKENS) {
+    policy = "paused";
+    reasons.push("compute_budget_exceeded");
+  } else if (swarmVeniceTokens >= COMPUTE_BUDGET_WARNING_TOKENS && policy === "normal") {
+    policy = "throttled";
+    reasons.push("compute_budget_warning");
+  }
+
+  if (!filecoinAvailable) {
+    reasons.push("filecoin_unavailable");
+  }
+
+  const activeChildren = (rawChildren as any[]).filter((child) => !isJudgeChildLabel(child.ensLabel)).length;
+  const nextState: RuntimeBudgetState = {
+    policy,
+    reasons,
+    context,
+    parentEthBalanceWei: parentBalance.toString(),
+    parentEthBalance: (Number(parentBalance) / 1e18).toFixed(4),
+    warningEth: (Number(RUNTIME_BUDGET_WARNING_ETH) / 1e18).toFixed(4),
+    pauseEth: (Number(RUNTIME_BUDGET_PAUSE_ETH) / 1e18).toFixed(4),
+    veniceCalls: swarmVeniceCalls,
+    veniceTokens: swarmVeniceTokens,
+    warningTokens: COMPUTE_BUDGET_WARNING_TOKENS,
+    pauseTokens: COMPUTE_BUDGET_PAUSE_TOKENS,
+    activeChildren,
+    filecoinAvailable,
+    pauseProposalCreation: policy !== "normal",
+    pauseScaling: policy === "paused",
+    pauseJudgeFlow: policy === "paused",
+    lastUpdatedAt: new Date().toISOString(),
+  };
+
+  if (
+    runtimeBudgetState.policy !== nextState.policy ||
+    runtimeBudgetState.reasons.join(",") !== nextState.reasons.join(",")
+  ) {
+    try {
+      logParentAction(
+        "budget_policy_changed",
+        {
+          policy: nextState.policy,
+          context,
+          reasons: nextState.reasons.join(",") || "healthy",
+        },
+        {
+          parentEthBalance: nextState.parentEthBalance,
+          veniceTokens: nextState.veniceTokens,
+          activeChildren: nextState.activeChildren,
+          filecoinAvailable: nextState.filecoinAvailable,
+          pauseProposalCreation: nextState.pauseProposalCreation,
+          pauseScaling: nextState.pauseScaling,
+          pauseJudgeFlow: nextState.pauseJudgeFlow,
+        }
+      );
+    } catch {}
+  }
+
+  runtimeBudgetState = nextState;
+  persistRuntimeBudgetState();
+  return runtimeBudgetState;
+}
+
+async function recordVoteValidationReceipt(
+  childLabel: string,
+  proposalId: number,
+  decision: string,
+  voteTxHash?: string
+) {
+  const agentId = getAgentIdByLabel(childLabel) ?? await resolveAgentIdByLabelOnchain(childLabel);
+  if (!agentId) return;
+
+  const validationUri = `spawn://${childLabel}.spawn.eth/proposals/${proposalId}`;
+  const contentHash = hashContent(`${proposalId}:${decision}:${voteTxHash || "no-tx"}`);
+  const request = await requestValidation(agentId, account.address, validationUri, contentHash, "vote_receipt");
+  if (!request?.requestId) return;
+
+  const responseTxHash = await submitValidationResponse(
+    request.requestId,
+    90,
+    true,
+    `vote_receipt proposal=${proposalId} decision=${decision} tx=${voteTxHash || "unknown"}`
+  );
+
+  try {
+    logParentAction(
+      "erc8004_vote_validation",
+      {
+        child: childLabel,
+        erc8004AgentId: Number(agentId),
+        proposalId,
+        decision,
+      },
+      {
+        validationRequestId: request.requestId.toString(),
+        validationRequestTxHash: request.txHash,
+        validationResponseTxHash: responseTxHash,
+      },
+      responseTxHash || request.txHash
+    );
+  } catch {}
 }
 
 function hasJudgeEvent(state: JudgeFlowState | null | undefined, action: JudgeAction) {
@@ -737,6 +921,31 @@ function spawnChildProcess(
       if (msg?.type === "log_child_action") {
         try {
           logChildAction(msg.childLabel, msg.action, msg.inputs ?? {}, msg.outputs ?? {}, msg.txHash);
+        } catch {}
+        if (typeof msg.inputs?.veniceTokensUsed === "number") {
+          swarmVeniceTokens += msg.inputs.veniceTokensUsed;
+          swarmVeniceCalls += Number(msg.inputs?.veniceCallsUsed || 0);
+          runtimeBudgetState = {
+            ...runtimeBudgetState,
+            veniceTokens: swarmVeniceTokens,
+            veniceCalls: swarmVeniceCalls,
+            lastUpdatedAt: new Date().toISOString(),
+          };
+          persistRuntimeBudgetState();
+        }
+        try {
+          if (
+            msg.action === "cast_vote" &&
+            typeof msg.inputs?.proposalId === "number" &&
+            typeof msg.inputs?.decision === "string"
+          ) {
+            void recordVoteValidationReceipt(
+              msg.childLabel,
+              msg.inputs.proposalId,
+              msg.inputs.decision,
+              msg.txHash
+            );
+          }
         } catch {}
         try {
           if (msg.inputs?.judgeRunId && activeJudgeRun?.runId === msg.inputs.judgeRunId) {
@@ -1508,6 +1717,10 @@ function startJudgeFlowController(config: ChainConfig) {
     const state = readJudgeFlowState();
     if (state.status !== "queued" || !state.runId) return;
     if (activeJudgeRun && ["queued", "running"].includes(activeJudgeRun.status)) return;
+    if (runtimeBudgetState.pauseJudgeFlow) {
+      console.log(`[Judge] Canonical run paused by budget policy (${runtimeBudgetState.policy})`);
+      return;
+    }
     judgeFlowInFlight = true;
     try {
       await executeJudgeFlow(config, state);
@@ -1618,7 +1831,7 @@ async function evaluateChainChildren(config: ChainConfig) {
       // Mirror alignment score to ERC-8004 identity + reputation + validation registries.
       // Fire-and-forget (no await) so registry writes don't block the main eval loop.
       // The write queue in identity.ts serializes nonces — no conflicts.
-      const childErc8004Id = getAgentIdByLabel(child.ensLabel);
+      const childErc8004Id = getAgentIdByLabel(child.ensLabel) ?? await resolveAgentIdByLabelOnchain(child.ensLabel);
       if (childErc8004Id) {
         const tags = clamped >= ALIGNMENT_THRESHOLD ? "alignment,aligned" : clamped >= 30 ? "alignment,drifting" : "alignment,misaligned";
         // 1. Update identity metadata
@@ -1658,9 +1871,6 @@ async function evaluateChainChildren(config: ChainConfig) {
             } catch {}
           }
         } catch {}
-      } else {
-        // Fallback for agents registered before ID tracking was added
-        updateAgentMetadata(BigInt(0), { alignmentScore: clamped }).catch(() => {});
       }
 
       // Strike tracking — immediate kill if score is critically low (<=10)
@@ -2243,6 +2453,12 @@ async function main() {
 
   // Initialize chain
   await initChain(BASE_CONFIG);
+  await refreshRuntimeBudgetState(BASE_CONFIG, "startup");
+  console.log(
+    `[Budget] ${runtimeBudgetState.policy.toUpperCase()} | ETH ${runtimeBudgetState.parentEthBalance} | ` +
+    `Venice ${runtimeBudgetState.veniceTokens}/${runtimeBudgetState.pauseTokens} tokens | ` +
+    `Filecoin ${runtimeBudgetState.filecoinAvailable ? "online" : "offline"}`
+  );
 
   startJudgeFlowController(BASE_CONFIG);
   if (JUDGE_FLOW_ENABLED) {
@@ -2264,6 +2480,9 @@ async function main() {
       if (isJudgeRunActive()) {
         throw new Error("Judge flow active — discovery mirroring paused");
       }
+      if (runtimeBudgetState.pauseProposalCreation) {
+        throw new Error(`Budget policy ${runtimeBudgetState.policy} — discovery mirroring paused`);
+      }
       return BASE_CONFIG.sendTx(params, retries);
     };
     await startProposalFeed(
@@ -2277,14 +2496,22 @@ async function main() {
 
   // Also create proposals from the bank for diverse coverage
   console.log("\n── Seeding initial proposals ──");
-  for (let i = 0; i < 3; i++) {
-    await createProposalOnChain(BASE_CONFIG);
+  if (runtimeBudgetState.pauseProposalCreation) {
+    console.log(`[Budget] Initial proposal seeding skipped (${runtimeBudgetState.policy})`);
+  } else {
+    for (let i = 0; i < 3; i++) {
+      await createProposalOnChain(BASE_CONFIG);
+    }
   }
 
   // Proposal creation loop — new proposals appear automatically
   setInterval(async () => {
     if (isJudgeRunActive()) {
       console.log("[Judge] Background proposal loop paused during canonical run");
+      return;
+    }
+    if (runtimeBudgetState.pauseProposalCreation) {
+      console.log(`[Budget] Background proposal loop paused (${runtimeBudgetState.policy})`);
       return;
     }
     console.log("\n── New proposals appearing ──");
@@ -2305,6 +2532,12 @@ async function main() {
       return;
     }
     console.log(`\n══ Parent Evaluation Cycle (${new Date().toISOString()}) ══`);
+    await refreshRuntimeBudgetState(BASE_CONFIG, "parent_cycle");
+    console.log(
+      `[Budget] policy=${runtimeBudgetState.policy} | ETH=${runtimeBudgetState.parentEthBalance} | ` +
+      `Venice=${runtimeBudgetState.veniceTokens}/${runtimeBudgetState.pauseTokens} | ` +
+      `reasons=${runtimeBudgetState.reasons.join(",") || "healthy"}`
+    );
 
     try {
       console.log(`\n[Base Sepolia]`);
@@ -2319,10 +2552,14 @@ async function main() {
     } catch {}
 
     // Dynamic scaling — auto-spawn/recall based on conditions
-    try {
-      await dynamicScaling(BASE_CONFIG);
-    } catch (err: any) {
-      console.log(`[Scaling] Error: ${err?.message?.slice(0, 50)}`);
+    if (runtimeBudgetState.pauseScaling) {
+      console.log(`[Budget] Dynamic scaling paused (${runtimeBudgetState.policy})`);
+    } else {
+      try {
+        await dynamicScaling(BASE_CONFIG);
+      } catch (err: any) {
+        console.log(`[Scaling] Error: ${err?.message?.slice(0, 50)}`);
+      }
     }
 
     // Venice usage metrics

@@ -25,10 +25,56 @@ const ENS_REGISTRY_ABI = [
 
 // ERC-8004 Agent Registry on Base Sepolia
 const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address;
+const REPUTATION_REGISTRY = "0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14" as Address;
+const VALIDATION_REGISTRY = "0x3caE87f24e15970a8e19831CeCD5FAe3c087a546" as Address;
 const ERC8004_ABI = [
   { type: "function", name: "ownerOf", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
   { type: "function", name: "getMetadata", inputs: [{ name: "agentId", type: "uint256" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
   { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
+] as const;
+const REPUTATION_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "getSummary",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalFeedback", type: "uint256" },
+          { name: "activeFeedback", type: "uint256" },
+          { name: "averageScore", type: "uint256" },
+          { name: "highestScore", type: "uint256" },
+          { name: "lowestScore", type: "uint256" },
+          { name: "lastUpdated", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+] as const;
+const VALIDATION_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "getSummary",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalRequests", type: "uint256" },
+          { name: "validated", type: "uint256" },
+          { name: "rejected", type: "uint256" },
+          { name: "pending", type: "uint256" },
+          { name: "averageScore", type: "uint256" },
+          { name: "lastValidated", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
 ] as const;
 
 // Our tokens start at ~2200 on this shared public registry. Scan 2200–2900.
@@ -44,6 +90,23 @@ interface Erc8004Data {
   capabilities: string;
   agentURI: string;
   owner: Address;
+}
+
+interface TrustSummary {
+  reputation: {
+    totalFeedback: number;
+    activeFeedback: number;
+    averageScore: number;
+    highestScore: number;
+    lowestScore: number;
+  } | null;
+  validation: {
+    totalRequests: number;
+    validated: number;
+    rejected: number;
+    pending: number;
+    averageScore: number;
+  } | null;
 }
 
 type LitPayload = {
@@ -106,6 +169,14 @@ export default function AgentDetailPage({ params }: PageProps) {
     ensLabel ? erc8004Cache.get(ensLabel) ?? null : null
   );
   const [erc8004Loading, setErc8004Loading] = useState(false);
+  const [trustSummary, setTrustSummary] = useState<TrustSummary | null>(null);
+  const [veniceByProposal, setVeniceByProposal] = useState<Map<number, {
+    reasoningProvider: string;
+    reasoningModel: string;
+    decision: string | null;
+    txHash: string | null;
+    timestamp: string | null;
+  }>>(new Map());
   const isLineagePieceCid = lineageMemoryCid?.startsWith("bafkzci") ?? false;
 
   // Resolve ERC-8004 identity by scanning tokenURI on the shared public registry.
@@ -200,6 +271,65 @@ export default function AgentDetailPage({ params }: PageProps) {
     })();
     return () => { cancelled = true; };
   }, [ensLabel, client]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!erc8004Data?.agentId) return;
+    let cancelled = false;
+
+    Promise.all([
+      client.readContract({
+        address: REPUTATION_REGISTRY,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: "getSummary",
+        args: [erc8004Data.agentId],
+      }).catch(() => null),
+      client.readContract({
+        address: VALIDATION_REGISTRY,
+        abi: VALIDATION_REGISTRY_ABI,
+        functionName: "getSummary",
+        args: [erc8004Data.agentId],
+      }).catch(() => null),
+    ]).then(([reputation, validation]) => {
+      if (cancelled) return;
+      setTrustSummary({
+        reputation: reputation
+          ? {
+              totalFeedback: Number((reputation as any).totalFeedback),
+              activeFeedback: Number((reputation as any).activeFeedback),
+              averageScore: Number((reputation as any).averageScore),
+              highestScore: Number((reputation as any).highestScore),
+              lowestScore: Number((reputation as any).lowestScore),
+            }
+          : null,
+        validation: validation
+          ? {
+              totalRequests: Number((validation as any).totalRequests),
+              validated: Number((validation as any).validated),
+              rejected: Number((validation as any).rejected),
+              pending: Number((validation as any).pending),
+              averageScore: Number((validation as any).averageScore),
+            }
+          : null,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, erc8004Data?.agentId]);
+
+  // Fetch Venice reasoning metadata from agent log, keyed by proposalId.
+  useEffect(() => {
+    if (!ensLabel) return;
+    fetch(`/api/agent/${encodeURIComponent(ensLabel)}/reasoning`, { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : { entries: [] })
+      .then(({ entries }) => {
+        const map = new Map<number, any>();
+        for (const e of entries ?? []) map.set(Number(e.proposalId), e);
+        setVeniceByProposal(map);
+      })
+      .catch(() => {});
+  }, [ensLabel]);
 
   // Fetch delegation + revocation from ENS text records, with lineage CID
   // falling back to ERC-8004 metadata when available.
@@ -447,6 +577,38 @@ export default function AgentDetailPage({ params }: PageProps) {
                   </p>
                 </div>
               )}
+
+              {trustSummary && (
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div className="rounded border border-emerald-400/20 bg-emerald-400/5 p-3">
+                    <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 mb-2">Reputation Summary</p>
+                    {trustSummary.reputation ? (
+                      <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                        <div className="text-gray-300">Avg: <span className="text-emerald-300">{trustSummary.reputation.averageScore}</span></div>
+                        <div className="text-gray-300">Active: <span className="text-emerald-300">{trustSummary.reputation.activeFeedback}</span></div>
+                        <div className="text-gray-300">Total: <span className="text-emerald-300">{trustSummary.reputation.totalFeedback}</span></div>
+                        <div className="text-gray-300">Range: <span className="text-emerald-300">{trustSummary.reputation.lowestScore}-{trustSummary.reputation.highestScore}</span></div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">No reputation summary available.</p>
+                    )}
+                  </div>
+                  <div className="rounded border border-cyan-400/20 bg-cyan-400/5 p-3">
+                    <p className="text-[10px] uppercase tracking-wider text-cyan-400/70 mb-2">Validation Summary</p>
+                    {trustSummary.validation ? (
+                      <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                        <div className="text-gray-300">Avg: <span className="text-cyan-300">{trustSummary.validation.averageScore}</span></div>
+                        <div className="text-gray-300">Total: <span className="text-cyan-300">{trustSummary.validation.totalRequests}</span></div>
+                        <div className="text-gray-300">Validated: <span className="text-cyan-300">{trustSummary.validation.validated}</span></div>
+                        <div className="text-gray-300">Rejected: <span className="text-cyan-300">{trustSummary.validation.rejected}</span></div>
+                        <div className="text-gray-300 col-span-2">Pending: <span className="text-cyan-300">{trustSummary.validation.pending}</span></div>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">No validation summary available.</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -640,6 +802,74 @@ export default function AgentDetailPage({ params }: PageProps) {
                     </span>
                   </div>
 
+                  {/* Venice Reasoning Chain */}
+                  {(() => {
+                    const venice = veniceByProposal.get(Number(vote.proposalId));
+                    if (!venice) return null;
+                    const isE2EE = venice.reasoningModel?.includes("e2ee") || venice.reasoningProvider === "venice";
+                    return (
+                      <div className="mt-2 p-3 bg-[#08080f] rounded border border-violet-500/20">
+                        <div className="flex flex-wrap items-center gap-2 mb-3">
+                          <p className="text-xs text-violet-400 uppercase tracking-wider font-mono">Venice Reasoning Chain</p>
+                          {isE2EE && (
+                            <span className="text-[10px] font-mono text-violet-300 border border-violet-400/30 bg-violet-400/5 px-1.5 py-0.5 rounded">E2EE</span>
+                          )}
+                          <span className="text-[10px] font-mono text-gray-500 border border-gray-700 px-1.5 py-0.5 rounded">
+                            {venice.reasoningModel ?? "e2ee-qwen3-30b-a3b-p"}
+                          </span>
+                          <span className="text-[10px] font-mono text-gray-600">zero data retention</span>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-start gap-2">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-16">Step 1</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Summarize Proposal</p>
+                              <p className="text-xs text-gray-400">Proposal #{vote.proposalId.toString()} — context extracted and structured for evaluation</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-16">Step 2</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Risk Assessment</p>
+                              <p className="text-xs text-gray-400">Treasury, centralization, and alignment risk evaluated against owner values</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-16">Step 3</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Decision</p>
+                              <p className={`text-sm font-bold font-mono ${
+                                venice.decision === "FOR" ? "text-green-400" :
+                                venice.decision === "AGAINST" ? "text-red-400" :
+                                "text-yellow-400"
+                              }`}>
+                                {venice.decision ?? supportLabel(supportNum)}
+                              </p>
+                              {vote.revealed && rationale && (
+                                <p className="text-xs text-gray-300 mt-1">{rationale}</p>
+                              )}
+                              {!vote.revealed && (
+                                <p className="text-[11px] text-gray-600 mt-1 italic">Rationale encrypted via Lit Protocol until voting period ends</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {venice.txHash && (
+                          <div className="mt-3 pt-2 border-t border-gray-800">
+                            <a
+                              href={explorerTx(venice.txHash)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[10px] font-mono text-violet-400/60 hover:text-violet-300"
+                            >
+                              Vote TX: {venice.txHash.slice(0, 18)}… ↗
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {litCiphertext && (
                     <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-purple-500/20">
                       <div className="flex items-center gap-2 mb-2">
@@ -664,7 +894,7 @@ export default function AgentDetailPage({ params }: PageProps) {
                     </div>
                   )}
 
-                  {rationale && (
+                  {rationale && !veniceByProposal.has(Number(vote.proposalId)) && (
                     <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
                       <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
                         {litCiphertext ? "Decrypted Rationale" : "Rationale"}
@@ -679,6 +909,13 @@ export default function AgentDetailPage({ params }: PageProps) {
                           Compare with reasoning hash committed before vote to verify E2EE integrity
                         </p>
                       </div>
+                    </div>
+                  )}
+                  {rationale && veniceByProposal.has(Number(vote.proposalId)) && (
+                    <div className="mt-1 px-3 py-2 rounded border border-gray-800 bg-[#0a0a0f]">
+                      <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
+                      <p className="font-mono text-[10px] text-green-400/60 break-all">{keccak256(toBytes(rationale))}</p>
+                      <p className="text-[10px] text-gray-700 mt-0.5">Pre-vote hash committed onchain — verifies E2EE integrity</p>
                     </div>
                   )}
 

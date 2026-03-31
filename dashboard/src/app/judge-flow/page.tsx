@@ -45,6 +45,15 @@ type JudgeFlowState = {
   events: JudgeEvent[];
 };
 
+type BudgetState = {
+  policy: "normal" | "throttled" | "paused";
+  reasons: string[];
+  parentEthBalance: string;
+  veniceTokens: number;
+  pauseTokens: number;
+  filecoinAvailable: boolean;
+};
+
 const STEP_ORDER = [
   { action: "judge_flow_started", label: "Run queued + started" },
   { action: "judge_child_spawned", label: "Proof child spawned" },
@@ -80,6 +89,7 @@ function shortHash(hash?: string) {
 
 export default function JudgeFlowPage() {
   const [state, setState] = useState<JudgeFlowState>(EMPTY_STATE);
+  const [budget, setBudget] = useState<BudgetState | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +111,19 @@ export default function JudgeFlowPage() {
   useEffect(() => {
     fetchState();
     const interval = setInterval(fetchState, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const fetchBudget = async () => {
+      try {
+        const res = await fetch("/api/budget", { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok) setBudget(data);
+      } catch {}
+    };
+    fetchBudget();
+    const interval = setInterval(fetchBudget, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -144,6 +167,19 @@ export default function JudgeFlowPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          {budget && (
+            <div
+              className={`rounded-lg border px-4 py-2 text-xs font-mono ${
+                budget.policy === "paused"
+                  ? "border-red-400/30 bg-red-400/10 text-red-300"
+                  : budget.policy === "throttled"
+                  ? "border-yellow-400/30 bg-yellow-400/10 text-yellow-300"
+                  : "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+              }`}
+            >
+              Budget {budget.policy} · {budget.parentEthBalance} ETH · Venice {budget.veniceTokens}/{budget.pauseTokens}
+            </div>
+          )}
           <button
             onClick={startRun}
             disabled={starting || state.status === "queued" || state.status === "running"}
@@ -195,6 +231,7 @@ export default function JudgeFlowPage() {
             <div className="font-mono text-gray-300">Respawned child: {state.respawnedChildLabel || "—"}</div>
             <div className="font-mono text-gray-300">Respawn ERC-8004: {state.respawnedChildAgentId || "—"}</div>
             <div className="font-mono text-gray-300">Lineage CID: {state.lineageSourceCid || state.filecoinCid || "—"}</div>
+            <div className="font-mono text-gray-300">Validation Request: {state.validationRequestId || "—"}</div>
           </div>
         </div>
         <div className="rounded-lg border border-gray-800 bg-[#0d0d14] p-4">
@@ -289,6 +326,24 @@ export default function JudgeFlowPage() {
                 </div>
                 {step.event?.details && (
                   <div className="mt-2 text-xs text-gray-400">{step.event.details}</div>
+                )}
+                {(step.event?.validationRequestId || (step.event?.txHashes && step.event.txHashes.length > 1)) && (
+                  <div className="mt-2 flex flex-wrap gap-2 text-[10px] font-mono text-gray-500">
+                    {step.event.validationRequestId && (
+                      <span>request #{step.event.validationRequestId}</span>
+                    )}
+                    {step.event.txHashes?.slice(1).map((hash) => (
+                      <a
+                        key={hash}
+                        href={explorerTx(hash)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded border border-blue-400/20 bg-blue-400/5 px-2 py-1 text-[10px] font-mono text-blue-300"
+                      >
+                        {shortHash(hash)} ↗
+                      </a>
+                    ))}
+                  </div>
                 )}
               </div>
             );

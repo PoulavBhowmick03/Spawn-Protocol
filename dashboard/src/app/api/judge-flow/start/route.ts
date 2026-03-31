@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 const CONTROL_PATH =
   process.env.JUDGE_FLOW_CONTROL_PATH ||
   join(process.cwd(), "..", "judge_flow_state.json");
+const BUDGET_STATE_PATH = join(process.cwd(), "..", "runtime_budget_state.json");
 
 const EMPTY_STATE = {
   runId: null,
@@ -28,6 +29,19 @@ export async function POST(request: Request) {
         { error: `Judge flow already ${current.status}`, current },
         { status: 409 }
       );
+    }
+
+    if (existsSync(BUDGET_STATE_PATH)) {
+      const budget = JSON.parse(readFileSync(BUDGET_STATE_PATH, "utf-8"));
+      if (budget?.pauseJudgeFlow) {
+        return NextResponse.json(
+          {
+            error: `Judge flow paused by runtime budget policy (${budget.policy || "paused"})`,
+            budget,
+          },
+          { status: 409 }
+        );
+      }
     }
 
     const runId = body.runId || `judge-${Date.now()}`;

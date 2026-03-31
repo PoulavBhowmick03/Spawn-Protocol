@@ -252,12 +252,13 @@ Operational details:
 | Type | Piece CID | Timestamp |
 |------|-----------|-----------|
 | Agent log snapshot | [`bafkzcibe6tvqqdummqlqkuzfj6p26agdz4l4ve6ram6vp6uvibdjhz4jux4ustspg4`](https://calibration.filscan.io/en/cid/bafkzcibe6tvqqdummqlqkuzfj6p26agdz4l4ve6ram6vp6uvibdjhz4jux4ustspg4) | 2026-03-31 |
+| Swarm state snapshot | [`bafkzcibd6alarh63xutmenadqshebqac5b3wa2wnrbekwxw3z3nvrxbr7rwuy4ys`](https://calibration.filscan.io/en/cid/bafkzcibd6alarh63xutmenadqshebqac5b3wa2wnrbekwxw3z3nvrxbr7rwuy4ys) | 2026-03-31 |
 | Judge termination report | [`bafkzcibdwmeaoosgc5atz3ea6zg4sgajkk64gnm6do3ocvy7w6iu2aq65gji74q7`](https://calibration.filscan.io/en/cid/bafkzcibdwmeaoosgc5atz3ea6zg4sgajkk64gnm6do3ocvy7w6iu2aq65gji74q7) | 2026-03-31T18:57Z |
 | Judge termination report | [`bafkzcibdyyeap67ttem7n7sy7kcokvt3rknl5wl2slx2n7c3s4x67vkgys5jbayy`](https://calibration.filscan.io/en/cid/bafkzcibdyyeap67ttem7n7sy7kcokvt3rknl5wl2slx2n7c3s4x67vkgys5jbayy) | 2026-03-31T20:07Z |
 | Judge termination report | [`bafkzcibd2ueaplkrcruuyfa4r7tkxpyxwytlpmax72yqgdhrkmzpky4j6nvlvez3`](https://calibration.filscan.io/en/cid/bafkzcibd2ueaplkrcruuyfa4r7tkxpyxwytlpmax72yqgdhrkmzpky4j6nvlvez3) | 2026-03-31T18:51Z |
 | Judge termination report | [`bafkzcibdqacqppifmj4vdljgaqow3tkjs5qlpj2yvjnadfsjkxt26iceq34jf6yi`](https://calibration.filscan.io/en/cid/bafkzcibdqacqppifmj4vdljgaqow3tkjs5qlpj2yvjnadfsjkxt26iceq34jf6yi) | 2026-03-31T18:20Z |
 
-All CIDs stored via `@filoz/synapse-sdk` against Filecoin Calibration Testnet (chain 314159). Viewable in the dashboard at `/storage/<cid>`.
+All CIDs stored via `@filoz/synapse-sdk` against Filecoin Calibration Testnet (chain 314159). Viewable in the dashboard at `/storage/<cid>` or via `/api/storage?cid=<pieceCid>`.
 
 This branch fits Filecoin's core interests directly:
 
@@ -385,6 +386,24 @@ Operational notes:
 - ERC-8004 validation remains integrated in the runtime, but `judge_validation_written` is currently best-effort in judge mode and does not block a successful proof run when the validation path is unavailable
 - the resulting run id can be searched in the execution log UI and replayed from the `/judge-flow` page
 
+## Runtime Budget Awareness
+
+The PL Genesis branch now includes an explicit runtime budget controller in `agent/src/swarm.ts`.
+
+- parent ETH balance, Venice token usage, active child count, and Filecoin availability are checkpointed into `runtime_budget_state.json`
+- the dashboard reads this through `/api/budget` and surfaces the current policy live
+- policy modes:
+  - `normal`: all loops active
+  - `throttled`: new proposal creation and discovery mirroring pause
+  - `paused`: proposal creation pauses, dynamic scaling pauses, and new canonical judge runs are blocked
+- current thresholds are controlled by environment variables:
+  - `RUNTIME_BUDGET_WARNING_ETH`
+  - `RUNTIME_BUDGET_PAUSE_ETH`
+  - `COMPUTE_BUDGET_WARNING_TOKENS`
+  - `COMPUTE_BUDGET_PAUSE_TOKENS`
+
+This is intentionally not a cosmetic meter. It changes runtime behavior when the swarm gets too close to its spending or compute limits.
+
 ## Deployed Contracts
 
 ### Base Sepolia `84532`
@@ -450,6 +469,10 @@ FILECOIN_RPC_URL=https://api.calibration.node.glif.io/rpc/v1
 JUDGE_FLOW_ENABLED=true
 JUDGE_FLOW_CONTROL_PATH=./judge_flow_state.json
 JUDGE_FLOW_TIMEOUT_MS=90000
+RUNTIME_BUDGET_WARNING_ETH=0.03
+RUNTIME_BUDGET_PAUSE_ETH=0.015
+COMPUTE_BUDGET_WARNING_TOKENS=200000
+COMPUTE_BUDGET_PAUSE_TOKENS=350000
 
 TALLY_API_KEY=
 BOARDROOM_API_KEY=
@@ -470,6 +493,7 @@ Notes:
 - Without `FILECOIN_PRIVATE_KEY`, the runtime still works but Filecoin uploads are disabled.
 - `JUDGE_FLOW_ENABLED=false` disables the judge controller entirely.
 - `JUDGE_FLOW_CONTROL_PATH` defaults to `./judge_flow_state.json` at the repo root.
+- `runtime_budget_state.json` is written automatically by the swarm and read by the dashboard through `/api/budget`.
 - Filebase keys are only used as an IPFS fallback path.
 - Tally and Boardroom keys improve discovery coverage but are optional.
 

@@ -832,6 +832,9 @@ export interface AgentTrustDecision {
 }
 
 const trustDecisionCache = new Map<string, { expiresAt: number; decision: AgentTrustDecision }>();
+const resolvedAgentIdCache = new Map<string, bigint>();
+const AGENT_ID_SCAN_START = Number(process.env.ERC8004_SCAN_START || 2200);
+const AGENT_ID_SCAN_END = Number(process.env.ERC8004_SCAN_END || 4000);
 
 /**
  * Evaluate whether an agent should retain autonomous voting authority.
@@ -912,4 +915,45 @@ export function trackAgentId(label: string, agentId: bigint) {
  */
 export function getAgentIdByLabel(label: string): bigint | undefined {
   return agentIdByLabel.get(label);
+}
+
+export async function resolveAgentIdByLabelOnchain(label: string): Promise<bigint | undefined> {
+  const cached = agentIdByLabel.get(label) || resolvedAgentIdCache.get(label);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const baseLabel = label.replace(/-v\d+$/, "");
+  const targets = new Set([
+    `spawn://${label}.spawn.eth`.toLowerCase(),
+    `spawn://${baseLabel}.spawn.eth`.toLowerCase(),
+  ]);
+
+  for (let batchStart = AGENT_ID_SCAN_START; batchStart <= AGENT_ID_SCAN_END; batchStart += 20) {
+    const batchEnd = Math.min(batchStart + 19, AGENT_ID_SCAN_END);
+    const ids = Array.from({ length: batchEnd - batchStart + 1 }, (_, index) => BigInt(batchStart + index));
+    const uris = await Promise.all(
+      ids.map((agentId) =>
+        publicClient.readContract({
+          address: AGENT_REGISTRY_ADDRESS,
+          abi: ERC8004_ABI,
+          functionName: "agentURI",
+          args: [agentId],
+        }).catch(() => null)
+      )
+    );
+
+    for (let i = 0; i < ids.length; i++) {
+      const uri = (uris[i] as string | null)?.toLowerCase();
+      if (!uri || !targets.has(uri)) continue;
+      trackAgentId(label, ids[i]);
+      resolvedAgentIdCache.set(label, ids[i]);
+      if (baseLabel !== label) {
+        resolvedAgentIdCache.set(baseLabel, ids[i]);
+      }
+      return ids[i];
+    }
+  }
+
+  return undefined;
 }

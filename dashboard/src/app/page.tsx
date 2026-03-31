@@ -36,6 +36,24 @@ const ERC8004_TOKEN_ABI = [
   { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const;
 
+type BudgetState = {
+  policy: "normal" | "throttled" | "paused";
+  reasons: string[];
+  parentEthBalance: string;
+  warningEth: string;
+  pauseEth: string;
+  veniceCalls: number;
+  veniceTokens: number;
+  warningTokens: number;
+  pauseTokens: number;
+  activeChildren: number;
+  filecoinAvailable: boolean;
+  pauseProposalCreation: boolean;
+  pauseScaling: boolean;
+  pauseJudgeFlow: boolean;
+  lastUpdatedAt?: string | null;
+};
+
 // Module-level cache for ERC-8004 scan results — survives strict mode double-mounts
 let erc8004IdsCache = new Map<string, bigint>();
 
@@ -46,6 +64,7 @@ export default function SwarmPage() {
   const [filecoinStateCid, setFilecoinStateCid] = useState<string | null>(null);
   const [filecoinAgentLogCid, setFilecoinAgentLogCid] = useState<string | null>(null);
   const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
+  const [budgetState, setBudgetState] = useState<BudgetState | null>(null);
   // Maps child contract address (lowercase) → ERC-8004 agentId
   // Module-level cache to survive strict mode double-mounts
   const [erc8004Ids, setErc8004Ids] = useState<Map<string, bigint>>(erc8004IdsCache);
@@ -88,6 +107,19 @@ export default function SwarmPage() {
     const interval = setInterval(fetch, 60_000);
     return () => clearInterval(interval);
   }, [client]);
+
+  useEffect(() => {
+    const fetchBudget = async () => {
+      try {
+        const res = await fetch("/api/budget", { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok) setBudgetState(data);
+      } catch {}
+    };
+    fetchBudget();
+    const interval = setInterval(fetchBudget, 15000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Fetch delegation hashes + revocation status for all children (parallel)
   useEffect(() => {
@@ -360,6 +392,50 @@ export default function SwarmPage() {
             <span className="text-[10px] font-mono text-indigo-400/60">{ERC8004_REGISTRY.slice(0, 6)}…{ERC8004_REGISTRY.slice(-4)}</span>
             <span className="text-indigo-400 text-xs">↗</span>
           </a>
+          {budgetState && (
+            <div
+              className={`flex items-center gap-2 border rounded-lg px-4 py-2 ${
+                budgetState.policy === "paused"
+                  ? "border-red-400/30 bg-red-400/5"
+                  : budgetState.policy === "throttled"
+                  ? "border-yellow-400/30 bg-yellow-400/5"
+                  : "border-emerald-400/30 bg-emerald-400/5"
+              }`}
+              title="Runtime compute and execution budget policy tracked by the live swarm"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  budgetState.policy === "paused"
+                    ? "bg-red-400"
+                    : budgetState.policy === "throttled"
+                    ? "bg-yellow-400"
+                    : "bg-emerald-400"
+                }`}
+              />
+              <span
+                className={`text-sm font-semibold ${
+                  budgetState.policy === "paused"
+                    ? "text-red-300"
+                    : budgetState.policy === "throttled"
+                    ? "text-yellow-300"
+                    : "text-emerald-300"
+                }`}
+              >
+                Budget {budgetState.policy}
+              </span>
+              <span className="text-xs font-mono text-gray-300">
+                {budgetState.parentEthBalance} ETH
+              </span>
+              <span className="text-[10px] font-mono text-gray-500">
+                Venice {budgetState.veniceTokens}/{budgetState.pauseTokens}
+              </span>
+              {budgetState.reasons.length > 0 && (
+                <span className="text-[10px] font-mono text-gray-500">
+                  {budgetState.reasons.join(", ")}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         </>

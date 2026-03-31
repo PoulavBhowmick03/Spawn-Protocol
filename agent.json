@@ -13,13 +13,13 @@
       "id": "parent",
       "name": "Spawn Parent Agent",
       "type": "parent",
-      "description": "Spawns child agents, evaluates alignment via Venice AI, terminates misaligned children, respawns replacements with Filecoin-backed lineage memory, and can run the canonical judge flow. Manages ENS labels, ERC-8004 identities across all 3 registries, and MetaMask ERC-7715 delegations.",
+      "description": "Spawns child agents, evaluates alignment via Venice AI, terminates misaligned children, respawns replacements with Filecoin-backed lineage memory, and can run the canonical judge flow. Manages ENS labels, ERC-8004 identities across all 3 registries, MetaMask ERC-7715 delegations, and a live compute/budget policy that can throttle proposal creation or pause non-essential loops.",
       "entrypoint": "agent/src/swarm.ts",
       "agent_loops": {
         "planning": "Read owner governance values from ParentTreasury, enumerate active children from SpawnFactory, resolve ENS labels, fetch voting histories, and poll judge-flow control state when enabled",
         "execution": "Spawn children via SpawnFactory EIP-1167 clones, fund child wallets, register ENS labels, create ERC-8004 identities, issue ERC-7715 scoped delegations, and seed judge-marked proof proposals when judge mode is requested",
-        "verification": "Evaluate each child's voting record against owner values via Venice AI (0-100 alignment score), write score to ChildGovernor.updateAlignmentScore(), submit feedback to ReputationRegistry, attempt validation in ValidationRegistry, and require Filecoin termination receipts in judge mode",
-        "decision": "If alignment < 40 for 2 cycles: terminate (revoke delegation, recall onchain, generate post-mortem, store Filecoin termination report, optionally mirror lineage CID to ENS text records), respawn with lineage memory injected as Venice system context"
+        "verification": "Evaluate each child's voting record against owner values via Venice AI (0-100 alignment score), write score to ChildGovernor.updateAlignmentScore(), submit feedback to ReputationRegistry, emit ValidationRegistry receipts for vote and alignment verification, and require Filecoin termination receipts in judge mode",
+        "decision": "If alignment < 40 for 2 cycles: terminate (revoke delegation, recall onchain, generate post-mortem, store Filecoin termination report, optionally mirror lineage CID to ENS text records), respawn with lineage memory injected as Venice system context. If runtime budget thresholds are crossed: throttle proposal creation or pause non-essential loops."
       },
       "capabilities": [
         "spawn_child_agents",
@@ -28,6 +28,7 @@
         "respawn_children",
         "inject_lineage_memory",
         "run_canonical_judge_flow",
+        "track_runtime_budget",
         "register_ens_subdomain",
         "register_erc8004_identity",
         "submit_reputation_feedback",
@@ -142,7 +143,7 @@
     "e2ee": true,
     "note": "E2EE activated via model ID prefix (e2ee-), not a flag. Venice is the ONLY inference backend — remove it and the swarm is braindead.",
     "reasoningHashCommitment": "keccak256 of Venice output committed onchain before vote, revealed post-deadline via Lit Protocol",
-    "usageTracking": "tokens counted per call, logged per cycle in agent_log.json",
+    "usageTracking": "tokens counted per call, logged per cycle in agent_log.json, and used by the runtime budget controller to throttle or pause non-essential loops",
     "callTypes": [
       "summarizeProposal — extract key points before voting",
       "assessProposalRisk — evaluate treasury/centralization/alignment risk",

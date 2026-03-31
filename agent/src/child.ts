@@ -1,7 +1,7 @@
 import { publicClient, walletClient, account, celoPublicClient } from "./chain.js";
 import { createWalletClientFromKey } from "./wallet-manager.js";
 import { ChildGovernorABI, MockGovernorABI } from "./abis.js";
-import { reasonAboutProposal, summarizeProposal, assessProposalRisk } from "./venice.js";
+import { reasonAboutProposal, summarizeProposal, assessProposalRisk, getVeniceMetrics } from "./venice.js";
 import { initLit, encryptRationale, decryptRationale, disconnectLit } from "./lit.js";
 import { getDelegationsForChild, redeemVoteDelegation, importDelegation } from "./delegation.js";
 import { getAgentTrustDecision } from "./identity.js";
@@ -287,6 +287,7 @@ async function childCycle(
       console.log(
         `[Child:${childLabel}] Evaluating proposal ${i}: ${proposal.description}`
       );
+      const veniceBefore = getVeniceMetrics();
 
       // Venice reasoning step 1: Summarize proposal
       try {
@@ -430,6 +431,8 @@ async function childCycle(
             decision,
             litEncrypted: usedLit,
             reasoningHash: reasoningHash.slice(0, 18),
+            veniceTokensUsed: Math.max(0, getVeniceMetrics().totalTokens - veniceBefore.totalTokens),
+            veniceCallsUsed: Math.max(0, getVeniceMetrics().totalCalls - veniceBefore.totalCalls),
             ...judgePayload,
           },
           { txHash: receipt.transactionHash, ...judgePayload },
