@@ -199,6 +199,25 @@ export async function storeSwarmStateSnapshot(state: {
   terminatedThisCycle: string[];
   spawnedThisCycle: string[];
   ethBalance: string;
+  runtimeBudget?: {
+    policy: string;
+    reasons: string[];
+    context: string;
+    parentEthBalanceWei: string;
+    parentEthBalance: string;
+    warningEth: string;
+    pauseEth: string;
+    veniceCalls: number;
+    veniceTokens: number;
+    warningTokens: number;
+    pauseTokens: number;
+    activeChildren: number;
+    filecoinAvailable: boolean;
+    pauseProposalCreation: boolean;
+    pauseScaling: boolean;
+    pauseJudgeFlow: boolean;
+    lastUpdatedAt: string;
+  };
 }): Promise<string | null> {
   try {
     return await uploadToFilecoin({

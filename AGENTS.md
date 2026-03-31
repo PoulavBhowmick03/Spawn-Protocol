@@ -62,6 +62,9 @@ Latest proof URL:
 ### Filecoin Links ✅
 Internal `/storage/[cid]` viewer replaces broken Filscan links throughout dashboard.
 
+### Runtime Budget Fallback ✅
+`/api/budget` now prefers the local `runtime_budget_state.json`, but falls back to the latest Filecoin-backed `filecoin.state` swarm snapshot via ENS + `/api/storage` when the dashboard is running separately from the swarm. New snapshots include `runtimeBudget` fields.
+
 ### README ✅
 Rewritten as clean hackathon submission (April 1). Removed draft text, track sections are direct and factual.
 
@@ -83,6 +86,7 @@ Rewritten as clean hackathon submission (April 1). Removed draft text, track sec
 - ERC-8004 validation is best-effort in judge mode and does not block a successful proof run.
 - End-to-end judge flow takes ~204–237s on live infra. `JUDGE_FLOW_TIMEOUT_MS` should be ≥ 300000.
 - Synapse piece CIDs must NOT be linked to Filscan. Use `/storage/[cid]` internal viewer only.
+- The Filecoin budget fallback needs one fresh swarm cycle after this patch before remote-only deployments will see `runtimeBudget` in the latest `filecoin.state` snapshot.
 
 ---
 

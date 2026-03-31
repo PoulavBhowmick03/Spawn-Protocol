@@ -2616,6 +2616,7 @@ async function main() {
         terminatedThisCycle: [],
         spawnedThisCycle: [],
         ethBalance: ethBal.toString(),
+        runtimeBudget: { ...runtimeBudgetState },
       });
       if (snapshotCid) {
         console.log(`[Filecoin] Swarm state snapshot: ${snapshotCid}`);

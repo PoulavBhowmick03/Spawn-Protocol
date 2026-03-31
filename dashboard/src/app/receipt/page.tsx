@@ -9,13 +9,22 @@ function formatTime(value?: string) {
   return new Date(value).toLocaleString();
 }
 
-function statusClass(status: string) {
-  if (status === "completed") return "border-emerald-400/30 bg-emerald-400/10 text-emerald-300";
-  if (status === "failed") return "border-red-400/30 bg-red-400/10 text-red-300";
-  if (status === "running" || status === "queued") {
-    return "border-amber-400/30 bg-amber-400/10 text-amber-300";
-  }
-  return "border-gray-700 bg-gray-900 text-gray-400";
+function StatusPill({ status }: { status: string }) {
+  const cls =
+    status === "completed" ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" :
+    status === "failed"    ? "border-red-400/30 bg-red-400/10 text-red-300" :
+    status === "running" || status === "queued" ? "border-amber-400/30 bg-amber-400/10 text-amber-300" :
+    "border-gray-700 bg-gray-900 text-gray-500";
+  return (
+    <span className={`rounded border px-2 py-1 text-[10px] font-mono uppercase tracking-wider ${cls}`}>
+      {status}
+    </span>
+  );
+}
+
+function shortHash(hash?: string) {
+  if (!hash) return null;
+  return `${hash.slice(0, 8)}…${hash.slice(-4)}`;
 }
 
 export default function ReceiptIndexPage() {
@@ -23,96 +32,128 @@ export default function ReceiptIndexPage() {
 
   return (
     <div className="p-4 md:p-8">
-      <div className="mb-8 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+
+      {/* Header */}
+      <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <div className="mb-2 inline-flex rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-indigo-300">
-            Judge Receipt Index
+          <div className="mb-2 inline-flex items-center gap-2 rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-indigo-300">
+            ERC-8004 Proof Bundles
           </div>
-          <h1 className="text-2xl font-mono font-bold text-gray-100 tracking-tight">
+          <h1 className="text-2xl font-mono font-bold text-indigo-300 tracking-tight">
             Receipts
           </h1>
           <p className="mt-1 text-sm text-gray-500">
-            Discoverable proof bundles for recent canonical runs. Open any run to inspect ERC-8004 receipts, Filecoin memory, and lineage in one place.
+            Verifiable lifecycle proofs for canonical judge runs — identity, vote, trust receipts, Filecoin memory, and lineage.
           </p>
         </div>
         <Link
           href="/judge-flow"
-          className="w-fit rounded-lg border border-gray-700 px-4 py-2 text-sm font-mono text-gray-300 transition hover:border-gray-500"
+          className="w-fit rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-2 text-sm font-mono text-amber-300 transition hover:bg-amber-400/15"
         >
-          Open Judge Flow
+          Start Canonical Run
         </Link>
       </div>
 
       {receipts.length === 0 ? (
-        <div className="rounded-xl border border-gray-800 bg-[#0d0d14] p-6 text-sm text-gray-500">
-          No judge receipts found yet. Run a canonical flow from <span className="font-mono text-gray-300">/judge-flow</span>.
+        <div className="rounded-xl border border-gray-800 bg-[#0d0d14] p-8 text-center">
+          <div className="mb-2 text-2xl">◇</div>
+          <div className="font-mono text-sm text-gray-400">No judge receipts found yet.</div>
+          <div className="mt-1 text-xs text-gray-600">
+            Run a canonical flow from{" "}
+            <Link href="/judge-flow" className="text-amber-400 hover:underline">/judge-flow</Link>.
+          </div>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {receipts.map((receipt) => (
             <Link
               key={receipt.runId}
               href={`/receipt/${encodeURIComponent(receipt.runId)}`}
-              className="block rounded-xl border border-gray-800 bg-[#0d0d14] p-4 transition hover:border-gray-600"
+              className="block rounded-xl border border-gray-800 bg-[#0d0d14] p-4 transition hover:border-gray-600 hover:bg-[#101018]"
             >
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm text-gray-100">{receipt.runId}</span>
-                    <span className={`rounded border px-2 py-1 text-[10px] font-mono uppercase tracking-wider ${statusClass(receipt.status)}`}>
-                      {receipt.status}
-                    </span>
+                <div className="min-w-0 flex-1">
+
+                  {/* Run ID + status badges */}
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm text-gray-100 truncate max-w-xs">{receipt.runId}</span>
+                    <StatusPill status={receipt.status} />
                     <span className="rounded border border-blue-400/20 bg-blue-400/5 px-2 py-1 text-[10px] font-mono text-blue-300">
                       {receipt.governor}
                     </span>
                     {receipt.filecoinCid && (
-                      <span className="rounded border border-green-400/20 bg-green-400/5 px-2 py-1 text-[10px] font-mono text-green-300">
+                      <span className="rounded border border-green-400/30 bg-green-400/10 px-2 py-1 text-[10px] font-mono text-green-300">
                         Filecoin
                       </span>
                     )}
                     {receipt.validationRequestId && (
                       <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 text-[10px] font-mono text-indigo-300">
-                        validation #{receipt.validationRequestId}
+                        ERC-8004 #{receipt.validationRequestId}
+                      </span>
+                    )}
+                    {receipt.decision && (
+                      <span className={`rounded border px-2 py-1 text-[10px] font-mono ${
+                        receipt.decision === "FOR"     ? "border-green-400/20 bg-green-400/5 text-green-300" :
+                        receipt.decision === "AGAINST" ? "border-red-400/20 bg-red-400/5 text-red-300" :
+                        "border-yellow-400/20 bg-yellow-400/5 text-yellow-300"
+                      }`}>
+                        {receipt.decision}
                       </span>
                     )}
                   </div>
 
-                  <div className="grid gap-2 text-sm text-gray-300 md:grid-cols-2 xl:grid-cols-4">
-                    <div className="font-mono">Proposal: {receipt.proposalId || "—"}</div>
-                    <div className="font-mono">Decision: {receipt.decision || "—"}</div>
-                    <div className="font-mono">Proof ERC-8004: {receipt.proofChildAgentId || "—"}</div>
-                    <div className="font-mono">Respawn ERC-8004: {receipt.respawnedChildAgentId || "—"}</div>
-                    <div className="font-mono">Started: {formatTime(receipt.startedAt)}</div>
-                    <div className="font-mono">Completed: {formatTime(receipt.completedAt)}</div>
-                    <div className="font-mono">
-                      Duration: {receipt.durationMs ? `${(receipt.durationMs / 1000).toFixed(1)}s` : "—"}
-                    </div>
-                    <div className="font-mono">Events: {receipt.events.length}</div>
+                  {/* Key fields grid */}
+                  <div className="grid gap-x-6 gap-y-1 text-xs font-mono text-gray-500 md:grid-cols-2 xl:grid-cols-4">
+                    <div>Proposal: <span className="text-gray-300">{receipt.proposalId || "—"}</span></div>
+                    <div>Proof ERC-8004: <span className="text-indigo-300">{receipt.proofChildAgentId ? `#${receipt.proofChildAgentId}` : "—"}</span></div>
+                    <div>Respawn ERC-8004: <span className="text-indigo-300">{receipt.respawnedChildAgentId ? `#${receipt.respawnedChildAgentId}` : "—"}</span></div>
+                    <div>Duration: <span className="text-gray-300">{receipt.durationMs ? `${(receipt.durationMs / 1000).toFixed(1)}s` : "—"}</span></div>
+                    <div>Started: <span className="text-gray-300">{formatTime(receipt.startedAt)}</span></div>
+                    <div>Completed: <span className="text-gray-300">{formatTime(receipt.completedAt)}</span></div>
+                    <div>Events: <span className="text-gray-300">{receipt.events.length}</span></div>
+                    <div>Venice calls: <span className="text-violet-300">{receipt.veniceCallsUsed ?? "—"}</span></div>
                   </div>
+
+                  {/* Tx hash strip */}
+                  {[receipt.proposalTxHash, receipt.voteTxHash, receipt.reputationTxHash, receipt.terminationTxHash, receipt.respawnTxHash]
+                    .filter(Boolean).length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {[
+                        { label: "Proposal",    hash: receipt.proposalTxHash },
+                        { label: "Vote",        hash: receipt.voteTxHash },
+                        { label: "Reputation",  hash: receipt.reputationTxHash },
+                        { label: "Terminate",   hash: receipt.terminationTxHash },
+                        { label: "Respawn",     hash: receipt.respawnTxHash },
+                      ]
+                        .filter((item): item is { label: string; hash: string } => Boolean(item.hash))
+                        .map((item) => (
+                          <span key={`${item.label}-${item.hash}`}
+                            className="rounded border border-blue-400/20 bg-blue-400/5 px-2 py-0.5 text-[10px] font-mono text-blue-300">
+                            {item.label}: {shortHash(item.hash)}
+                          </span>
+                        ))}
+                    </div>
+                  )}
+
+                  {receipt.failureReason && (
+                    <div className="mt-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs font-mono text-red-300">
+                      {receipt.failureReason}
+                    </div>
+                  )}
                 </div>
 
-                <div className="flex flex-wrap gap-2 lg:justify-end">
-                  <span className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs font-mono text-gray-300">
+                {/* Right side */}
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-3 py-1.5 text-xs font-mono text-indigo-300">
                     Open Receipt ↗
                   </span>
                   {receipt.filecoinCid && (
-                    <span className="rounded border border-green-400/20 bg-green-400/5 px-2 py-1 text-xs font-mono text-green-300">
-                      {receipt.filecoinCid.slice(0, 16)}…
+                    <span className="text-[10px] font-mono text-green-400/60 max-w-[140px] truncate">
+                      {receipt.filecoinCid.slice(0, 20)}…
                     </span>
                   )}
                 </div>
               </div>
-
-              {receipt.filecoinCid && (
-                <div className="mt-3 text-xs font-mono text-gray-500">
-                  Storage: {storageViewerPath(receipt.filecoinCid)}
-                </div>
-              )}
-              {receipt.failureReason && (
-                <div className="mt-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-300">
-                  {receipt.failureReason}
-                </div>
-              )}
             </Link>
           ))}
         </div>
