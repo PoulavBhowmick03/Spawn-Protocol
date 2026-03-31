@@ -9,8 +9,8 @@ import { useChainContext } from "@/context/ChainContext";
 
 // Known Filecoin Calibration CIDs — stored during live swarm runs.
 // Used as fallbacks when ENS text records haven't been updated yet (swarm not running).
-const KNOWN_FILECOIN_STATE_CID = "bafkzcibe6tvqqdummqlqkuzfj6p26agdz4l4ve6ram6vp6uvibdjhz4jux4ustspg4";
-const KNOWN_FILECOIN_LOG_CID   = "bafkzcibe6tvqqdummqlqkuzfj6p26agdz4l4ve6ram6vp6uvibdjhz4jux4ustspg4";
+const KNOWN_FILECOIN_STATE_CID = "bafkzcibewtrqqdvlybjzqok2q5dgbdiddltdhj5asyhfnavmvowvqpeuckuuraq4ce";
+const KNOWN_FILECOIN_LOG_CID   = "bafkzcibewtrqqdvlybjzqok2q5dgbdiddltdhj5asyhfnavmvowvqpeuckuuraq4ce";
 // Judge flow termination report CIDs (Filecoin Calibration, Synapse SDK)
 const JUDGE_TERMINATION_CIDS = [
   { runId: "judge-1774983203955", cid: "bafkzcibdwmeaoosgc5atz3ea6zg4sgajkk64gnm6do3ocvy7w6iu2aq65gji74q7", ts: "2026-03-31T18:57Z" },
