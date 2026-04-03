@@ -725,14 +725,8 @@ async function initChain(config: ChainConfig) {
         const delegationRecord = await createVotingDelegation(delegationTarget, childWallet.address as `0x${string}`, 100, childName);
         // Store by label so spawnChildProcess can pass it to the child via env var
         storeDelegationForChild(childName, delegationRecord);
-        // Authorize DeleGator as operator so DelegationManager redemptions pass onlyAuthorized
-        const deleGatorAddrInit = getDeleGatorAddress();
-        if (deleGatorAddrInit && spawnedChildAddr) {
-          try {
-            await config.sendTx({ address: spawnedChildAddr, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrInit] });
-            console.log(`[${config.name}] DeleGator authorized as operator for ${childName}`);
-          } catch (opErr: any) { console.log(`[${config.name}] setOperator for ${childName}: ${opErr?.message?.slice(0, 60)}`); }
-        }
+        // Keep child wallet as operator (not DeleGator) — DeleGator-as-operator breaks key
+        // recovery after restart and forces all children to share the parent wallet nonce.
         console.log(`[${config.name}] Delegation created for ${childName}: hash=${delegationRecord.delegationHash.slice(0, 18)}... (target: ${delegationTarget.slice(0, 10)}...)`);
         logParentAction("delegation_granted", {
           chain: config.name, child: childName, dao: gov.name,
@@ -774,15 +768,16 @@ async function initChain(config: ChainConfig) {
       let childKey = childWalletKeys.get(child.ensLabel);
 
       // If no key in map, try to find it by deriving wallets and matching the operator
+      let onchainOperator: `0x${string}` | undefined;
       if (!childKey) {
         try {
-          const operator = await config.readClient.readContract({
+          onchainOperator = await config.readClient.readContract({
             address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
           }) as `0x${string}`;
 
-          if (operator && operator !== "0x0000000000000000000000000000000000000000") {
+          if (onchainOperator && onchainOperator !== "0x0000000000000000000000000000000000000000") {
             // If operator is the parent wallet itself, use the parent key directly
-            if (operator.toLowerCase() === account.address.toLowerCase()) {
+            if (onchainOperator.toLowerCase() === account.address.toLowerCase()) {
               childKey = process.env.PRIVATE_KEY as `0x${string}`;
               childWalletKeys.set(child.ensLabel, childKey);
               console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
@@ -790,7 +785,7 @@ async function initChain(config: ChainConfig) {
               // Search derived wallets to find matching key (expanded to 1000)
               for (let id = 0; id < 1000; id++) {
                 const w = deriveChildWallet(id);
-                if (w.address.toLowerCase() === operator.toLowerCase()) {
+                if (w.address.toLowerCase() === onchainOperator.toLowerCase()) {
                   childKey = w.privateKey;
                   childWalletKeys.set(child.ensLabel, childKey);
                   console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
@@ -798,6 +793,36 @@ async function initChain(config: ChainConfig) {
                 }
               }
             }
+          }
+        } catch {}
+      }
+
+      // If we have the child key but the on-chain operator is not the child wallet
+      // (e.g. it was previously set to the DeleGator), reset it so the child can sign
+      // its own transactions without racing on the shared parent wallet nonce.
+      if (childKey) {
+        try {
+          const { privateKeyToAccount } = await import("viem/accounts");
+          const childAcct = privateKeyToAccount(childKey);
+          if (!onchainOperator) {
+            onchainOperator = await config.readClient.readContract({
+              address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
+            }) as `0x${string}`;
+          }
+          if (
+            onchainOperator &&
+            onchainOperator !== "0x0000000000000000000000000000000000000000" &&
+            onchainOperator.toLowerCase() !== childAcct.address.toLowerCase() &&
+            onchainOperator.toLowerCase() !== account.address.toLowerCase()
+          ) {
+            // Operator is DeleGator or something else — reset to child wallet
+            await config.sendTx({
+              address: child.childAddr as `0x${string}`,
+              abi: ChildGovernorABI,
+              functionName: "setOperator",
+              args: [childAcct.address],
+            });
+            console.log(`  ${child.ensLabel}: operator reset to child wallet (was ${onchainOperator.slice(0, 10)}...)`);
           }
         } catch {}
       }
@@ -830,14 +855,7 @@ async function initChain(config: ChainConfig) {
             child.ensLabel
           );
           storeDelegationForChild(child.ensLabel, recoveredDelegation);
-          // Authorize DeleGator as operator so DelegationManager can call castVote on this clone
-          const deleGatorAddrRecover = getDeleGatorAddress();
-          if (deleGatorAddrRecover) {
-            try {
-              await config.sendTx({ address: child.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrRecover] });
-              console.log(`  ${child.ensLabel}: DeleGator authorized as operator`);
-            } catch { /* non-fatal — delegation fallback still works via parent EOA */ }
-          }
+          // Keep child wallet as operator — do NOT set DeleGator as operator here.
           console.log(`  ${child.ensLabel}: delegation recreated (hash=${recoveredDelegation.delegationHash.slice(0, 18)}...)`);
         } catch (delErr: any) {
           console.log(`  ${child.ensLabel}: delegation recreation failed (${delErr?.message?.slice(0, 60)})`);
@@ -2024,10 +2042,7 @@ async function evaluateChainChildren(config: ChainConfig) {
               try {
                 respawnDelegation = await createVotingDelegation(respawned.childAddr as `0x${string}`, newChildWallet.address as `0x${string}`, 100, newLabel);
                 storeDelegationForChild(newLabel, respawnDelegation);
-                const deleGatorAddrRespawn = getDeleGatorAddress();
-                if (deleGatorAddrRespawn) {
-                  try { await config.sendTx({ address: respawned.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrRespawn] }); } catch {}
-                }
+                // Keep child wallet as operator — do NOT set DeleGator as operator.
               } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
               spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContext, respawnDelegation);
               console.log(`  ↻ Child process launched for ${newLabel}`);
@@ -2197,10 +2212,7 @@ async function evaluateChainChildren(config: ChainConfig) {
               try {
                 respawnDelegationFallback = await createVotingDelegation(respawned.childAddr as `0x${string}`, newChildWallet.address as `0x${string}`, 100, newLabel);
                 storeDelegationForChild(newLabel, respawnDelegationFallback);
-                const deleGatorAddrFallback = getDeleGatorAddress();
-                if (deleGatorAddrFallback) {
-                  try { await config.sendTx({ address: respawned.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrFallback] }); } catch {}
-                }
+                // Keep child wallet as operator — do NOT set DeleGator as operator.
               } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
               spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContextFallback, respawnDelegationFallback);
               console.log(`  ↻ Respawned ${newLabel} with process`);
@@ -2320,10 +2332,7 @@ async function dynamicScaling(config: ChainConfig) {
           try {
             scalingDelegation = await createVotingDelegation(newChild.childAddr as `0x${string}`, childWallet.address as `0x${string}`, 100, childName);
             storeDelegationForChild(childName, scalingDelegation);
-            const deleGatorAddrScaling = getDeleGatorAddress();
-            if (deleGatorAddrScaling) {
-              try { await config.sendTx({ address: newChild.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrScaling] }); } catch {}
-            }
+            // Keep child wallet as operator — do NOT set DeleGator as operator.
           } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${childName}: ${(delErr as any)?.message?.slice(0, 60)}`); }
           spawnChildProcess(newChild.childAddr, gov.addr, childName, config.treasury, childWallet.privateKey, config.name, undefined, scalingDelegation);
 

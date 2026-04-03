@@ -149,6 +149,36 @@ Your owner's governance values: ${governanceValues}`;
   }
 }
 
+async function writeWithRetry(
+  wallet: any,
+  readClient: any,
+  request: Record<string, any>,
+  childLabel: string,
+  action: string,
+  retries = 6
+): Promise<`0x${string}`> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const hash = await wallet.writeContract(request);
+      await readClient.waitForTransactionReceipt({ hash });
+      return hash as `0x${string}`;
+    } catch (err: any) {
+      const msg = err?.shortMessage || err?.details || err?.message || String(err);
+      const isRetryable = ["nonce", "underpriced", "already known", "rate limit", "timeout",
+        "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "429"].some((t) => msg.includes(t));
+      if (isRetryable && attempt < retries - 1) {
+        // Randomized backoff to break convoy effect when multiple children retry together
+        const delay = 2000 + attempt * 2000 + Math.floor(Math.random() * 4000);
+        console.log(`[Child:${childLabel}] ${action} retry in ${(delay/1000).toFixed(1)}s (${attempt + 2}/${retries}): ${msg.slice(0, 60)}`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`${action} failed after ${retries} attempts`);
+}
+
 async function childCycle(
   childAddr: `0x${string}`,
   governanceAddr: `0x${string}`,
@@ -393,21 +423,16 @@ async function childCycle(
         }
       }
 
-      // Fallback: direct writeContract call.
-      // On base-sepolia the DeleGator is now operator, so the parent EOA (authorized as
-      // `parent` in onlyAuthorized) is used. On celo-sepolia operator = child wallet still.
+      // Fallback: direct writeContract call using the child's own wallet.
+      // The child wallet is the ChildGovernor operator (set at spawn via spawnChildWithOperator),
+      // so it passes the onlyAuthorized check on every chain.
       if (!usedDelegation) {
-        const fallbackChain = process.env.CHILD_CHAIN || "base-sepolia";
-        const fallbackWallet =
-          fallbackChain === "celo-sepolia"
-            ? childWalletClient
-            : walletClient;
-        hash = await fallbackWallet.writeContract({
+        hash = await writeWithRetry(childWalletClient, readClient, {
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "castVote",
           args: [i, support, encryptedRationale],
-        });
+        }, childLabel, "castVote");
       }
 
       const receipt = await readClient.waitForTransactionReceipt({ hash: hash! });
@@ -508,19 +533,12 @@ async function childCycle(
           console.log(`[Child:${childLabel}] Revealing rationale (Lit init failed — using stored hex)`);
         }
 
-        const revealChain = process.env.CHILD_CHAIN || "base-sepolia";
-        const revealWallet =
-          revealChain === "celo-sepolia"
-            ? childWalletClient
-            : walletClient;
-
-        const hash = await revealWallet.writeContract({
+        const hash = await writeWithRetry(childWalletClient, readClient, {
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "revealRationale",
           args: [proposalId, decryptedRationaleHex],
-        });
-        await readClient.waitForTransactionReceipt({ hash });
+        }, childLabel, "revealRationale");
         console.log(`[Child:${childLabel}] Rationale revealed for proposal ${proposalId} (tx: ${hash})`);
         try { ipcLog(childLabel, "reveal_rationale", { proposalId: Number(proposalId) }, { txHash: hash }, hash); } catch {}
       } catch (revealErr: any) {
