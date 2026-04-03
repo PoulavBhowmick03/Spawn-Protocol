@@ -1,8 +1,12 @@
 /**
- * IPFS Integration — Pin agent execution logs to IPFS via Filebase
+ * IPFS Integration — Fallback storage via Filebase (S3-compatible)
  *
- * Provides verifiable, immutable storage for agent_log.json so that
- * governance actions have a permanent audit trail beyond the local file.
+ * This module is now the FALLBACK layer. Primary storage is Filecoin via
+ * agent/src/filecoin.ts (Synapse SDK → Calibration Testnet).
+ *
+ * Call sites in swarm.ts and logger.ts should prefer filecoin.ts functions.
+ * These IPFS functions are retained for resilience — if Filecoin storage
+ * fails (no balance, network issue), the caller falls back here.
  *
  * Uses Filebase's S3-compatible API (no SDK beyond @aws-sdk/client-s3).
  * Gracefully degrades if FILEBASE_KEY/SECRET/BUCKET are not set.

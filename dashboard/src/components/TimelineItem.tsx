@@ -67,9 +67,9 @@ function formatEventData(event: TimelineEvent): string {
   const d = event.data;
   switch (event.type) {
     case "ChildSpawned":
-      return `Child #${d.childId} spawned — budget: ${d.budget ? (Number(d.budget) / 1e18).toFixed(4) : "?"} ETH`;
+      return `${d.ensLabel ? `${ensName(String(d.ensLabel)) ?? String(d.ensLabel)} spawned` : `Child #${d.childId} spawned`} — budget: ${d.budget ? (Number(d.budget) / 1e18).toFixed(4) : "?"} ETH`;
     case "ChildTerminated":
-      return `Agent #${d.childId} killed for misalignment — ${d.childAddr ? formatAddress(String(d.childAddr)) : "?"} — ${d.fundsReturned && Number(d.fundsReturned) > 0 ? `${(Number(d.fundsReturned) / 1e18).toFixed(4)} ETH returned` : "funds returned"}`;
+      return `${d.ensLabel ? `${ensName(String(d.ensLabel)) ?? String(d.ensLabel)} killed for misalignment` : `Agent #${d.childId} killed for misalignment`} — ${d.childAddr ? formatAddress(String(d.childAddr)) : "wallet pending"} — ${d.fundsReturned && Number(d.fundsReturned) > 0 ? `${(Number(d.fundsReturned) / 1e18).toFixed(4)} ETH returned` : "funds returned"}`;
     case "FundsReallocated":
       return `Reallocated ${d.amount ? (Number(d.amount) / 1e18).toFixed(4) : "?"} ETH from child #${d.fromId} to #${d.toId}`;
     case "ValuesUpdated":

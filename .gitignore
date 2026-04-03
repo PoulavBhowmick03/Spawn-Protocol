@@ -4,6 +4,5 @@ node_modules/
 out/
 cache/
 .DS_Store
-grok.md
-AGENTS.md
 agent/.next/
+judge_flow_state.json

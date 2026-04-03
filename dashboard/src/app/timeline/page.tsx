@@ -28,7 +28,7 @@ export default function TimelinePage() {
               Timeline
             </h1>
             <p className="text-sm text-gray-500 mt-1">
-              Chronological feed of all onchain events
+              Recent chronological feed of swarm and onchain activity
             </p>
           </div>
           {!loading && events.length > 0 && (
@@ -36,7 +36,7 @@ export default function TimelinePage() {
               <div className="text-3xl font-mono font-bold text-purple-400">
                 {events.length}
               </div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider">Events</div>
+              <div className="text-xs text-gray-500 uppercase tracking-wider">Recent Events</div>
             </div>
           )}
         </div>
@@ -167,7 +167,7 @@ export default function TimelinePage() {
 
       <div className="fixed bottom-6 right-6 flex items-center gap-2 bg-[#0d0d14] border border-gray-800 rounded-full px-3 py-1.5">
         <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-ping" style={{ animationDuration: "2s" }} />
-        <span className="text-xs font-mono text-gray-500">Live — 15s</span>
+        <span className="text-xs font-mono text-gray-500">Live — 30s</span>
       </div>
     </div>
   );

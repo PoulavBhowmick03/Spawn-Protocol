@@ -1,350 +1,346 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { type Address } from "viem";
-import { useSwarmData } from "@/hooks/useSwarmData";
+import { useSwarmData, useSwarmMeta } from "@/hooks/useSwarmData";
 import { AgentCard } from "@/components/AgentCard";
-import { CONTRACTS, explorerAddress, formatAddress } from "@/lib/contracts";
+import { CONTRACTS, explorerAddress, formatAddress, storageViewerPath } from "@/lib/contracts";
 import { useChainContext } from "@/context/ChainContext";
 
-// ENS Registry for reading IPFS CID, delegation hashes, subdomain count, and subdomain list
-const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
-const ENS_REGISTRY_ABI = [
-  { type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
-  { type: "function", name: "subdomainCount", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
-  { type: "function", name: "getAllSubdomains", inputs: [], outputs: [{ name: "names", type: "string[]" }, { name: "addresses", type: "address[]" }], stateMutability: "view" },
-] as const;
-
-// ERC-8004 Agent Registry on Base Sepolia
-// Our tokens start at ~2200 on the shared public registry (confirmed via register-all-agents.ts)
 const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address;
-const ERC8004_DEPLOYER = "0x15896e731c51ecB7BdB1447600DF126ea1d6969A".toLowerCase();
-const ERC8004_SCAN_START = 2200;
-const ERC8004_SCAN_END = 2900; // covers 700 slots — well above current agent count
-const ERC8004_TOKEN_ABI = [
-  { type: "function", name: "ownerOf", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
-  { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
-] as const;
-
-// Module-level cache for ERC-8004 scan results — survives strict mode double-mounts
-let erc8004IdsCache = new Map<string, bigint>();
 
 export default function SwarmPage() {
-  const { children, loading, error, justVotedSet } = useSwarmData();
-  const { client, explorerBase } = useChainContext();
-  const [ipfsCid, setIpfsCid] = useState<string | null>(null);
-  const [delegationHashes, setDelegationHashes] = useState<Map<string, string>>(new Map());
-  const [ensSubdomainCount, setEnsSubdomainCount] = useState<number | null>(null);
-  // Maps child contract address (lowercase) → ERC-8004 agentId
-  // Module-level cache to survive strict mode double-mounts
-  const [erc8004Ids, setErc8004Ids] = useState<Map<string, bigint>>(erc8004IdsCache);
+  const { children, loading, error, justVotedSet } = useSwarmData({ includeMeta: false });
+  const { meta } = useSwarmMeta();
+  const { explorerBase } = useChainContext();
+  const {
+    budgetState,
+    delegationHashes,
+    revokedDelegations,
+    filecoinIdentityCids,
+    erc8004Ids,
+    filecoinStateCid,
+  } = meta;
 
-  // Fetch IPFS CID from ENS text record
-  useEffect(() => {
-    client.readContract({
-      address: ENS_REGISTRY,
-      abi: ENS_REGISTRY_ABI,
-      functionName: "getTextRecord",
-      args: ["parent", "ipfs.agent_log"],
-    }).then((cid) => { if (cid) setIpfsCid(cid as string); }).catch(() => {});
-  }, [client]);
-
-  // Fetch delegation hashes + revocation status for all children (parallel)
-  useEffect(() => {
-    const fetchDelegations = async () => {
-      const map = new Map<string, string>();
-      await Promise.all(
-        children.flatMap((child) => [
-          client.readContract({
-            address: ENS_REGISTRY,
-            abi: ENS_REGISTRY_ABI,
-            functionName: "getTextRecord",
-            args: [child.ensLabel, "erc7715.delegation"],
-          }).then((hash) => { if (hash) map.set(child.ensLabel, hash as string); }).catch(() => {}),
-          client.readContract({
-            address: ENS_REGISTRY,
-            abi: ENS_REGISTRY_ABI,
-            functionName: "getTextRecord",
-            args: [child.ensLabel, "erc7715.delegation.revoked"],
-          }).then((revoked) => { if (revoked) map.set(`${child.ensLabel}:revoked`, revoked as string); }).catch(() => {}),
-        ])
-      );
-      if (map.size > 0) setDelegationHashes(map);
-    };
-    if (children.length > 0) fetchDelegations();
-  }, [children, client]);
-
-  // Build childAddr → ERC-8004 agentId map by scanning the registry.
-  // Our tokens live at IDs ~2200+ on the shared public registry.
-  // Match by parsing the ENS label from tokenURI (base64 JSON name field)
-  // and comparing against child.ensLabel. Filter to our deployer address only.
-  // Scan runs ONCE per set of child labels — cached via ref to survive re-renders.
-  const childLabelsKey = children.map((c) => c.ensLabel).sort().join(",");
-  useEffect(() => {
-    if (children.length === 0 || erc8004IdsCache.size > 0) return;
-    const labelToAddr = new Map(children.flatMap((c) => {
-      const label = c.ensLabel.toLowerCase();
-      const base = label.replace(/-v\d+$/, "");
-      const addr = c.childAddr.toLowerCase();
-      return base !== label ? [[label, addr], [base, addr]] as [string, string][] : [[label, addr]] as [string, string][];
-    }));
-    let cancelled = false;
-    (async () => {
-      const map = new Map<string, bigint>();
-      for (let batchStart = ERC8004_SCAN_START; batchStart <= ERC8004_SCAN_END; batchStart += 20) {
-        if (cancelled) return;
-        const batchEnd = Math.min(batchStart + 19, ERC8004_SCAN_END);
-        const ids = Array.from({ length: batchEnd - batchStart + 1 }, (_, i) => BigInt(batchStart + i));
-        const [owners, uris] = await Promise.all([
-          Promise.all(ids.map((id) => client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_TOKEN_ABI, functionName: "ownerOf", args: [id] }).catch(() => null))),
-          Promise.all(ids.map((id) => client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_TOKEN_ABI, functionName: "tokenURI", args: [id] }).catch(() => null))),
-        ]);
-
-        let allNull = true;
-        owners.forEach((owner, idx) => {
-          if (owner) allNull = false;
-          if (!owner || (owner as string).toLowerCase() !== ERC8004_DEPLOYER) return;
-          const rawUri = uris[idx] as string | null;
-          if (!rawUri) return;
-          // tokenURI may be base64-encoded JSON: data:application/json;base64,...
-          let uri = rawUri;
-          if (uri.startsWith("data:application/json;base64,")) {
-            try { uri = JSON.parse(atob(uri.slice(29))).name || uri; } catch {}
-          }
-          const match = uri.match(/^spawn:\/\/([^.?]+)\.spawn\.eth/);
-          if (!match) return;
-          const label = match[1].toLowerCase();
-          const addr = labelToAddr.get(label);
-          if (addr) map.set(addr, ids[idx]);
-        });
-
-        // Stop early if we've passed the minted range or matched everyone
-        if (allNull || map.size >= labelToAddr.size) break;
-      }
-      if (map.size > 0 && !cancelled) {
-        erc8004IdsCache = map;
-        setErc8004Ids(map);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [childLabelsKey, client]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Fetch ENS subdomain count for the badge
-  useEffect(() => {
-    const fetchCount = async () => {
-      try {
-        const count = await client.readContract({
-          address: ENS_REGISTRY,
-          abi: ENS_REGISTRY_ABI,
-          functionName: "subdomainCount",
-        });
-        setEnsSubdomainCount(Number(count));
-      } catch {}
-    };
-    fetchCount();
-    const interval = setInterval(fetchCount, 30_000);
-    return () => clearInterval(interval);
-  }, [client]);
-
-  const activeCount = children.filter((c) => c.active).length;
+  const activeChildren = children.filter((child) => child.active);
+  const terminatedChildren = children.filter((child) => !child.active);
+  const activeCount = activeChildren.length;
   const totalCount = children.length;
-  const totalVotes = children.reduce((sum, c) => sum + Number(c.voteCount), 0);
-  const avgAlignment = activeCount > 0
-    ? Math.round(children.filter((c) => c.active).reduce((sum, c) => sum + Number(c.alignmentScore), 0) / activeCount)
-    : 0;
+  const totalVotes = children.reduce((sum, child) => sum + Number(child.voteCount), 0);
+  const avgAlignment =
+    activeCount > 0
+      ? Math.round(
+          activeChildren.reduce((sum, child) => sum + Number(child.alignmentScore), 0) /
+            activeCount
+        )
+      : 0;
+
+  const activeLabels = new Set(activeChildren.map((child) => child.ensLabel));
+  const activeDelegations = Array.from(delegationHashes.keys()).filter((label) =>
+    activeLabels.has(label)
+  ).length;
+  const revokedDelegationCount = Array.from(revokedDelegations).filter((label) =>
+    activeLabels.has(label)
+  ).length;
 
   return (
     <div className="p-4 sm:p-6 md:p-8">
       <div className="mb-8">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-2 gap-4">
+        <div className="mb-2 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-mono font-bold text-green-400 tracking-tight">
+            <h1 className="text-2xl font-mono font-bold tracking-tight text-green-400">
               Agent Swarm
             </h1>
-            <p className="text-sm text-gray-500 mt-1">
+            <p className="mt-1 text-sm text-gray-500">
               Autonomous DAO governance agents — Base Sepolia
             </p>
           </div>
-          <div className="flex gap-4 sm:gap-6 text-center">
+          <div className="flex gap-4 text-center sm:gap-6">
             <div>
-              <div className="text-2xl sm:text-3xl font-mono font-bold text-green-400">
+              <div className="text-2xl font-mono font-bold text-green-400 sm:text-3xl">
                 {loading ? "…" : activeCount}
               </div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider">Active</div>
+              <div className="text-xs uppercase tracking-wider text-gray-500">Active</div>
             </div>
             <div>
-              <div className="text-2xl sm:text-3xl font-mono font-bold text-blue-400">
+              <div className="text-2xl font-mono font-bold text-blue-400 sm:text-3xl">
                 {loading ? "…" : totalVotes}
               </div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider">Votes</div>
+              <div className="text-xs uppercase tracking-wider text-gray-500">Votes</div>
             </div>
             <div>
-              <div className={`text-2xl sm:text-3xl font-mono font-bold ${avgAlignment >= 70 ? "text-green-400" : avgAlignment >= 40 ? "text-yellow-400" : "text-red-400"}`}>
+              <div
+                className={`text-2xl font-mono font-bold sm:text-3xl ${
+                  avgAlignment >= 70
+                    ? "text-green-400"
+                    : avgAlignment >= 40
+                    ? "text-yellow-400"
+                    : "text-red-400"
+                }`}
+              >
                 {loading ? "…" : `${avgAlignment}%`}
               </div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider">Alignment</div>
+              <div className="text-xs uppercase tracking-wider text-gray-500">Alignment</div>
             </div>
             <div>
-              <div className="text-2xl sm:text-3xl font-mono font-bold text-gray-400">
+              <div className="text-2xl font-mono font-bold text-gray-400 sm:text-3xl">
                 {loading ? "…" : totalCount}
               </div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider">Total</div>
+              <div className="text-xs uppercase tracking-wider text-gray-500">Total</div>
             </div>
           </div>
         </div>
-        <div className="flex gap-4 text-xs font-mono text-gray-600 mt-4 flex-wrap">
+
+        <div className="mt-4 flex flex-wrap gap-4 text-xs font-mono text-gray-600">
           <span>
             SpawnFactory:{" "}
-            <a href={`${explorerBase}/address/${CONTRACTS.SpawnFactory.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+            <a
+              href={`${explorerBase}/address/${CONTRACTS.SpawnFactory.address}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-500 hover:text-gray-300"
+            >
               {formatAddress(CONTRACTS.SpawnFactory.address)}
             </a>
           </span>
           <span>
             MockGovernor:{" "}
-            <a href={explorerAddress(CONTRACTS.MockGovernor.address)} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+            <a
+              href={explorerAddress(CONTRACTS.MockGovernor.address)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-500 hover:text-gray-300"
+            >
               {formatAddress(CONTRACTS.MockGovernor.address)}
             </a>
           </span>
           <span>
             ParentTreasury:{" "}
-            <a href={`${explorerBase}/address/${CONTRACTS.ParentTreasury.address}`} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+            <a
+              href={`${explorerBase}/address/${CONTRACTS.ParentTreasury.address}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-500 hover:text-gray-300"
+            >
               {formatAddress(CONTRACTS.ParentTreasury.address)}
             </a>
           </span>
         </div>
       </div>
 
-      {/* IPFS + Delegation + ENS Status Bar */}
       {!loading && (
-        <>
-        <div className="flex flex-wrap gap-3 mb-6">
-          {ipfsCid && (
+        <div className="mb-6 flex flex-wrap gap-3">
+          {filecoinStateCid ? (
             <a
-              href={`https://ipfs.filebase.io/ipfs/${ipfsCid}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 border border-purple-400/30 bg-purple-400/5 rounded-lg px-4 py-2 hover:bg-purple-400/10 transition-all"
+              href={storageViewerPath(filecoinStateCid)}
+              className="flex items-center gap-2 rounded-lg border border-blue-400/40 bg-blue-400/8 px-4 py-2 transition-all hover:bg-blue-400/15"
+              title="Swarm state snapshot stored on Filecoin Calibration Testnet via Synapse SDK"
             >
-              <span className="text-purple-400 text-sm">IPFS</span>
-              <span className="text-xs font-mono text-purple-300">Agent Log Pinned</span>
-              <span className="text-[10px] font-mono text-purple-400/60">{ipfsCid.slice(0, 12)}...</span>
-              <span className="text-purple-400 text-xs">↗</span>
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
+              <span className="text-sm font-semibold text-blue-300">Filecoin</span>
+              <span className="text-xs font-mono text-blue-200">State Snapshot Live</span>
+              <span className="text-[10px] font-mono text-blue-400/70">
+                {filecoinStateCid.slice(0, 14)}…
+              </span>
+              <span className="text-xs text-blue-400">↗</span>
             </a>
+          ) : (
+            <div
+              className="flex items-center gap-2 rounded-lg border border-blue-400/20 bg-blue-400/5 px-4 py-2"
+              title="Filecoin Calibration storage activates when FILECOIN_PRIVATE_KEY is set"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-400/40" />
+              <span className="text-sm font-semibold text-blue-400/60">Filecoin</span>
+              <span className="text-xs font-mono text-blue-300/50">Calibration Testnet</span>
+              <span className="text-[10px] font-mono text-blue-400/30">chain 314159</span>
+            </div>
           )}
-          {(() => {
-            const activeLabels = new Set(children.filter(c => c.active).map(c => c.ensLabel));
-            const activeDels = Array.from(delegationHashes.keys()).filter(k => !k.includes(":revoked") && activeLabels.has(k)).length;
-            const revokedDels = Array.from(delegationHashes.keys()).filter(k => k.includes(":revoked")).length;
-            return (
-              <div className="flex items-center gap-2 border border-orange-400/30 bg-orange-400/5 rounded-lg px-4 py-2">
-                <span className="text-orange-400 text-sm">ERC-7715</span>
-                <span className="text-xs font-mono text-orange-300">
-                  {activeDels > 0 ? `${activeDels} Active` : "Intent-Based Delegations"}
-                </span>
-                {revokedDels > 0 && (
-                  <span className="text-[10px] font-mono text-red-400/80 border border-red-400/20 bg-red-400/5 px-1.5 py-0.5 rounded">{revokedDels} Revoked</span>
-                )}
-                <span className="text-[10px] font-mono text-orange-400/60">castVote() scoped</span>
-              </div>
-            );
-          })()}
 
-          {/* ERC-8004 registry badge */}
+          <div className="flex items-center gap-2 rounded-lg border border-orange-400/30 bg-orange-400/5 px-4 py-2">
+            <span className="text-sm text-orange-400">ERC-7715</span>
+            <span className="text-xs font-mono text-orange-300">
+              {activeDelegations > 0 ? `${activeDelegations} Active` : "Intent-Based Delegations"}
+            </span>
+            {revokedDelegationCount > 0 && (
+              <span className="rounded border border-red-400/20 bg-red-400/5 px-1.5 py-0.5 text-[10px] font-mono text-red-400/80">
+                {revokedDelegationCount} Revoked
+              </span>
+            )}
+            <span className="text-[10px] font-mono text-orange-400/60">castVote() scoped</span>
+          </div>
+
           <a
             href={`https://sepolia.basescan.org/address/${ERC8004_REGISTRY}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 border border-indigo-400/30 bg-indigo-400/5 rounded-lg px-4 py-2 hover:bg-indigo-400/10 transition-all"
+            className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-400/5 px-4 py-2 transition-all hover:bg-indigo-400/10"
             title="ERC-8004 onchain agent identity registry on Base Sepolia"
           >
-            <span className="text-indigo-400 text-sm">ERC-8004</span>
+            <span className="text-sm text-indigo-400">ERC-8004</span>
             <span className="text-xs font-mono text-indigo-300">
-              {erc8004Ids.size > 0 ? `${erc8004Ids.size} agent${erc8004Ids.size !== 1 ? "s" : ""} registered` : "Onchain Identity"}
+              {erc8004Ids.size > 0
+                ? `${erc8004Ids.size} agent${erc8004Ids.size !== 1 ? "s" : ""} registered`
+                : "Onchain Identity"}
             </span>
-            <span className="text-[10px] font-mono text-indigo-400/60">{ERC8004_REGISTRY.slice(0, 6)}…{ERC8004_REGISTRY.slice(-4)}</span>
-            <span className="text-indigo-400 text-xs">↗</span>
+            <span className="text-[10px] font-mono text-indigo-400/60">
+              {ERC8004_REGISTRY.slice(0, 6)}…{ERC8004_REGISTRY.slice(-4)}
+            </span>
+            <span className="text-xs text-indigo-400">↗</span>
           </a>
 
-          {/* ENS Registry live badge */}
-          <a
-            href={`https://sepolia.basescan.org/address/${ENS_REGISTRY}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 border border-teal-400/30 bg-teal-400/5 rounded-lg px-4 py-2 hover:bg-teal-400/10 transition-all"
-          >
-            <span className="text-teal-400 text-sm">ENS</span>
-            <span className="text-xs font-mono text-teal-300">
-              {`${activeCount} active agent subdomain${activeCount !== 1 ? "s" : ""} on spawn.eth`}
-            </span>
-            <span className="text-[10px] font-mono text-teal-400/60">SpawnENSRegistry {ENS_REGISTRY.slice(0, 6)}…{ENS_REGISTRY.slice(-4)}</span>
-            <span className="text-teal-400 text-xs">↗</span>
-          </a>
+          {budgetState && (
+            <div
+              className={`flex items-center gap-2 rounded-lg border px-4 py-2 ${
+                budgetState.context === "unavailable"
+                  ? "border-gray-700 bg-gray-900/60"
+                  : budgetState.policy === "paused"
+                  ? "border-red-400/30 bg-red-400/5"
+                  : budgetState.policy === "throttled"
+                  ? "border-yellow-400/30 bg-yellow-400/5"
+                  : "border-emerald-400/30 bg-emerald-400/5"
+              }`}
+              title="Runtime compute and execution budget policy tracked by the live swarm"
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  budgetState.context === "unavailable"
+                    ? "bg-gray-500"
+                    : budgetState.policy === "paused"
+                    ? "bg-red-400"
+                    : budgetState.policy === "throttled"
+                    ? "bg-yellow-400"
+                    : "bg-emerald-400"
+                }`}
+              />
+              <span
+                className={`text-sm font-semibold ${
+                  budgetState.context === "unavailable"
+                    ? "text-gray-400"
+                    : budgetState.policy === "paused"
+                    ? "text-red-300"
+                    : budgetState.policy === "throttled"
+                    ? "text-yellow-300"
+                    : "text-emerald-300"
+                }`}
+              >
+                {budgetState.context === "unavailable" ? "Budget unavailable" : `Budget ${budgetState.policy}`}
+              </span>
+              {budgetState.context !== "unavailable" && (
+                <>
+                  <span className="text-xs font-mono text-gray-300">
+                    {budgetState.parentEthBalance} ETH
+                  </span>
+                  <span className="text-[10px] font-mono text-gray-500">
+                    Venice {budgetState.veniceTokens} tokens
+                  </span>
+                </>
+              )}
+              {budgetState.context === "unavailable" ? (
+                <span className="text-[10px] font-mono text-gray-500">
+                  waiting for live runtime budget
+                </span>
+              ) : budgetState.reasons.length > 0 && (
+                <span className="text-[10px] font-mono text-gray-500">
+                  {budgetState.reasons.join(", ")}
+                </span>
+              )}
+            </div>
+          )}
         </div>
-
-        </>
       )}
 
       {error && (
-        <div className="mb-6 border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
-          <p className="text-red-400 text-sm font-mono">Error: {error}</p>
+        <div className="mb-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
+          <p className="text-sm font-mono text-red-400">Error: {error}</p>
         </div>
       )}
 
       {loading && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {[...Array(3)].map((_, i) => (
-            <div key={i} className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14] animate-pulse">
-              <div className="h-4 bg-gray-800 rounded mb-3 w-2/3" />
-              <div className="h-3 bg-gray-800 rounded mb-2 w-full" />
-              <div className="h-3 bg-gray-800 rounded mb-4 w-1/2" />
-              <div className="h-2 bg-gray-800 rounded w-full" />
+            <div
+              key={i}
+              className="rounded-lg border border-gray-800 bg-[#0d0d14] p-4 animate-pulse"
+            >
+              <div className="mb-3 h-4 w-2/3 rounded bg-gray-800" />
+              <div className="mb-2 h-3 w-full rounded bg-gray-800" />
+              <div className="mb-4 h-3 w-1/2 rounded bg-gray-800" />
+              <div className="h-2 w-full rounded bg-gray-800" />
             </div>
           ))}
         </div>
       )}
 
       {!loading && !error && children.length === 0 && (
-        <div className="border border-gray-800 rounded-lg p-12 text-center">
-          <div className="text-4xl mb-4">⬡</div>
-          <h2 className="font-mono text-lg text-gray-400 mb-2">No agents spawned yet</h2>
-          <p className="text-sm text-gray-600">The parent agent will spawn children when proposals are detected.</p>
-          <p className="text-xs font-mono text-gray-700 mt-4">Polling SpawnFactory @ {formatAddress(CONTRACTS.SpawnFactory.address)}</p>
+        <div className="rounded-lg border border-gray-800 p-12 text-center">
+          <div className="mb-4 text-4xl">⬡</div>
+          <h2 className="mb-2 font-mono text-lg text-gray-400">No agents spawned yet</h2>
+          <p className="text-sm text-gray-600">
+            The parent agent will spawn children when proposals are detected.
+          </p>
+          <p className="mt-4 text-xs font-mono text-gray-700">
+            Polling SpawnFactory @ {formatAddress(CONTRACTS.SpawnFactory.address)}
+          </p>
         </div>
       )}
 
       {!loading && children.length > 0 && (
         <>
-          {children.filter((c) => c.active).length > 0 && (
+          {activeChildren.length > 0 && (
             <div className="mb-8">
-              <h2 className="text-xs font-mono text-gray-600 uppercase tracking-widest mb-3">
-                Active Agents ({children.filter((c) => c.active).length})
+              <h2 className="mb-3 text-xs font-mono uppercase tracking-widest text-gray-600">
+                Active Agents ({activeChildren.length})
               </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {children.filter((c) => c.active).map((child) => (
-                  <AgentCard key={child.childAddr} child={child} justVoted={justVotedSet.has(child.childAddr)} delegationHash={delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {activeChildren.map((child) => (
+                  <AgentCard
+                    key={child.childAddr}
+                    child={child}
+                    justVoted={justVotedSet.has(child.childAddr)}
+                    delegationHash={
+                      revokedDelegations.has(child.ensLabel)
+                        ? "REVOKED"
+                        : delegationHashes.get(child.ensLabel)
+                    }
+                    erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null}
+                    filecoinCid={filecoinIdentityCids.get(child.ensLabel) ?? null}
+                  />
                 ))}
               </div>
             </div>
           )}
-          {children.filter((c) => !c.active).length > 0 && (
+
+          {terminatedChildren.length > 0 && (
             <div>
               <details className="group">
-                <summary className="flex items-center gap-3 mb-3 cursor-pointer list-none">
-                  <h2 className="text-xs font-mono text-red-500/70 uppercase tracking-widest">
-                    Terminated Agents ({children.filter((c) => !c.active).length})
+                <summary className="flex list-none items-center gap-3 mb-3 cursor-pointer">
+                  <h2 className="text-xs font-mono uppercase tracking-widest text-red-500/70">
+                    Terminated Agents ({terminatedChildren.length})
                   </h2>
-                  <div className="flex-1 h-px bg-red-500/20" />
-                  <span className="text-xs text-gray-600 font-mono group-open:hidden">Show</span>
-                  <span className="text-xs text-gray-600 font-mono hidden group-open:inline">Hide</span>
+                  <div className="h-px flex-1 bg-red-500/20" />
+                  <span className="font-mono text-xs text-gray-600 group-open:hidden">Show</span>
+                  <span className="hidden font-mono text-xs text-gray-600 group-open:inline">
+                    Hide
+                  </span>
                 </summary>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 opacity-40">
-                  {children.filter((c) => !c.active).slice(0, 12).map((child) => (
-                    <AgentCard key={child.childAddr} child={child} justVoted={false} delegationHash={delegationHashes.get(`${child.ensLabel}:revoked`) ? "REVOKED" : delegationHashes.get(child.ensLabel)} erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null} />
+                <div className="grid grid-cols-1 gap-3 opacity-40 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {terminatedChildren.slice(0, 12).map((child) => (
+                    <AgentCard
+                      key={child.childAddr}
+                      child={child}
+                      justVoted={false}
+                      delegationHash={
+                        revokedDelegations.has(child.ensLabel)
+                          ? "REVOKED"
+                          : delegationHashes.get(child.ensLabel)
+                      }
+                      erc8004Id={erc8004Ids.get(child.childAddr.toLowerCase()) ?? null}
+                      filecoinCid={filecoinIdentityCids.get(child.ensLabel) ?? null}
+                    />
                   ))}
                 </div>
-                {children.filter((c) => !c.active).length > 12 && (
-                  <p className="text-xs text-gray-700 font-mono mt-2 text-center">
-                    + {children.filter((c) => !c.active).length - 12} more terminated agents
+                {terminatedChildren.length > 12 && (
+                  <p className="mt-2 text-center text-xs font-mono text-gray-700">
+                    + {terminatedChildren.length - 12} more terminated agents
                   </p>
                 )}
               </details>
@@ -353,9 +349,12 @@ export default function SwarmPage() {
         </>
       )}
 
-      <div className="fixed bottom-6 right-6 flex items-center gap-2 bg-[#0d0d14] border border-gray-800 rounded-full px-3 py-1.5">
-        <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-ping" style={{ animationDuration: "2s" }} />
-        <span className="text-xs font-mono text-gray-500">Live — 15s</span>
+      <div className="fixed bottom-6 right-6 flex items-center gap-2 rounded-full border border-gray-800 bg-[#0d0d14] px-3 py-1.5">
+        <div
+          className="h-1.5 w-1.5 animate-ping rounded-full bg-green-400"
+          style={{ animationDuration: "2s" }}
+        />
+        <span className="text-xs font-mono text-gray-500">Live — 20s</span>
       </div>
     </div>
   );

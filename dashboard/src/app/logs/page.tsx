@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { publicClient } from "@/lib/client";
-import { explorerTx } from "@/lib/contracts";
+import { explorerTx, storageViewerPath } from "@/lib/contracts";
 
 interface LogEntry {
   timestamp: string;
@@ -23,6 +22,15 @@ interface LogEntry {
   ensLabel?: string;
   status: string;
   verifyIn?: string;
+  judgeRunId?: string;
+  judgeStep?: string;
+  proofChild?: boolean;
+  proofStatus?: string;
+  filecoinCid?: string;
+  filecoinUrl?: string;
+  validationRequestId?: string;
+  respawnedChild?: string;
+  lineageSourceCid?: string;
 }
 
 interface AgentLog {
@@ -54,6 +62,7 @@ const PHASE_COLORS: Record<string, string> = {
   alignment:      "text-yellow-400 border-yellow-400/30 bg-yellow-400/5",
   termination:    "text-red-400 border-red-500/50 bg-red-400/5",
   deployment:     "text-orange-400 border-orange-400/30 bg-orange-400/5",
+  judge:          "text-amber-300 border-amber-400/30 bg-amber-400/5",
 };
 
 const PHASE_ICONS: Record<string, string> = {
@@ -64,6 +73,7 @@ const PHASE_ICONS: Record<string, string> = {
   alignment:      "◐",
   termination:    "⊗",
   deployment:     "◆",
+  judge:          "◇",
 };
 
 const PAGE_SIZE = 20;
@@ -88,55 +98,19 @@ export default function LogsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
 
-  // Fetch log: try IPFS first (onchain CID + known-good fallback CID), then GitHub
   useEffect(() => {
-    const GITHUB_URL = "https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json";
-    const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
-    // Latest pinned CID — updated on each agent_log.json push
-    const KNOWN_CID = "QmRKSPkg7MQuChCXkgRPqmsAhLG4Y7xf7nUo6N3AXr9wFx";
+    const query = new URLSearchParams(window.location.search).get("search");
+    if (query) setSearch(query);
+  }, []);
 
-    async function tryIPFS(cid: string): Promise<boolean> {
-      const gateways = [
-        `https://ipfs.filebase.io/ipfs/${cid}`,
-        `https://ipfs.io/ipfs/${cid}`,
-        `https://cloudflare-ipfs.com/ipfs/${cid}`,
-        `https://dweb.link/ipfs/${cid}`,
-      ];
-      for (const url of gateways) {
-        try {
-          const ipfsRes = await fetch(url, { signal: AbortSignal.timeout(6000) });
-          if (ipfsRes.ok) {
-            const data = await ipfsRes.json();
-            setLog(data);
-            setError(null);
-            setLoading(false);
-            return true;
-          }
-        } catch {}
-      }
-      return false;
-    }
-
+  // Fetch log from server-side API route (handles IPFS + GitHub fallback)
+  useEffect(() => {
     async function fetchLog() {
-      // 1. Try reading IPFS CID from onchain ENS text record
       try {
-        const cid = await publicClient.readContract({
-          address: ENS_REGISTRY,
-          abi: [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const,
-          functionName: "getTextRecord",
-          args: ["parent", "ipfs.agent_log"],
-        });
-        if (cid && cid !== KNOWN_CID && await tryIPFS(cid)) return;
-      } catch {}
-
-      // 2. Try known-good pinned CID (updated each push)
-      if (await tryIPFS(KNOWN_CID)) return;
-
-      // 3. Fallback to GitHub (always has latest)
-      try {
-        const res = await fetch(GITHUB_URL);
+        const res = await fetch("/api/logs");
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        if (data.error) throw new Error(data.error);
         setLog(data);
         setError(null);
       } catch (err: any) {
@@ -145,7 +119,6 @@ export default function LogsPage() {
         setLoading(false);
       }
     }
-
     fetchLog();
   }, []);
 
@@ -165,7 +138,8 @@ export default function LogsPage() {
           e.action.toLowerCase().includes(q) ||
           e.details.toLowerCase().includes(q) ||
           (e.ensLabel ?? "").toLowerCase().includes(q) ||
-          (e.chain ?? "").toLowerCase().includes(q)
+          (e.chain ?? "").toLowerCase().includes(q) ||
+          (e.judgeRunId ?? "").toLowerCase().includes(q)
       );
     }
     return entries;
@@ -416,9 +390,39 @@ export default function LogsPage() {
                             ERC-8004 #{entry.erc8004AgentId}
                           </span>
                         )}
+                        {entry.judgeRunId && (
+                          <span className="text-[10px] font-mono border border-amber-400/30 text-amber-300 bg-amber-400/5 rounded px-1.5 py-0.5">
+                            {entry.judgeRunId}
+                          </span>
+                        )}
+                        {entry.proofChild && (
+                          <span className="text-[10px] font-mono border border-amber-400/30 text-amber-300 bg-amber-400/5 rounded px-1.5 py-0.5">
+                            Proof child
+                          </span>
+                        )}
+                        {entry.proofStatus && (
+                          <span className="text-[10px] font-mono border border-gray-700 text-gray-300 bg-gray-800/30 rounded px-1.5 py-0.5">
+                            {entry.proofStatus}
+                          </span>
+                        )}
                         {entry.ensLabel && (
                           <span className="text-[10px] font-mono border border-blue-400/30 text-blue-400 bg-blue-400/5 rounded px-1.5 py-0.5">
                             {entry.ensLabel}.spawn.eth
+                          </span>
+                        )}
+                        {entry.validationRequestId && (
+                          <span className="text-[10px] font-mono border border-cyan-400/30 text-cyan-300 bg-cyan-400/5 rounded px-1.5 py-0.5">
+                            validation #{entry.validationRequestId}
+                          </span>
+                        )}
+                        {entry.respawnedChild && (
+                          <span className="text-[10px] font-mono border border-green-400/30 text-green-300 bg-green-400/5 rounded px-1.5 py-0.5">
+                            respawn {entry.respawnedChild}
+                          </span>
+                        )}
+                        {entry.lineageSourceCid && (
+                          <span className="text-[10px] font-mono border border-green-400/30 text-green-300 bg-green-400/5 rounded px-1.5 py-0.5">
+                            lineage {entry.lineageSourceCid.slice(0, 12)}…
                           </span>
                         )}
                       </div>
@@ -437,6 +441,16 @@ export default function LogsPage() {
                               {shortHash(hash)} ↗
                             </a>
                           ))}
+                        </div>
+                      )}
+                      {entry.filecoinCid && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <a
+                            href={storageViewerPath(entry.filecoinCid)}
+                            className="text-[10px] font-mono text-green-300 hover:text-green-200 transition-colors bg-green-400/5 border border-green-400/20 rounded px-1.5 py-0.5"
+                          >
+                            FIL {entry.filecoinCid.slice(0, 14)}… ↗
+                          </a>
                         </div>
                       )}
 

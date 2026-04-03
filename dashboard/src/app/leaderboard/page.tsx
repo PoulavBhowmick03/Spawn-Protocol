@@ -8,7 +8,7 @@ import { formatAddress } from "@/lib/contracts";
 type SortKey = "score" | "votes" | "efficiency" | "streak";
 
 export default function LeaderboardPage() {
-  const { children, loading } = useSwarmData();
+  const { children, loading } = useSwarmData({ includeMeta: false });
   const { explorerBase } = useChainContext();
 
   // Build leaderboard data from active children (vote breakdown already in ChildInfo)

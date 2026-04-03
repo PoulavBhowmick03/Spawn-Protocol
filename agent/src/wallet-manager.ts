@@ -8,7 +8,7 @@
 
 import { keccak256, encodePacked, defineChain, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { createWalletClient, createPublicClient, http } from "viem";
+import { createWalletClient, createPublicClient, http, fallback } from "viem";
 import { baseSepolia } from "viem/chains";
 
 const celoSepoliaChain = defineChain({
@@ -17,6 +17,12 @@ const celoSepoliaChain = defineChain({
   nativeCurrency: { name: "CELO", symbol: "CELO", decimals: 18 },
   rpcUrls: { default: { http: [process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org"] } },
 });
+
+const BASE_SEPOLIA_TRANSPORT = fallback([
+  http(process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"),
+  http("https://base-sepolia.drpc.org"),
+  http("https://base-sepolia-rpc.publicnode.com"),
+], { rank: false });
 
 function resolveChain(chainName?: string) {
   if (chainName === "celo-sepolia") return { chain: celoSepoliaChain, rpc: process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org" };
@@ -77,7 +83,7 @@ export function createChildWalletClient(
   return createWalletClient({
     account: wallet.account,
     chain,
-    transport: http(rpcUrl || process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"),
+    transport: rpcUrl ? http(rpcUrl) : BASE_SEPOLIA_TRANSPORT,
   });
 }
 
@@ -89,12 +95,15 @@ export function createWalletClientFromKey(
   chainName?: string
 ) {
   const account = privateKeyToAccount(privateKey);
-  const { chain, rpc } = resolveChain(chainName);
+  const { chain } = resolveChain(chainName);
+  const transport = chainName === "celo-sepolia"
+    ? http(process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org")
+    : BASE_SEPOLIA_TRANSPORT;
 
   return createWalletClient({
     account,
     chain,
-    transport: http(rpc),
+    transport,
   });
 }
 

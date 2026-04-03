@@ -54,6 +54,15 @@ export const GOVERNORS = [
     borderColor: "border-purple-400/30",
     bgColor: "bg-purple-400/5",
   },
+  {
+    name: "Polymarket",
+    slug: "polymarket",
+    address: "0xe09eb6dca83e7d8e3226752a6c57680a2565b4e6" as const,
+    abi: MockGovernorABI,
+    color: "text-orange-400",
+    borderColor: "border-orange-400/30",
+    bgColor: "bg-orange-400/5",
+  },
 ] as const;
 
 
@@ -65,6 +74,14 @@ export function explorerTx(hash: string): string {
 
 export function explorerAddress(address: string): string {
   return `${EXPLORER_BASE}/address/${address}`;
+}
+
+export function isFilecoinPieceCid(cid: string): boolean {
+  return cid.startsWith("bafkzci");
+}
+
+export function storageViewerPath(cid: string): string {
+  return `/storage/${encodeURIComponent(cid)}`;
 }
 
 export function formatAddress(address: string): string {
@@ -83,6 +100,7 @@ const GOVERNOR_NAMES: Record<string, string> = {
   "0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9": "Uniswap DAO",
   "0x40bae6f7d75c2600d724b4cc194e20e66f6386ac": "Lido DAO",
   "0xb4e46e107fbd9b616b145adb91a5ffe0f5a2c42c": "ENS DAO",
+  "0xe09eb6dca83e7d8e3226752a6c57680a2565b4e6": "Polymarket",
 };
 
 export function governorName(address: string): string | null {

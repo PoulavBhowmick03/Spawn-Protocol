@@ -1,14 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useChainContext } from "@/context/ChainContext";
-import { CONTRACTS, GOVERNORS } from "@/lib/contracts";
-import type { Address } from "viem";
-
-// MockGovernor addresses — ChildGovernor calls castVote on these, which emits
-// VoteCast(address indexed voter, ...) where voter = child contract address.
-// Querying 3 known addresses avoids the 413 from no-address or large address-array filters.
-const MOCK_GOVERNOR_ADDRS = GOVERNORS.map((g) => g.address) as Address[];
+import { CONTRACTS } from "@/lib/contracts";
 
 export type EventType =
   | "ChildSpawned"
@@ -29,264 +23,74 @@ export interface TimelineEvent {
   data: Record<string, unknown>;
 }
 
+const CLIENT_CACHE_TTL = 20_000;
+const POLL_INTERVAL_MS = 30_000;
 
-// Contracts deployed at block 39086990 on Base Sepolia (from broadcast/DeployMultiDAO.s.sol)
-const DEPLOY_BLOCK = BigInt(39086990);
-const CHUNK = BigInt(10000); // sepolia.base.org hard limit
+let timelineCache: { data: TimelineEvent[]; fetchedAt: number } | null = null;
+let timelineRequest: Promise<TimelineEvent[]> | null = null;
+
+function normalizeTimeline(data: any[]): TimelineEvent[] {
+  return data.map((e: any) => ({
+    ...e,
+    blockNumber: BigInt(e.blockNumber),
+    timestamp: e.timestamp ? BigInt(e.timestamp) : undefined,
+  }));
+}
+
+async function fetchTimeline(force = false): Promise<TimelineEvent[]> {
+  const now = Date.now();
+  if (!force && timelineCache && now - timelineCache.fetchedAt < CLIENT_CACHE_TTL) {
+    return timelineCache.data;
+  }
+
+  if (timelineRequest) return timelineRequest;
+
+  timelineRequest = (async () => {
+    const res = await fetch("/api/timeline", { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `API ${res.status}`);
+    if (data.error) throw new Error(data.error);
+
+    const normalized = normalizeTimeline(data);
+    timelineCache = { data: normalized, fetchedAt: Date.now() };
+    return normalized;
+  })();
+
+  try {
+    return await timelineRequest;
+  } finally {
+    timelineRequest = null;
+  }
+}
 
 export function useTimeline() {
-  const { client } = useChainContext();
-  const [events, setEvents] = useState<TimelineEvent[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<TimelineEvent[]>(() => timelineCache?.data ?? []);
+  const [loading, setLoading] = useState(() => !timelineCache);
   const [error, setError] = useState<string | null>(null);
 
-  // Persist state across polls to avoid re-fetching history
-  const blockTimestampCache = useRef<Map<bigint, bigint>>(new Map());
-  const eventCache = useRef<Map<string, TimelineEvent>>(new Map());
-  const lastFetchedBlock = useRef<bigint | null>(null);
-  // Track all child addresses ever seen so polling can fetch their new events too
-  const knownChildAddresses = useRef<Set<`0x${string}`>>(new Set());
-
-  // Fetch logs for a block range, splitting into CHUNK-sized parallel requests
-  const getLogsInRange = useCallback(async (
-    params: Omit<Parameters<typeof client.getLogs>[0], "fromBlock" | "toBlock">,
-    from: bigint,
-    to: bigint,
-  ): Promise<any[]> => {
-    const chunks: Array<[bigint, bigint]> = [];
-    let start = from;
-    while (start <= to) {
-      const end = start + CHUNK - BigInt(1) < to ? start + CHUNK - BigInt(1) : to;
-      chunks.push([start, end]);
-      start = end + BigInt(1);
-    }
-    const results = await Promise.all(
-      chunks.map(([f, t]) => client.getLogs({ ...params, fromBlock: f, toBlock: t }))
-    );
-    return results.flat();
-  }, [client]);
-
-  const fetchData = useCallback(async () => {
-    const contracts = CONTRACTS;
+  const fetchData = useCallback(async (options?: { force?: boolean; background?: boolean }) => {
     try {
-      const currentBlock = await client.getBlockNumber();
-      const isInitial = lastFetchedBlock.current === null;
-      const fromBlock = isInitial ? DEPLOY_BLOCK : lastFetchedBlock.current! + BigInt(1);
-
-      // Nothing new to fetch on subsequent polls
-      if (!isInitial && fromBlock > currentBlock) return;
-
-      // Fetch factory + treasury events for the relevant range
-      const [spawnedLogs, terminatedLogs, reallocatedLogs, valuesLogs, depositLogs] =
-        await Promise.all([
-          getLogsInRange({
-            address: contracts.SpawnFactory.address,
-            event: { type: "event", name: "ChildSpawned", inputs: [
-              { name: "childId", type: "uint256", indexed: true },
-              { name: "childAddr", type: "address", indexed: false },
-              { name: "governance", type: "address", indexed: false },
-              { name: "budget", type: "uint256", indexed: false },
-            ]},
-          }, fromBlock, currentBlock),
-          getLogsInRange({
-            address: contracts.SpawnFactory.address,
-            event: { type: "event", name: "ChildTerminated", inputs: [
-              { name: "childId", type: "uint256", indexed: true },
-              { name: "childAddr", type: "address", indexed: false },
-              { name: "fundsReturned", type: "uint256", indexed: false },
-            ]},
-          }, fromBlock, currentBlock),
-          getLogsInRange({
-            address: contracts.SpawnFactory.address,
-            event: { type: "event", name: "FundsReallocated", inputs: [
-              { name: "fromId", type: "uint256", indexed: true },
-              { name: "toId", type: "uint256", indexed: true },
-              { name: "amount", type: "uint256", indexed: false },
-            ]},
-          }, fromBlock, currentBlock),
-          getLogsInRange({
-            address: contracts.ParentTreasury.address,
-            event: { type: "event", name: "ValuesUpdated", inputs: [
-              { name: "values", type: "string", indexed: false },
-            ]},
-          }, fromBlock, currentBlock),
-          getLogsInRange({
-            address: contracts.ParentTreasury.address,
-            event: { type: "event", name: "Deposited", inputs: [
-              { name: "from", type: "address", indexed: true },
-              { name: "amount", type: "uint256", indexed: false },
-            ]},
-          }, fromBlock, currentBlock),
-        ]);
-
-      // Register any newly discovered child addresses
-      for (const log of spawnedLogs as any[]) {
-        const addr = log.args?.childAddr as `0x${string}` | undefined;
-        if (addr) knownChildAddresses.current.add(addr);
+      if (!options?.background && !timelineCache && events.length === 0) {
+        setLoading(true);
       }
-
-      // VoteCast: 3 MockGovernor addresses — no further filter needed (already scoped).
-      // AlignmentUpdated + RationaleRevealed: ChildGovernor-only events. Range limit (10k)
-      // means no-address filter 413s on full history; skip on initial load, poll-only.
-      const knownSet = new Set([...knownChildAddresses.current].map((a) => a.toLowerCase()));
-      const childFrom = isInitial ? DEPLOY_BLOCK : fromBlock;
-
-      const [mockVoteLogs, childVoteLogs, alignmentLogs, revealedLogs] = await Promise.all([
-        // MockGovernor VoteCast (legacy — old children called MockGovernor directly)
-        getLogsInRange({
-          address: MOCK_GOVERNOR_ADDRS,
-          event: { type: "event", name: "VoteCast", inputs: [
-            { name: "proposalId", type: "uint256", indexed: true },
-            { name: "voter", type: "address", indexed: true },
-            { name: "support", type: "uint8", indexed: false },
-            { name: "reason", type: "string", indexed: false },
-          ]},
-        }, childFrom, currentBlock).catch(() => [] as any[]),
-        // ChildGovernor VoteCast (current — children emit their own VoteCast)
-        getLogsInRange({
-          event: { type: "event", name: "VoteCast", inputs: [
-            { name: "proposalId", type: "uint256", indexed: true },
-            { name: "support", type: "uint8", indexed: false },
-            { name: "encryptedRationale", type: "bytes", indexed: false },
-          ]},
-        }, childFrom, currentBlock).catch(() => [] as any[]),
-        getLogsInRange({
-          event: { type: "event", name: "AlignmentUpdated", inputs: [
-            { name: "newScore", type: "uint256", indexed: false },
-          ]},
-        }, childFrom, currentBlock).catch(() => [] as any[]),
-        getLogsInRange({
-          event: { type: "event", name: "RationaleRevealed", inputs: [
-            { name: "proposalId", type: "uint256", indexed: true },
-            { name: "decryptedRationale", type: "bytes", indexed: false },
-          ]},
-        }, childFrom, currentBlock).catch(() => [] as any[]),
-      ]);
-      // Merge both MockGovernor and ChildGovernor VoteCast events
-      const childVoteLogsFiltered = (childVoteLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
-      const voteCastLogs = [
-        ...(mockVoteLogs as any[]).map((log: any) => ({ ...log, _source: "mock" })),
-        ...childVoteLogsFiltered.map((log: any) => ({ ...log, _source: "child" })),
-      ];
-      const alignmentLogsFiltered = (alignmentLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
-      const revealedLogsFiltered = (revealedLogs as any[]).filter((log) => knownSet.has((log.address as string)?.toLowerCase()));
-
-      // Build new events and merge into cache (deduplicates by id)
-      const newEvents: TimelineEvent[] = [
-        ...spawnedLogs.map((log) => ({
-          id: `spawned-${log.transactionHash}-${log.logIndex}`,
-          type: "ChildSpawned" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { childId: (log.args as any)?.childId?.toString(), childAddr: (log.args as any)?.childAddr, governance: (log.args as any)?.governance, budget: (log.args as any)?.budget?.toString() },
-        })),
-        ...terminatedLogs.map((log) => ({
-          id: `terminated-${log.transactionHash}-${log.logIndex}`,
-          type: "ChildTerminated" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { childId: (log.args as any)?.childId?.toString(), childAddr: (log.args as any)?.childAddr, fundsReturned: (log.args as any)?.fundsReturned?.toString() },
-        })),
-        ...reallocatedLogs.map((log) => ({
-          id: `reallocated-${log.transactionHash}-${log.logIndex}`,
-          type: "FundsReallocated" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { fromId: (log.args as any)?.fromId?.toString(), toId: (log.args as any)?.toId?.toString(), amount: (log.args as any)?.amount?.toString() },
-        })),
-        ...valuesLogs.map((log) => ({
-          id: `values-${log.transactionHash}-${log.logIndex}`,
-          type: "ValuesUpdated" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { values: (log.args as any)?.values },
-        })),
-        ...depositLogs.map((log) => ({
-          id: `deposit-${log.transactionHash}-${log.logIndex}`,
-          type: "Deposited" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { from: (log.args as any)?.from, amount: (log.args as any)?.amount?.toString() },
-        })),
-        ...voteCastLogs.map((log: any) => ({
-          id: `vote-${log.transactionHash}-${log.logIndex}`,
-          type: "VoteCast" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: {
-            childAddr: log._source === "mock" ? log.args?.voter : log.address,
-            proposalId: log.args?.proposalId?.toString(),
-            support: Number(log.args?.support ?? 0),
-          },
-        })),
-        ...alignmentLogsFiltered.map((log: any) => ({
-          id: `alignment-${log.transactionHash}-${log.logIndex}`,
-          type: "AlignmentUpdated" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { childAddr: log.address, newScore: log.args?.newScore?.toString() },
-        })),
-        ...revealedLogsFiltered.map((log: any) => ({
-          id: `revealed-${log.transactionHash}-${log.logIndex}`,
-          type: "RationaleRevealed" as EventType,
-          blockNumber: log.blockNumber ?? BigInt(0),
-          transactionHash: log.transactionHash ?? ("0x" as `0x${string}`),
-          data: { childAddr: log.address, proposalId: log.args?.proposalId?.toString() },
-        })),
-      ];
-
-      for (const e of newEvents) eventCache.current.set(e.id, e);
-      lastFetchedBlock.current = currentBlock;
-
-      // Fetch timestamps only for uncached blocks — prioritise the most recent (visible) ones
-      const allCached = [...eventCache.current.values()];
-      const sortedByBlock = [...allCached].sort((a, b) => (b.blockNumber > a.blockNumber ? 1 : -1));
-      const uncachedBlocks = [...new Set(sortedByBlock.map((e) => e.blockNumber))]
-        .filter((bn) => !blockTimestampCache.current.has(bn))
-        .slice(0, 20);
-
-      if (uncachedBlocks.length > 0) {
-        await Promise.all(
-          uncachedBlocks.map(async (bn) => {
-            try {
-              const block = await client.getBlock({ blockNumber: bn });
-              blockTimestampCache.current.set(bn, block.timestamp);
-            } catch {}
-          })
-        );
-      }
-
-      for (const event of allCached) {
-        event.timestamp = blockTimestampCache.current.get(event.blockNumber);
-      }
-
-      const sorted = [...allCached].sort((a, b) =>
-        b.blockNumber > a.blockNumber ? 1 : b.blockNumber < a.blockNumber ? -1 : 0
-      );
-
-      setEvents(sorted);
+      const parsed = await fetchTimeline(options?.force);
+      setEvents(parsed);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch timeline");
     } finally {
       setLoading(false);
     }
-  }, [client, getLogsInRange]);
-
-  // Keep a ref so the interval always calls the latest fetchData without
-  // re-running the effect (which would clear the cache and reset state).
-  const fetchDataRef = useRef(fetchData);
-  useEffect(() => { fetchDataRef.current = fetchData; }, [fetchData]);
+  }, []);
 
   useEffect(() => {
-    setLoading(true);
-    eventCache.current.clear();
-    lastFetchedBlock.current = null;
-    knownChildAddresses.current.clear();
-    fetchDataRef.current();
-    const interval = setInterval(() => fetchDataRef.current(), 15000);
+    fetchData({ background: !!timelineCache });
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      fetchData({ force: true, background: true });
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchData]);
 
   return { events, loading, error };
 }
@@ -294,7 +98,7 @@ export function useTimeline() {
 export function useTreasuryData() {
   const { client } = useChainContext();
   const [governanceValues, setGovernanceValues] = useState<string>("");
-  const [parentAgent, setParentAgent] = useState<Address | null>(null);
+  const [parentAgent, setParentAgent] = useState<`0x${string}` | null>(null);
   const [maxChildren, setMaxChildren] = useState<bigint>(BigInt(0));
   const [maxBudgetPerChild, setMaxBudgetPerChild] = useState<bigint>(BigInt(0));
   const [emergencyPause, setEmergencyPause] = useState<boolean>(false);

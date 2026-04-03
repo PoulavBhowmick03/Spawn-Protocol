@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { formatAddress, explorerAddress, formatTimestamp, ensName, governorName } from "@/lib/contracts";
+import {
+  formatAddress,
+  explorerAddress,
+  formatTimestamp,
+  ensName,
+  governorName,
+  storageViewerPath,
+} from "@/lib/contracts";
 import { AlignmentBadge } from "./AlignmentBadge";
 import type { ChildInfo } from "@/hooks/useSwarmData";
 
@@ -10,9 +17,10 @@ interface AgentCardProps {
   justVoted?: boolean;
   delegationHash?: string;
   erc8004Id?: bigint | null;
+  filecoinCid?: string | null;
 }
 
-export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id }: AgentCardProps) {
+export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id, filecoinCid }: AgentCardProps) {
   const score = Number(child.alignmentScore);
   const isActive = child.active;
 
@@ -68,11 +76,6 @@ export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id 
             <p className="font-mono text-sm text-green-400 font-semibold truncate">
               {ensDisplay}
             </p>
-            {ensName(child.ensLabel) && (
-              <span className="text-[9px] border border-green-500/30 bg-green-500/10 text-green-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap">
-                ENS
-              </span>
-            )}
             {delegationHash && delegationHash !== "REVOKED" && (
               <span className="text-[9px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap" title={delegationHash}>
                 7715
@@ -98,6 +101,16 @@ export function AgentCard({ child, justVoted = false, delegationHash, erc8004Id 
               >
                 8004#{erc8004Id.toString()}
               </span>
+            )}
+            {filecoinCid && (
+              <a
+                href={storageViewerPath(filecoinCid)}
+                onClick={(e) => e.stopPropagation()}
+                className="text-[9px] border border-blue-400/30 bg-blue-400/10 text-blue-300 rounded px-1 py-0.5 font-mono uppercase whitespace-nowrap hover:bg-blue-400/20 transition-colors"
+                title={`Identity stored on Filecoin Calibration Testnet — ${filecoinCid}`}
+              >
+                FIL
+              </a>
             )}
           </div>
           <span

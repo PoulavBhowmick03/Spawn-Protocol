@@ -2,6 +2,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  fallback,
   defineChain,
   type Hash,
   type PublicClient,
@@ -21,17 +22,27 @@ if (!PRIVATE_KEY) {
 export const account = privateKeyToAccount(PRIVATE_KEY);
 
 // ── Base Sepolia (primary) ──
+// Use a fallback transport across multiple public endpoints so that 429s on one
+// automatically retry on the next without dropping the transaction.
 const baseRpc = process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org";
+const baseTransport = fallback([
+  http(baseRpc),
+  http("https://base-sepolia.drpc.org"),
+  http("https://base-sepolia-rpc.publicnode.com"),
+], { rank: false });
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const publicClient = createPublicClient({
   chain: baseSepolia,
-  transport: http(baseRpc),
-});
+  transport: baseTransport,
+}) as any as PublicClient;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const walletClient = createWalletClient({
   account,
   chain: baseSepolia,
-  transport: http(baseRpc),
-});
+  transport: baseTransport,
+}) as any as WalletClient;
 
 // ── Celo Sepolia (secondary) ──
 const celoRpc = process.env.CELO_SEPOLIA_RPC_URL || "https://celo-sepolia.drpc.org";

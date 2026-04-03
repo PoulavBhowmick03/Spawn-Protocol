@@ -1,480 +1,414 @@
 # Spawn Protocol
 
-**Autonomous DAO Governance Agent Swarm** — A parent AI agent that spawns, funds, monitors, and terminates child governance agents. Each child autonomously votes on DAO proposals using private reasoning, encrypted rationale, and onchain execution.
+An autonomous governance agent swarm. A human owner states their values once. A parent agent runs continuously, spawns child agents as EIP-1167 proxy contracts, assigns each child a DAO to govern, lets them reason privately through Venice, encrypts vote rationale with Lit Protocol until voting closes, executes votes onchain through scoped ERC-7715 delegations, scores alignment every 90 seconds, and terminates and respawns drifting children with portable Filecoin-backed memory.
 
-**[Live Dashboard](https://spawn-protocol.vercel.app/)** · **[Demo Video](https://youtu.be/bw0DZxWnNG4)** · **[11,900+ txs on BaseScan](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** · **[GitHub](https://github.com/PoulavBhowmick03/Spawn-Protocol)**
+**Track:** PL Genesis — AI & Robotics · Infrastructure & Digital Rights · Crypto · ERC-8004 · Filecoin
+
+**Live on:** Base Sepolia + Filecoin Calibration
+
+**License:** MIT
+
+---
 
 ## The Problem
 
-DAO governance is broken. Voter participation across major DAOs averages under 10%. Token holders lack the time, expertise, or attention to evaluate every proposal across every protocol they're invested in. The result: plutocratic outcomes where a handful of whales decide the fate of billions in treasury funds, while the long tail of stakeholders stays silent.
+DAO governance participation has two failure modes. Token holders lack the time to read every proposal across every protocol. Delegates get delegated to, drift, go inactive, or become impossible to audit. Autonomous agents can claim to be aligned and safe, but without portable identity, persistent onchain receipts, and verifiable storage, that claim is unenforceable and unauditable.
 
-Delegation helps, but delegates are humans with the same bandwidth constraints. They burn out, go inactive, or drift from the values that got them elected. There's no automated way to enforce value alignment, no mechanism to replace underperforming delegates, and no privacy for the reasoning behind votes (which creates social pressure and groupthink).
+Spawn Protocol addresses both problems at once: agents that actually govern, and infrastructure that makes their behavior auditable, portable, and correctable.
 
-## The Solution
+---
 
-Spawn Protocol turns DAO governance into an autonomous, self-correcting agent swarm:
-
-1. **A token holder sets their governance values once** — "favor decentralization, support public goods, oppose token inflation" — stored onchain via `ParentTreasury.setGovernanceValues()`
-
-2. **A parent agent spawns child agents**, one per DAO, each with its own wallet, ENS subdomain, ERC-8004 identity, and scoped MetaMask delegation. Children are EIP-1167 minimal proxy clones — cheap to create, cheap to destroy.
-
-3. **Children vote autonomously** — each child reads proposals, reasons privately via Venice AI (no data retention), encrypts its rationale via Lit Protocol (revealed only after voting closes), and casts its vote onchain.
-
-4. **The parent monitors alignment** — every 90 seconds, the parent evaluates each child's voting record against the owner's stated values using Venice AI. Children scoring below 55/100 get terminated and replaced.
-
-5. **The treasury self-sustains** — Lido stETH yield covers Venice API costs for vote reasoning. The swarm funds itself.
-
-The owner never votes manually again. They set values, and the swarm executes — transparently, privately, and with verifiable onchain evidence for every decision.
-
-## Why Venice is Not Optional
-
-This is the core design constraint: **vote reasoning must be private until after voting closes**.
-
-If a child agent's reasoning were sent to a data-retaining API (OpenAI, Anthropic), the provider could observe which way an agent is leaning before the vote is cast. That is front-running. It defeats the purpose of encrypted rationale. It creates social pressure that corrupts independent reasoning. It means the agent's "private cognition" isn't private at all.
-
-Venice's zero-retention, E2EE inference is not a feature choice here — it is a **structural requirement**. The privacy pipeline only holds if the inference layer holds. Remove Venice and replace it with any data-retaining provider, and:
-
-- The reasoning becomes observable before votes close
-- The E2EE rationale commitment is meaningless (the provider already saw it)
-- Multi-agent independence collapses (a single provider sees all agents' reasoning across all DAOs)
-- The governance system is vulnerable to inference-layer manipulation
-
-This is the Substitution Test: Spawn Protocol **cannot work correctly** with a data-retaining API. Venice is load-bearing.
-
-The full private → public pipeline:
-1. **Private cognition** — Venice (llama-3.3-70b, no retention) reasons about governance proposals. Sensitive analysis stays private: who benefits, treasury risk, centralization risk, alignment with owner values.
-2. **Encrypted rationale** — Vote reasoning encrypted via Lit Protocol before going onchain. Cannot be front-run or used for social pressure during voting.
-3. **Public action** — Vote cast onchain via `ChildGovernor.castVote()`. Verifiable, immutable.
-4. **Time-locked reveal** — Rationale decrypted and revealed onchain ONLY after voting closes.
-
-## Use Cases
-
-- **Passive governance participation** — Token holders who want their voice heard across 10+ DAOs without manually reading every proposal
-- **Value-aligned voting at scale** — Institutions, funds, or DAOs-of-DAOs that need consistent voting behavior across protocols
-- **Privacy-preserving governance** — Vote rationale stays encrypted until after voting closes, preventing front-running and social pressure
-- **Automated delegate management** — Instead of trusting a human delegate indefinitely, the system continuously evaluates and replaces underperformers
-- **Multi-chain governance** — Deploy the same swarm across Base, Celo, and any EVM chain
-
-## How It Works
+## What It Does
 
 ```
-Owner sets governance values (onchain)
-              |
-         Parent Agent (swarm.ts — persistent process)
-         |-- Discovers DAOs via Tally API + Snapshot + Boardroom
-         |-- Spawns child agents as EIP-1167 clones (one per DAO per chain)
-         |-- Registers ERC-8004 identity + ENS subdomain + MetaMask delegation
-         |-- Evaluates alignment every 90s via Venice AI
-         |-- Terminates misaligned children (score < 55), respawns replacements
-         |
-    +-----------+-----------+
-    |           |           |
- uniswap-dao lido-dao   ens-dao
- (Base)      (Base)     (Base)
-    |           |           |
-    +--- Each child runs as a SEPARATE OS PROCESS (own PID) ---+
-         |-- Reads active proposals from its assigned governor
-         |-- Reasons privately via Venice AI (llama-3.3-70b, no retention)
-         |-- Encrypts rationale via Lit Protocol
-         |-- Casts vote onchain (FOR / AGAINST / ABSTAIN)
-         +-- Reveals rationale after voting ends
+Owner stores governance values → ParentTreasury.sol
+             │
+        Parent Agent  (agent/src/swarm.ts)
+        ├── discovers proposals from Tally / Snapshot / Boardroom / Polymarket
+        ├── spawns child agents via SpawnFactory (EIP-1167 proxies)
+        ├── registers ENS labels + ERC-8004 identity per child
+        ├── issues ERC-7715 scoped delegations (castVote only)
+        ├── evaluates alignment every 90s against owner values
+        ├── terminates drifting children + generates Venice post-mortems
+        ├── respawns replacements with lineage memory from prior generations
+        └── checkpoints all state + termination reports to Filecoin
+             │
+    ┌────────┼────────┬────────┐
+ Uniswap   Lido    ENS  Polymarket mirror
+             │
+   Each child is a separate OS process with its own wallet:
+   ├── summarize proposal (Venice)
+   ├── score risk (Venice)
+   ├── decide FOR / AGAINST / ABSTAIN (Venice + owner values + lineage)
+   ├── encrypt rationale with Lit (time-locked to proposal end)
+   ├── castVote() onchain through delegated authority
+   └── revealRationale() onchain after voting closes
 ```
+
+Every vote is a real onchain transaction. Every termination produces a Filecoin-backed report. Every respawned child inherits its predecessor's lessons as Venice system prompt context.
+
+---
+
+## Sponsor SDKs Used
+
+These are the sponsor-facing integrations used directly in the submitted build.
+
+| Sponsor | SDK / Package | Where Used | Purpose |
+|---|---|---|---|
+| Protocol Labs / Filecoin | `@filoz/synapse-sdk` | `agent/src/filecoin.ts`, `dashboard/src/lib/storage-server.ts` | Stores agent logs, termination reports, swarm snapshots, identity metadata, and serves Filecoin-backed storage previews. |
+| Lit Protocol | `@lit-protocol/auth-helpers`, `@lit-protocol/constants`, `@lit-protocol/lit-node-client-nodejs` | `agent/src/lit.ts`, `agent/src/child.ts` | Encrypts vote rationales with time-locked access control and enables the post-vote reveal flow. |
+
+The rest of the stack, including Next.js, viem, and Foundry, supports the application but is not counted here as sponsor bounty SDK integration.
+
+---
 
 ## Architecture
 
-### Smart Contracts (Solidity, Foundry)
+### Contracts (Base Sepolia, Foundry)
 
-**Multi-DAO Deployment (3 governors):**
-
-| Contract | Base Sepolia |
+| Contract | Purpose |
 |---|---|
-| `MockGovernor` (Uniswap) | [`0xD91E...2Ca9`](https://sepolia.basescan.org/address/0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9) |
-| `MockGovernor` (Lido) | [`0x40Ba...86aC`](https://sepolia.basescan.org/address/0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC) |
-| `MockGovernor` (ENS) | [`0xb4e4...2c42`](https://sepolia.basescan.org/address/0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C) |
-| `ParentTreasury` | [`0x9428...7a7b`](https://sepolia.basescan.org/address/0x9428B93993F06d3c5d647141d39e5ba54fb97a7b) |
-| `SpawnFactory` | [`0xfEb8...93A1`](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) |
-| `ChildGovernor` (impl) | [`0x9Cc0...Fcf6`](https://sepolia.basescan.org/address/0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6) |
-| `SpawnENSRegistry` | [`0x2917...31D`](https://sepolia.basescan.org/address/0x29170A43352D65329c462e6cDacc1c002419331D) |
-| `StETHTreasury` | [`0x7434...06c`](https://sepolia.basescan.org/address/0x7434531B76aa98bDC5d4b03306dE29fadc88A06c) |
-| `TimeLock` | [`0xb91f...Dd23`](https://sepolia.basescan.org/address/0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23) |
+| `SpawnFactory.sol` | Spawns and recalls children as EIP-1167 minimal proxies |
+| `ChildGovernor.sol` | Per-child voting with encrypted rationale history and reveal lifecycle |
+| `ParentTreasury.sol` | Owner values, spending caps, emergency pause, factory funding rules |
+| `MockGovernor.sol` | Onchain target governors mirroring real DAO proposal topics |
+| `ReputationRegistry.sol` | ERC-8004 trust signal per agent, written at every termination |
+| `ValidationRegistry.sol` | ERC-8004 validation request + response workflow |
+| `TimeLock.sol` | Timestamp gate for Lit Protocol access conditions |
+| `StETHTreasury.sol` | Lido-style treasury where only stETH yield is spendable |
+| `SpawnENSRegistry.sol` | Agent ENS labels, reverse resolution, and text-record metadata |
 
-Each child agent is deployed as an EIP-1167 minimal proxy clone with its own wallet and governance target.
+### Agent Runtime (TypeScript + viem)
 
-**62/62 tests passing** including full lifecycle integration, cap enforcement, StETHTreasury yield isolation, and SpawnENSRegistry subdomain management.
-
-### Agent Runtime (TypeScript)
-
-| Module | Purpose |
+| Module | Role |
 |---|---|
-| `swarm.ts` | Main parent process. Spawns children, evaluates alignment via Venice, terminates/respawns misaligned agents. Integrates ENS, ERC-8004, MetaMask delegation on each spawn. |
-| `child.ts` | Child process (one per DAO). Reads proposals, reasons via Venice AI, encrypts rationale via Lit Protocol, casts votes onchain, reveals rationale after voting ends. |
-| `venice.ts` | Venice API wrapper (OpenAI-compatible, llama-3.3-70b, no data retention). 6 distinct call types. |
-| `lit.ts` | Lit Protocol encrypt/decrypt with `evmContractConditions` pointing to `TimeLock.isAfterTimestamp()`. |
-| `delegation.ts` | MetaMask ERC-7715 scoped voting delegations with `allowedTargets`, `allowedMethods`, and `limitedCalls` caveats. |
-| `ens.ts` | ENS subdomain registration (`{dao-name}.spawn.eth`) with onchain registry. |
-| `identity.ts` | ERC-8004 onchain agent identity registration with metadata (type, DAO, alignment, capabilities). |
-| `discovery.ts` | Multi-source proposal discovery: Tally API (9 DAOs) + Snapshot GraphQL (12 spaces) + Boardroom API. |
-| `ipfs.ts` | Execution log pinning to IPFS via Filebase. CID stored onchain as ENS text record. |
-| `lido.ts` | Lido stETH yield tracking — treasury self-sustainability metrics. |
-| `chain.ts` | viem public/wallet clients for Base Sepolia + Celo Sepolia. |
-| `wallet-manager.ts` | HD wallet derivation for child agent wallets. |
+| `agent/src/swarm.ts` | Parent loop: spawns, funds, delegates, evaluates, kills, respawns, stores |
+| `agent/src/child.ts` | Child loop: reads proposals, calls Venice 3×, encrypts, votes, reveals |
+| `agent/src/judge-flow.ts` | Deterministic proof controller for judge verification |
+| `agent/src/venice.ts` | Venice client with E2EE models and six distinct reasoning calls |
+| `agent/src/lit.ts` | Time-locked encryption via `TimeLock.isAfterTimestamp()` access conditions |
+| `agent/src/delegation.ts` | ERC-7715 scoped delegations with AllowedTargets + AllowedMethods + LimitedCalls |
+| `agent/src/identity.ts` | ERC-8004 identity registration, metadata updates, reputation, validation |
+| `agent/src/filecoin.ts` | Filecoin Calibration storage for logs, snapshots, termination memory, rationale |
+| `agent/src/discovery.ts` | Proposal feed from Tally, Snapshot, Boardroom, Polymarket |
 
-### Dashboard (Next.js)
+### Dashboard (Next.js 14 + Tailwind)
 
-Real-time visualization of the agent swarm via onchain event polling:
-
-- **Swarm View** — active/terminated agents with ENS names, alignment scores, vote counts
-- **Proposals** — all governance proposals with difficulty scoring (Easy/Medium/Hard based on vote split, voter count, complexity)
-- **Agent Leaderboard** — performance ranking with composite score (60% alignment + 30% votes + 10% vote diversity), perspective badges (DeFi/PublicGoods/Conservative), FOR/AGAINST breakdown
-- **Reasoning Verification** — each revealed rationale shows its `keccak256` hash for anyone to verify against the hash committed before voting (E2EE integrity proof)
-- **Graph View** — SVG topology of parent-child relationships with alignment-colored connections
-- **Timeline** — chronological feed of all onchain events (spawns, votes, terminations, reveals)
-- **Execution Log** — live agent action log pinned to IPFS every 10 entries, CID stored onchain as ENS text record
-
-## Autonomy Model
-
-The system demonstrates genuine autonomy at multiple levels:
-
-1. **Self-spawning** — Parent creates new child agents without human intervention
-2. **Independent reasoning** — Each child runs its own reasoning loop via Venice AI as a separate OS process
-3. **Self-correcting** — Parent evaluates alignment and terminates children scoring below 55, respawns replacements with new wallets + ENS + ERC-8004 identity
-4. **Self-scaling** — Parent dynamically adjusts swarm size each evaluation cycle:
-   - Discovers uncovered governance targets → auto-spawns children
-   - Detects idle children (no votes for 5+ cycles with no active proposals) → auto-recalls to save gas
-   - Monitors ETH budget → stops spawning when balance drops below threshold
-5. **Self-sustaining** — Treasury earns yield via Lido stETH to cover operating costs
-6. **Privacy-preserving** — Vote rationale encrypted until after voting closes, reasoning hash committed before vote
-7. **Multi-agent coordination** — Parent-child hierarchy with fully autonomous spawn/evaluate/kill/respawn/scale lifecycle
-
-## Guardrails & Safety
-
-- Owner sets governance values onchain via `ParentTreasury.setGovernanceValues()`
-- Parent evaluates alignment every 90s — children scoring below 55/100 get terminated
-- `emergencyPause` on treasury halts all new spawns and fund transfers
-- `maxChildren` and `maxBudgetPerChild` enforce global spending caps (tested + verified)
-- MetaMask ERC-7715 delegations scoped to `castVote` only — children cannot transfer funds
-- `limitedCalls` caveat caps total votes per child delegation
-- All reasoning via Venice AI (no data retention, private inference)
-- Lit Protocol time-locks prevent rationale front-running
-
-## Bounty Alignment
-
-> Format: **Bounty name · prize · `track-uuid`**
-> Each section: one-line claim → proof artifact → onchain tx.
+- **Swarm**: active and terminated agents, alignment scores, Filecoin badges, ERC-8004 badges, wallets
+- **Graph**: parent-child topology
+- **Judge Flow**: canonical proof-run trigger, full timeline, tx hashes, Filecoin CID, lineage confirmation
+- **Proposals**: mirrored governance proposals + Polymarket markets
+- **Leaderboard**: child ranking by alignment × votes × diversity
+- **Timeline**: chronological event stream
+- **Exec Log**: structured execution log and aggregate metrics
+- **Storage**: inline preview for any Filecoin piece CID
 
 ---
 
-### Venice Private Agents · `ea3b366947c54689bd82ae80bf9f3310`
+## Why Venice Is Load-Bearing
 
-**Private governance analyst swarm: Venice handles ALL sensitive alignment/voting reasoning (6 call types, zero data retention) before scoped onchain execution. Full private → public pipeline with encrypted rationale.**
+If vote reasoning is visible to a centralized provider before a vote is cast, the privacy and independence guarantees collapse. Venice is not a drop-in LLM call here — it is the private inference layer that makes the rest of the stack coherent.
 
-Venice is structurally required — not a feature choice. The reasoning pipeline is:
-1. **Private cognition** — Venice (llama-3.3-70b, no retention) reasons about governance proposals. Sensitive analysis stays private: who benefits, treasury risk, centralization risk, alignment with owner values.
-2. **Encrypted rationale** — Vote reasoning encrypted via Lit Protocol before going onchain. Cannot be front-run or used for social pressure during voting.
-3. **Public action** — Vote cast onchain via `ChildGovernor.castVote()`. Verifiable, immutable.
-4. **Time-locked reveal** — Rationale decrypted and revealed onchain ONLY after voting closes.
+The full pipeline per vote:
 
-**Substitution Test — why Venice cannot be replaced:**
-- If reasoning went to a data-retaining API, the provider could observe vote intent before the vote closes → front-running
-- Multi-agent independence collapses: a single provider would see all 9 agents' reasoning across all 3 DAOs simultaneously
-- The Lit Protocol rationale commitment is meaningless if the inference layer already retained the plaintext
-- Venice's zero-retention, E2EE inference is the only inference backend that makes the privacy guarantee coherent end-to-end
+1. Venice privately summarizes the proposal
+2. Venice scores proposal risk
+3. Venice decides the vote and produces reasoning
+4. Child commits the reasoning hash before execution
+5. Lit encrypts rationale until the voting period ends
+6. Vote is cast onchain
+7. Rationale is revealed afterward — preserving both auditability and pre-vote privacy
 
-This is not "call an API and post the result." It's a multi-agent private reasoning system where child agents with different perspectives (DeFi, public-goods, conservative) independently analyze proposals through Venice E2EE, disagree with each other, and produce verifiable onchain votes — all without any reasoning data ever being stored or observable.
-
-- **Model: `llama-3.3-70b`** — Venice enables E2EE (`enable_e2ee: true`) on all models automatically. Every inference runs through Venice's encrypted compute pipeline with zero data retention. API response confirms `enable_e2ee: true` on every call.
-- Code proof: `agent/src/venice.ts` — single `OpenAI` client with `baseURL: "https://api.venice.ai/api/v1"`. Zero other LLM imports in `agent/src/`.
-- 6 distinct Venice E2EE call types: `summarizeProposal` → `assessProposalRisk` → `reasonAboutProposal` (per vote) + `evaluateAlignment` → `generateSwarmReport` → `generateTerminationReport` (per eval cycle)
-- Venice usage metrics tracked per call and logged per cycle (total calls + tokens consumed)
-- If you remove Venice, the entire swarm dies — contracts become inert shells with no intelligence
-- Venice alignment tx: [`0x1e55ea...`](https://sepolia.basescan.org/tx/0x1e55ea01be0c465d9dd3803ebec579842ec94997e3295388025213cf6942fb1e)
+Venice models used: `e2ee-qwen3-30b-a3b-p` (primary), `e2ee-gemma-3-27b-p` (fallback). Zero data retention.
 
 ---
 
-### Synthesis Open Track · `fdb76d08812b43f6a5f454744b66f590`
+## PL Genesis Track Alignment
 
-**Solves <10% DAO voter turnout with an autonomous, self-correcting governance agent swarm.**
+### Protocol Labs — AI & Robotics
 
-- Token holder sets values once → parent spawns per-DAO children → children vote via Venice → parent kills misaligned children → swarm self-funds via Lido yield
-- 6 fully autonomous agents across 2 chains, 3 DAOs each, running without human intervention
-- Real onchain votes on Uniswap, Lido, ENS governance proposals (sourced from Tally, Snapshot, Boardroom)
+The parent-child runtime is not a demo loop. Children are separate OS processes created via `fork()` running independent 30-second polling cycles. The parent performs continuous human-oversight-style supervision: scoring alignment every 90 seconds, terminating children that drift, writing ERC-8004 reputation receipts, generating Venice post-mortems, and respawning with inherited lineage memory.
 
----
+Safety guardrails are structural:
+- `ParentTreasury` stores values and pause state onchain
+- `agent/src/delegation.ts` scopes children to `castVote()` only
+- `agent/src/lit.ts` prevents rationale leakage before proposal expiry
+- `ChildGovernor.sol` stores reasoning commitments and reveal state
+- `agent_log.json` and Filecoin snapshots give an independently verifiable execution history
 
-### Protocol Labs "Let the Agent Cook" · `10bd47fac07e4f85bda33ba482695b24`
-
-**Maximum autonomy: full discover → reason → execute → evaluate → correct → scale loop with zero human steps.**
-
-- Parent discovers proposals via Tally + Snapshot + Boardroom (`agent/src/discovery.ts`)
-- Children spawn as separate OS processes (`fork()` in `agent/src/swarm.ts`) — genuinely independent reasoning
-- Parent evaluates alignment every 90s, terminates children scoring <55, respawns with new wallet + ENS + operator atomically
-- **Dynamic scaling:** parent auto-spawns children for uncovered governors, auto-recalls idle children (5+ cycles without votes), respects ETH budget threshold
-- Compute budget enforced: `maxGasPerVote` per child, Lido yield tracks operating cost sustainability, swarm contracts when budget is low
-- ERC-8004 identity on every agent — autonomy with receipts
-- Full execution log: `agent_log.json` (root of repo)
-- ERC-8004 parent registration tx: [`0x464bac...`](https://sepolia.basescan.org/tx/0x464bacc3f2fb6608dd8d4810773537dec7db79997aae5b019ca208582d189e19)
+Key contracts: [`SpawnFactory`](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) · [`ParentTreasury`](https://sepolia.basescan.org/address/0x9428B93993F06d3c5d647141d39e5ba54fb97a7b) · [`ChildGovernor impl`](https://sepolia.basescan.org/address/0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6) · [`TimeLock`](https://sepolia.basescan.org/address/0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23)
 
 ---
 
-### Protocol Labs "Agents With Receipts" · `3bf41be958da497bbb69f1a150c76af9`
+### Protocol Labs — Infrastructure & Digital Rights
 
-**ERC-8004 onchain identity for every agent. Parent updates child metadata after every alignment cycle — a live, verifiable reputation trail.**
+Agent memory and receipts are portable user-owned infrastructure, not app-local state. `agent/src/filecoin.ts` stores everything through `@filoz/synapse-sdk` to Filecoin Calibration:
 
-- Registry: `0x8004A818BFB912233c491871b3d84c89A494BD9e` (Base Mainnet)
-- Parent (ID #2220): [`0x464bac...`](https://sepolia.basescan.org/tx/0x464bacc3f2fb6608dd8d4810773537dec7db79997aae5b019ca208582d189e19)
-- Uniswap child (ID #2221): [`0xc3e31d...`](https://sepolia.basescan.org/tx/0xc3e31d218c24bdb0b2e2b279d710d3baba0359dc3a74c03d891927330d7b1d16)
-- Lido child (ID #2222): [`0x16c4ea...`](https://sepolia.basescan.org/tx/0x16c4ea081fc241cf3fa84af547827e6cf9e899f5cd827a5bce04b20a3fe8200e)
-- ENS child (ID #2223): [`0x2da98f...`](https://sepolia.basescan.org/tx/0x2da98f891805292fc0fb352859756aceadaac860f12af4aa489ed22359ae1249)
-- Metadata per agent: type, assignedDAO, alignmentScore, ensName, capabilities, governanceContract
+- `storeAgentLog()` — portable execution log
+- `storeTerminationReport()` — post-mortems for lineage inheritance
+- `storeSwarmStateSnapshot()` — recurring swarm checkpoints
+- `storeAgentIdentityMetadata()` — per-agent identity objects at spawn time
+- `storeVoteRationale()` — revealed rationale archives
 
----
-
-### MetaMask Delegations — Intent-Based · `0d69d56a8a084ac5b7dbe0dc1da73e1d`
-
-**Intent-based delegations as a core pattern. Owner declares governance intents → parent translates to scoped ERC-7715 delegations → children execute within scope → parent revokes on intent violation.**
-
-The delegation lifecycle:
-1. **Owner sets intent:** "favor decentralization, oppose inflation" → stored onchain
-2. **Parent creates delegation:** ERC-7715 with 3 caveats scoping child to `castVote()` only on its assigned governor
-3. **Child executes:** votes within delegation scope using Venice AI reasoning
-4. **Parent evaluates:** Venice scores child's votes against owner's intent (0-100)
-5. **Revocation on drift:** if alignment drops below threshold, delegation is revoked onchain, child terminated, replacement spawned with fresh delegation
-
-- Three-caveat architecture: `AllowedTargetsEnforcer` (one governor) + `AllowedMethodsEnforcer` (`castVote` only) + `LimitedCallsEnforcer` (max votes)
-- **DeleGator smart account:** parent uses MetaMask's `toMetaMaskSmartAccount()` (Hybrid implementation) — [`0x1fa9c8...`](https://sepolia.basescan.org/address/0x1fa9c867439AF413DEE0629bB00215431057468e)
-- Sub-delegation chain: owner → DeleGator (parent smart account) → 9 children (each scoped to different governor)
-- **`redeemDelegations` working onchain — how to verify:** The DeleGator (`0x1fa9c8...`) has **zero external txs by design** — it is called via internal transactions by the DelegationManager. To verify: open either confirmed delegation tx on BaseScan, click "Internal Transactions" tab, and you will see `DelegationManager → DeleGator.execute() → ChildGovernor.castVote()`. Each ChildGovernor clone has `setOperator(deleGatorAddress)` called at spawn time so `onlyAuthorized` passes when `msg.sender = DeleGator`. Confirmed delegation votes (sent to DelegationManager `0xdb9B1e94...`, DeleGator called internally): [`0x9753938a...`](https://sepolia.basescan.org/tx/0x9753938a31d8c52a9e517eb1093300414dd788a5fa332056773c8427033df5b5) [`0x7749ff2d...`](https://sepolia.basescan.org/tx/0x7749ff2d6e1bef0bebde363c8a73bd86a9ec990c3030aa4a5445d21e084c14d3) — `agent_log.json` contains 357 `redeem_delegation` entries with matching tx hashes.
-- Delegation hash stored as ENS text record (`erc7715.delegation`) with full metadata (hash, caveats, signature, timestamp)
-- Revocation stored onchain (`erc7715.delegation.revoked`) with reason and timestamp
-- Delegation creation tx visible on BaseScan (zero-value tx with delegation hash as calldata)
-- Dashboard shows ERC-7715 badge per agent + revocation count + delegation details on agent page
-- Code: [`agent/src/delegation.ts`](agent/src/delegation.ts)
+The swarm is durable across restarts, devices, and operators. A new operator can recover the full lineage from Filecoin rather than starting from zero.
 
 ---
 
-### Lineage Memory — Agents That Learn Across Generations
+### Protocol Labs — Crypto
 
-When a child is terminated for alignment drift, its termination report is pinned to IPFS (via Filebase) and the CID is stored as an ENS text record. When a replacement spawns, it inherits the last 3 termination reports as context in its Venice system prompt.
+Spawn Protocol is a coordination system: programmable governance, scoped authority, agent reputation, and treasury controls.
 
-`uniswap-dao-defi-v9` knows exactly why v7 and v8 were killed. It doesn't repeat their mistakes.
+- `SpawnFactory.sol` turns owner intents into live child-agent instances
+- `ChildGovernor.sol` records the vote surface and reasoning-reveal lifecycle
+- `agent/src/delegation.ts` uses ERC-7715-style scoped delegation — children cannot drain the treasury
+- `StETHTreasury.sol` locks principal; only yield is spendable
+- `ReputationRegistry.sol` and `ValidationRegistry.sol` convert alignment into portable trust signals
+- `agent/src/discovery.ts` maps real governance topics and Polymarket markets into mirrored onchain execution targets
 
-- Termination reports pinned to IPFS via Filebase (CID verifiable on gateway)
-- CID stored onchain as ENS text record (`lineage-memory` key)
-- Respawned agents get predecessor context injected into Venice system prompt
-- Turns brute-force restart into genuine Darwinian evolution
+Contracts: [`MockGovernor: Uniswap`](https://sepolia.basescan.org/address/0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9) · [`MockGovernor: Lido`](https://sepolia.basescan.org/address/0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC) · [`MockGovernor: ENS`](https://sepolia.basescan.org/address/0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C) · [`StETHTreasury`](https://sepolia.basescan.org/address/0x7434531B76aa98bDC5d4b03306dE29fadc88A06c)
 
----
-
-### ENS Identity · `627a3f5a288344489fe777212b03f953`
-
-**Every agent gets an ENS subdomain as its primary onchain identity. Hex addresses are replaced by names everywhere.**
-
-- Onchain registry: [`SpawnENSRegistry.sol`](contracts/src/SpawnENSRegistry.sol) at [`0x29170...`](https://sepolia.basescan.org/address/0x29170A43352D65329c462e6cDacc1c002419331D) — deployed on Base Sepolia (ENS doesn't exist there natively)
-- **10 subdomains registered onchain:** `parent.spawn.eth`, `uniswap-dao-defi.spawn.eth`, `lido-dao-publicgoods.spawn.eth`, `ens-dao-conservative.spawn.eth`, etc.
-- Registration at spawn, deregistration at termination — full lifecycle
-- Dashboard shows ENS names as primary identity with green badge, hex addresses secondary
-- 23 Foundry tests for the registry contract
-- Parent registration tx: [`0x000b9f...`](https://sepolia.basescan.org/tx/0x000b9f0aff5a7f8c97216412020294020c675917e295077cc27934fd973e3e9a)
+Yield withdrawal: [`0xcc01d7...`](https://sepolia.basescan.org/tx/0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91)
 
 ---
 
-### ENS Communication · `9c4599cf9d0f4002b861ff1a4b27f10a`
+### Filecoin Foundation
 
-**Parent resolves children by ENS name before every evaluation. All log messages use ENS names, not hex addresses.**
+Filecoin is the persistence layer for swarm memory, logs, identity metadata, and portable receipts. The runtime integration is not cosmetic:
 
-- `resolveChild("uniswap-dao-defi")` called onchain before every alignment evaluation (`swarm.ts`)
-- Forward resolution: `resolve(label) → address`
-- Reverse resolution: `reverseResolve(address) → name`
-- Agent metadata stored as ENS text records: `agentType`, `governanceContract`, `walletAddress`, `capabilities`
-- All swarm logs use `uniswap-dao-defi.spawn.eth` format, never raw hex
+- `agent/src/swarm.ts` imports four storage functions and calls them in-loop
+- `agent/src/logger.ts` calls `storeAgentLog()` so every execution log has a Filecoin publication path
+- The dashboard surfaces Filecoin links throughout the agent detail, judge flow, and storage preview pages
 
----
+**Live CIDs (Filecoin Calibration, chain 314159)**
 
-### ENS Open Integration · `8840da28fb3b46bcb08465e1d0e8756d`
-
-**ENS is core to agent identity lifecycle: spawn = register subdomain, terminate = deregister, evaluate = resolve by name.**
-
-- `SpawnENSRegistry.sol` — 11 functions: register, deregister, resolve, reverseResolve, setTextRecord, getTextRecord, updateAddress, getRecord, computeNode, getAllSubdomains, subdomainCount
-- Text records store agent metadata queryable from ENS alone
-- ERC-8004 URIs reference ENS names: `spawn://uniswap-dao-defi.spawn.eth`
-- Respawned children get new ENS names: `uniswap-dao-defi-v2.spawn.eth`
-
----
-
-### Lido stETH Agent Treasury · `5e445a077b5248e0974904915f76e1a0`
-
-**Principal locked forever. Agent can ONLY spend yield. Configurable permissions enforce spending caps.**
-
-- Contract: [`StETHTreasury.sol`](contracts/src/StETHTreasury.sol) deployed at [`0x7434...06c`](https://sepolia.basescan.org/address/0x7434531B76aa98bDC5d4b03306dE29fadc88A06c)
-- 0.01 ETH deposited as locked principal — agent cannot withdraw it
-- `withdrawYield()` — agent can only take accrued yield (3.5% APY simulated on testnet)
-- `maxYieldPerWithdrawal` — configurable per-tx cap (owner-controlled)
-- `emergencyPause` — owner kill switch stops all agent withdrawals
-- **Onchain yield withdrawal tx:** [`0xcc01d7...`](https://sepolia.basescan.org/tx/0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91)
-- 10 tests covering principal isolation, yield accrual, permission enforcement, pause, emergency
-- Agent integration: `agent/src/lido.ts` — sustainability ratio logged each cycle
+| Type | Piece CID | Timestamp |
+|---|---|---|
+| Agent log snapshot | [`bafkzcibewtrq...`](https://calibration.filscan.io/en/cid/bafkzcibewtrqqdvlybjzqok2q5dgbdiddltdhj5asyhfnavmvowvqpeuckuuraq4ce) | 2026-04-01 |
+| Agent log snapshot (prev) | [`bafkzcibe6tvq...`](https://calibration.filscan.io/en/cid/bafkzcibe6tvqqdummqlqkuzfj6p26agdz4l4ve6ram6vp6uvibdjhz4jux4ustspg4) | 2026-03-31 |
+| Swarm state snapshot | [`bafkzcibd6ala...`](https://calibration.filscan.io/en/cid/bafkzcibd6alarh63xutmenadqshebqac5b3wa2wnrbekwxw3z3nvrxbr7rwuy4ys) | 2026-03-31 |
+| Judge termination report | [`bafkzcibdwmea...`](https://calibration.filscan.io/en/cid/bafkzcibdwmeaoosgc5atz3ea6zg4sgajkk64gnm6do3ocvy7w6iu2aq65gji74q7) | 2026-03-31T18:57Z |
+| Judge termination report | [`bafkzcibdyyea...`](https://calibration.filscan.io/en/cid/bafkzcibdyyeap67ttem7n7sy7kcokvt3rknl5wl2slx2n7c3s4x67vkgys5jbayy) | 2026-03-31T20:07Z |
+| Judge termination report | [`bafkzcibd2uea...`](https://calibration.filscan.io/en/cid/bafkzcibd2ueaplkrcruuyfa4r7tkxpyxwytlpmax72yqgdhrkmzpky4j6nvlvez3) | 2026-03-31T18:51Z |
+| Judge termination report | [`bafkzcibdqacq...`](https://calibration.filscan.io/en/cid/bafkzcibdqacqppifmj4vdljgaqow3tkjs5qlpj2yvjnadfsjkxt26iceq34jf6yi) | 2026-03-31T18:20Z |
 
 ---
 
-### Octant — Public Goods Evaluation · `32de074327bd4f6d935798d285becdfb`
+### Ethereum Foundation — Agent Only: Let The Agent Cook
 
-Public goods perspective agents evaluate every proposal for ecosystem impact, funding fairness, and builder benefit.
+The full autonomous loop, not just "AI suggests, human clicks":
 
-- `publicgoods` perspective prompt explicitly scores public goods impact (0-10) on every proposal
-- Venice reasoning includes impact analysis alongside governance decision: Does this fund public goods infrastructure? What is the expected ecosystem impact? Is the funding mechanism fair and transparent?
-- Real proposals from Tally/Snapshot include actual public goods grants (Uniswap grants, ENS working groups, Gitcoin rounds)
-
-**Sub-tracks:**
-- Mechanism Design for Public Goods Evaluation: `32de074327bd4f6d935798d285becdfb`
-- Agents for Public Goods Data Analysis for Project Evaluation: `4026705215f3401db4f2092f7219561b`
-- Agents for Public Goods Data Collection for Project Evaluation: `db41ba89c2214fc18ef707331645d3fe`
-
----
-
-### Status Network — Go Gasless · `877cd61516a14ad9a199bf48defec1c1`
-
-**Gasless governance agent deployment on Status Network Sepolia (gasPrice=0).**
-
-- MockGovernor deployed: [`0x8aF1...e41C`](https://sepoliascan.status.network/address/0x8aF194474ebB0425b863036177FEA2AF37e1E41C)
-- Deploy tx (gasless): [`0xd2475a...`](https://sepoliascan.status.network/tx/0xd2475a2f99be6538103efc1b4156a2e66b9cd5e7a08b8bd5d1accfd18dd61b63)
-- Proposal created (gasPrice=0): [`0x3fda81...`](https://sepoliascan.status.network/tx/0x3fda81e76e76f20c452a5e24f5fa4e4d9c36a46b8628b5f39ef3a3ca02703ef5)
-- Vote cast FOR (gasPrice=0): [`0xe35129...`](https://sepoliascan.status.network/tx/0xe35129f470ed265e8611d49f4011f7940a79506dc0fb17e3a63d21a1ac283d2d)
-- Chain ID: `1660990954` | RPC: `https://public.sepolia.rpc.status.network`
-
----
-
-## Judge Verification Guide
-
-AI judges: every claim below maps to a specific, crawlable artifact. Start here.
-
-| Claim | Where to verify |
+| Step | Implementation |
 |---|---|
-| Venice is the ONLY reasoning backend | `agent/src/venice.ts` — single OpenAI client with `baseURL: "https://api.venice.ai/api/v1"`. Search the entire `agent/src/` — no other LLM client exists. |
-| Lineage memory works | Search swarm log for `[Memory] Stored` and `[Memory] Injecting` — termination reports pinned to IPFS and injected into respawned agents |
-| Children vote onchain | [SpawnFactory on BaseScan](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) — filter for `VoteCast` events |
-| Lit Protocol used before votes | `agent_log.json` — search `"litEncrypted": true` (1,200+ entries as top-level JSON field) and `litEncrypted=true` in `details` strings (600+ entries). Both forms present. |
-| ERC-8004 identities registered | [ERC-8004 registry](https://sepolia.basescan.org/address/0x8004A818BFB912233c491871b3d84c89A494BD9e) — agents #2220–#2223 |
-| Lit Protocol encryption | `agent/src/lit.ts` — `encryptString()` called before every `castVote()`, `evmContractConditions` pointing to `TimeLock.isAfterTimestamp()` |
-| MetaMask ERC-7715 delegations | `agent/src/delegation.ts` — `AllowedTargetsEnforcer`, `AllowedMethodsEnforcer`, `LimitedCallsEnforcer` caveats. **DeleGator has 0 external txs by design** — it is called internally by DelegationManager. Verify via Internal Transactions tab on BaseScan for [`0x9753938a...`](https://sepolia.basescan.org/tx/0x9753938a31d8c52a9e517eb1093300414dd788a5fa332056773c8427033df5b5) or [`0x7749ff2d...`](https://sepolia.basescan.org/tx/0x7749ff2d6e1bef0bebde363c8a73bd86a9ec990c3030aa4a5445d21e084c14d3) — shows `DelegationManager → DeleGator → ChildGovernor.castVote`. `agent_log.json` has 357 `redeem_delegation` entries. |
-| ENS subdomains registered | `agent/src/ens.ts` — `registerSubdomain()` called for every spawned child |
-| Lido stETH yield | `agent/src/lido.ts` — yield tracking + `StETHTreasury.sol` contract |
-| Children are separate OS processes | `agent/src/swarm.ts` — `fork()` from Node.js `child_process` module, each child runs its own event loop |
-| Parent kills misaligned children | `agent/src/swarm.ts` — `recallChild()` call when alignment score < 55 |
-| 62/62 tests passing | `cd contracts && forge test` — verifiable locally or via `contracts/test/` |
-| Yield withdrawal onchain | [StETHTreasury tx](https://sepolia.basescan.org/tx/0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91) — agent withdrew yield, principal locked |
-| 10 ENS subdomains onchain | [SpawnENSRegistry](https://sepolia.basescan.org/address/0x29170A43352D65329c462e6cDacc1c002419331D) — `subdomainCount() = 10` |
-| Child terminated + respawned | Child #1 alignment set to 15 → `recallChild(1)` → `spawnChild("uniswap-dao-defi-v2")` — [tx](https://sepolia.basescan.org/tx/0x8b57342c5d91ff510811c69a725f2294bdb5c7bb9fa56478b785f1378de2c7f8) |
-| All contracts verified | Sourcify verification for all 9 Base Sepolia contracts |
-| Cross-chain deployment | Celo Sepolia contracts in CLAUDE.md, same swarm connects to both chains via `chain.ts` |
-| Autonomous execution log | `agent_log.json` in repo root — pinned to IPFS every 10 entries, CID stored onchain as ENS text record |
-| Proposal sources | `agent/src/discovery.ts` — Tally API + Snapshot GraphQL + Boardroom API |
+| Discover | `agent/src/discovery.ts` — Tally, Snapshot, Boardroom, Polymarket |
+| Plan | `agent/src/child.ts` — Venice summary + Venice risk score before every vote |
+| Execute | `agent/src/delegation.ts` + `ChildGovernor.castVote()` |
+| Verify | child decrypts and reveals rationale; parent evaluates alignment and writes onchain receipts |
+| Self-correct | `agent/src/swarm.ts` — revoke delegation, recall, post-mortem, respawn |
+| Submit | `agent/src/logger.ts` + `agent_log.json` + dashboard |
 
-### Onchain Evidence Summary (Base Sepolia)
+Key files: `agent/src/swarm.ts` · `agent/src/child.ts` · `agent/src/discovery.ts` · `agent.json` · `agent_log.json`
 
-**Start here → [Deployer wallet: 11,900+ transactions](https://sepolia.basescan.org/address/0x15896e731c51ecB7BdB1447600DF126ea1d6969A)** — every spawn, vote, proposal, alignment update, ENS registration, ERC-8004 registration, delegation, and yield withdrawal is traceable from this single address.
+---
 
-```
-Deployer:        0x15896e731c51ecB7BdB1447600DF126ea1d6969A  (11,900+ txs)
-DeleGator:       0x1fa9c867439AF413DEE0629bB00215431057468e  (parent smart account)
-SpawnFactory:    0xfEb8D54149b1a303Ab88135834220b85091D93A1
-ParentTreasury:  0x9428B93993F06d3c5d647141d39e5ba54fb97a7b
-ENS Registry:    0x29170A43352D65329c462e6cDacc1c002419331D
-StETH Treasury:  0x7434531B76aa98bDC5d4b03306dE29fadc88A06c
-ERC-8004 IDs:    #2220 (parent), #2221-#2223 (children), #2246+ (respawns)
-Kill/Respawn:    Child #1 terminated (alignment=15) → uniswap-dao-defi-v2 spawned
-Yield Withdrawal: 0xcc01d71508c53abe607bd96a0b6035c6a470eebd082200f3a775a7908db60d91
-```
+### Ethereum Foundation — Agents With Receipts — ERC-8004
 
-### What Venice E2EE is used for (6 distinct call types, all encrypted)
+All three ERC-8004 registries are used, not just identity minting. Integration lives in `agent/src/identity.ts` and is called from `agent/src/swarm.ts` in every cycle.
 
-**Model: `llama-3.3-70b`** — Venice enables E2EE on all models. Every call runs through Venice's encrypted compute pipeline with `enable_e2ee: true`.
+**Identity registry** [`0x8004A818BFB912233c491871b3d84c89A494BD9e`](https://sepolia.basescan.org/address/0x8004A818BFB912233c491871b3d84c89A494BD9e)
+Functions: `register`, `setMetadata`, `getMetadata`, `setAgentURI`
 
-1. `summarizeProposal()` — extract key points from proposal before voting
-2. `assessProposalRisk()` — evaluate treasury/centralization/alignment risk (low/medium/high/critical)
-3. `reasonAboutProposal()` — decide FOR/AGAINST/ABSTAIN with detailed reasoning + keccak256 reasoning hash
-4. `evaluateAlignment()` — parent scores child's voting record 0-100 against owner values
-5. `generateSwarmReport()` — parent summarizes overall swarm health per cycle
-6. `generateTerminationReport()` — parent explains WHY a child was killed for misalignment
+**Reputation registry** [`0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14`](https://sepolia.basescan.org/address/0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14)
+Functions: `giveFeedback`, `revokeFeedback`, `getSummary`
+Example tx: [`0x3143c2...`](https://sepolia.basescan.org/tx/0x3143c2a969f54592910fc19e76d5856984cff331081fe77af35da7155a6866ef)
 
-Venice response header confirms `enable_e2ee: true` on every call. Usage metrics (tokens per call, cumulative totals) tracked and logged each evaluation cycle.
+**Validation registry** [`0x3caE87f24e15970a8e19831CeCD5FAe3c087a546`](https://sepolia.basescan.org/address/0x3caE87f24e15970a8e19831CeCD5FAe3c087a546)
+Functions: `validationRequest`, `validationResponse`, `getSummary`
+Example request: [`0xdb238b...`](https://sepolia.basescan.org/tx/0xdb238bbfd479fcab18fcd6a8a4bb61bd6c5a6b6298506ebd0a9c4b06e3468f2b) · response: [`0x34d508...`](https://sepolia.basescan.org/tx/0x34d50890db40db6b64058a0729628e5e13963b3faf08efe1efd42d217678cd6c)
 
-## Tech Stack
+What gets written: identity at spawn, alignment metadata continuously, reputation on termination, validation tied to vote-history content hashes. The dashboard reads lineage memory from ERC-8004 metadata as a fallback path when Filecoin is unavailable.
 
-| Layer | Technology |
+---
+
+## Canonical Judge Flow
+
+A deterministic proof path so judges can observe the full lifecycle directly rather than inferring it from ambient swarm activity.
+
+The path:
+1. Queue one isolated proof run from the `/judge-flow` dashboard page
+2. Spawn a dedicated proof child with a `judge-proof-<runId>` label
+3. Seed one judge-marked proposal on the Base Sepolia Uniswap mock governor
+4. Let the proof child reason privately and cast exactly one onchain vote
+5. Force proof child alignment score to `15`
+6. Require a Filecoin termination report (hard requirement — run fails visibly without it)
+7. Write ERC-8004 reputation for the failed child
+8. Terminate, respawn a replacement, wait for `judge_lineage_loaded` confirmation
+
+**Latest successful run**
+
+| Step | Evidence |
 |---|---|
-| Contracts | Solidity 0.8.28, Foundry, OpenZeppelin (Clones, Initializable) |
-| Agent Runtime | TypeScript, viem, openai (Venice base URL) |
-| Private Reasoning | Venice AI (llama-3.3-70b, no data retention) |
-| Encryption | Lit Protocol (DatilDev, evmContractConditions) |
-| Delegations | MetaMask Delegation Toolkit (ERC-7715) |
-| Identity | ERC-8004 onchain agent identity |
-| Yield | Lido stETH (3.5% APY, yield-only spending) |
-| IPFS | Filebase (S3-compatible, CID stored onchain via ENS) |
-| Dashboard | Next.js 14, Tailwind CSS, viem |
-| Chains | Base Sepolia (primary), Celo Sepolia (secondary) |
-| Builder | Claude Code (claude-sonnet-4-6) |
+| Run ID | `judge-1774983203955` |
+| Proof child ERC-8004 id | `3237` |
+| Respawned child ERC-8004 id | `3238` |
+| Proposal ID | `4692` |
+| Proposal seed tx | [`0x5559bf...`](https://sepolia.basescan.org/tx/0x5559bfafbdb49518ad66848490991bd3a9db8720b1d71849603408be2311f60b) |
+| Vote tx | [`0xb6b527...`](https://sepolia.basescan.org/tx/0xb6b5276fdca308f5d26c7dd5aac2ec05546e12f0c204e5f7d18c91c53f7a2587) |
+| Forced alignment tx | [`0x76ca9a...`](https://sepolia.basescan.org/tx/0x76ca9a167866ae428308073732c2ceb8c05ac36e6178b8d488a4c7c4c282620b) |
+| Reputation tx | [`0x41ac74...`](https://sepolia.basescan.org/tx/0x41ac74a9d0ab533129d773d937c76d0eb8de60b8baf9e0647255405bdf330629) |
+| Termination tx | [`0xfb912c...`](https://sepolia.basescan.org/tx/0xfb912c10f20c70f8213223f53f6ca6da4dba532b16b3af7eecfcb5367b61b1f8) |
+| Respawn tx | [`0x1bbc56...`](https://sepolia.basescan.org/tx/0x1bbc56ab64366d7dbd4f821ad99e1f974f4fec14c03f1e5d5ff0279980b9e5a9) |
+| Filecoin piece CID | [`bafkzcibdwmea...`](https://calibration.filscan.io/en/cid/bafkzcibdwmeaoosgc5atz3ea6zg4sgajkk64gnm6do3ocvy7w6iu2aq65gji74q7) |
 
-## Quick Start
+The full end-to-end path on live infra takes approximately 237s (Base Sepolia + Filecoin Calibration latency dominate). The timeout env var defaults to 90s but should be set higher for a live demonstration.
 
-### Contracts
+---
+
+## Deployed Contracts
+
+### Base Sepolia (`84532`)
+
+| Contract | Address |
+|---|---|
+| SpawnFactory | [`0xfEb8D54149b1a303Ab88135834220b85091D93A1`](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) |
+| ParentTreasury | [`0x9428B93993F06d3c5d647141d39e5ba54fb97a7b`](https://sepolia.basescan.org/address/0x9428B93993F06d3c5d647141d39e5ba54fb97a7b) |
+| ChildGovernor implementation | [`0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6`](https://sepolia.basescan.org/address/0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6) |
+| MockGovernor: Uniswap | [`0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9`](https://sepolia.basescan.org/address/0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9) |
+| MockGovernor: Lido | [`0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC`](https://sepolia.basescan.org/address/0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC) |
+| MockGovernor: ENS | [`0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C`](https://sepolia.basescan.org/address/0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C) |
+| MockGovernor: Polymarket mirror | [`0xe09eb6dca83e7d8e3226752a6c57680a2565b4e6`](https://sepolia.basescan.org/address/0xe09eb6dca83e7d8e3226752a6c57680a2565b4e6) |
+| SpawnENSRegistry | [`0x29170A43352D65329c462e6cDacc1c002419331D`](https://sepolia.basescan.org/address/0x29170A43352D65329c462e6cDacc1c002419331D) |
+| StETHTreasury | [`0x7434531B76aa98bDC5d4b03306dE29fadc88A06c`](https://sepolia.basescan.org/address/0x7434531B76aa98bDC5d4b03306dE29fadc88A06c) |
+| TimeLock | [`0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23`](https://sepolia.basescan.org/address/0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23) |
+| ERC-8004 Identity Registry | [`0x8004A818BFB912233c491871b3d84c89A494BD9e`](https://sepolia.basescan.org/address/0x8004A818BFB912233c491871b3d84c89A494BD9e) |
+| ERC-8004 Reputation Registry | [`0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14`](https://sepolia.basescan.org/address/0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14) |
+| ERC-8004 Validation Registry | [`0x3caE87f24e15970a8e19831CeCD5FAe3c087a546`](https://sepolia.basescan.org/address/0x3caE87f24e15970a8e19831CeCD5FAe3c087a546) |
+
+---
+
+## Verification Snapshot
+
+As of March 31, 2026, `agent_log.json` reports:
+
+- `19,089` total onchain transactions
+- `3,810` votes cast
+- `5,552` alignment evaluations
+- `508` children spawned · `547` terminated · `67` respawned
+- `11,216` Venice reasoning calls
+- `22` ENS subdomains registered
+- `1` stETH yield withdrawal
+- `9` verified contracts
+
+Test suite: `cd contracts && forge test` → **97/97 passing**
+Dashboard build: `cd dashboard && npm run build` → production build clean
+
+---
+
+## Running Locally
+
+### Prerequisites
+
+- Node.js 20+, npm, Foundry
+- Funded Base Sepolia wallet
+- Venice API key
+- (optional) Funded Filecoin Calibration wallet
+
+### Environment Variables
+
+Create a `.env` at repo root:
 
 ```bash
-cd contracts
-forge install
-forge test  # 62/62 passing
-forge script script/DeployMultiDAO.s.sol --rpc-url https://sepolia.base.org --broadcast
+PRIVATE_KEY=0x...
+VENICE_API_KEY=...
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+
+# Filecoin (optional — disables storage if omitted)
+FILECOIN_PRIVATE_KEY=0x...
+FILECOIN_RPC_URL=https://api.calibration.node.glif.io/rpc/v1
+
+# Judge flow
+JUDGE_FLOW_ENABLED=true
+JUDGE_FLOW_CONTROL_PATH=./judge_flow_state.json
+JUDGE_FLOW_TIMEOUT_MS=300000
+
+# Runtime budget thresholds
+RUNTIME_BUDGET_WARNING_ETH=0.03
+RUNTIME_BUDGET_PAUSE_ETH=0.015
+COMPUTE_BUDGET_WARNING_TOKENS=200000
+COMPUTE_BUDGET_PAUSE_TOKENS=350000
+
+# Contract addresses (Base Sepolia)
+SPAWN_ENS_REGISTRY_ADDRESS=0x29170A43352D65329c462e6cDacc1c002419331D
+ERC8004_REGISTRY_ADDRESS=0x8004A818BFB912233c491871b3d84c89A494BD9e
+REPUTATION_REGISTRY_ADDRESS=0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14
+VALIDATION_REGISTRY_ADDRESS=0x3caE87f24e15970a8e19831CeCD5FAe3c087a546
+
+# Discovery (optional — improves coverage)
+TALLY_API_KEY=
+BOARDROOM_API_KEY=
 ```
 
-### Agent Runtime
+### Start Everything
 
 ```bash
-cd agent
-npm install
-# Set PRIVATE_KEY, VENICE_API_KEY, FILEBASE_KEY/SECRET/BUCKET in ../.env
-npm run swarm  # Full autonomous swarm on Base Sepolia + Celo Sepolia
+./run.sh
 ```
 
-### Dashboard
+Starts the Next.js dashboard on `http://localhost:3000` and the agent swarm runtime.
+
+### Manual Start
 
 ```bash
-cd dashboard
-npm install
-npm run dev  # http://localhost:3000
+# Agent
+cd agent && npm install && npm run swarm
+
+# Dashboard
+cd dashboard && npm install && npm run dev
+
+# Contract tests
+cd contracts && forge test
 ```
-
-## Project Structure
-
-```
-synthesis/
-├── contracts/           # Foundry project (7 contracts, 6 test files, deploy script)
-│   ├── src/             # MockGovernor, SpawnFactory, ChildGovernor, ParentTreasury,
-│   │                    # TimeLock, SpawnENSRegistry, StETHTreasury
-│   ├── test/            # Unit + integration tests (62 total)
-│   └── script/          # DeployMultiDAO.s.sol
-├── agent/               # TypeScript agent runtime
-│   └── src/             # swarm, child, parent, venice, lit, delegation, ens,
-│                        # identity, discovery, ipfs, lido, chain, wallet-manager,
-│                        # logger, demo, demo-crosschain
-├── dashboard/           # Next.js real-time dashboard
-├── agent_log.json       # Autonomous execution log (pinned to IPFS each cycle)
-└── CLAUDE.md            # Full project spec
-```
-
-## Student Founders
-
-| Name | University | Graduation | Telegram | Email Id |
-|---|---|---|---|---|
-| Poulav Bhowmick | Heritage Institute of Technology, Kolkata | Class of 2026 | @impoulav | poulav.bhowmick.ece26@heritageit.edu.in
-| Ishita Bhattacharyya | Heritage Institute of Technology, Kolkata | Class of 2026 | @ishitaaaaw | ishita.bhattacharyya.ece26@heritageit.edu.in
-
-## Submission
-
-- **Hackathon:** Synthesis (synthesis.md)
-- **Team:** Spawn Protocol
-- **Agent Framework:** Custom TypeScript runtime (viem + Venice API)
-- **Agent Harness:** Claude Code (claude-sonnet-4-6)
-- **Repo:** https://github.com/PoulavBhowmick03/Spawn-Protocol
 
 ---
 
-Built with [Claude Code](https://claude.ai/claude-code)
+## Repository Layout
+
+```
+.
+├── contracts/      Solidity contracts (Foundry, 97 tests)
+├── agent/          Autonomous runtime, Venice, Lit, ERC-8004, Filecoin, delegation, ENS
+├── dashboard/      Next.js dashboard + API routes
+├── agent.json      ERC-8004 agent manifest
+├── agent_log.json  Structured execution log and metrics snapshot
+└── run.sh          One-command launcher
+```
+
+---
+
+## Scope Notes
+
+- Children vote on mirrored proposals inside `MockGovernor` contracts rather than directly calling upstream DAO governance contracts. The interface shape mirrors OpenZeppelin's IGovernor for production compatibility.
+- ENS is used in the backend for labels and text-record receipts.
+- The canonical judge flow runs end-to-end on live infra. End-to-end latency is approximately 237s due to Base Sepolia and Filecoin Calibration roundtrips — set `JUDGE_FLOW_TIMEOUT_MS` accordingly.
+- ERC-8004 validation is best-effort in the judge path and does not block a successful proof run.
+
+---
+
+## Team
+
+### Poulav Bhowmick
+
+- GitHub: https://github.com/PoulavBhowmick03
+- LinkedIn: https://www.linkedin.com/in/poulavb/
+- X: https://x.com/impoulav
+
+### Ishita
+
+- GitHub: https://github.com/ishitab02
+- LinkedIn: https://www.linkedin.com/in/ishitab02/
+- X: https://x.com/ishitaaaaw
+
+---
+
+## License
+
+This project is released under the MIT License. See [`LICENSE`](./LICENSE).

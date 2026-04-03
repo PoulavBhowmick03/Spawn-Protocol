@@ -25,6 +25,12 @@ if (!childAddr || !governanceAddr || !label) {
 const childPrivateKey = process.env.CHILD_PRIVATE_KEY as `0x${string}` | undefined;
 const childPerspective = process.env.CHILD_PERSPECTIVE || undefined;
 
+function ipcLog(action: string, inputs: Record<string, any>, outputs: Record<string, any>, txHash?: string) {
+  if (process.send) {
+    process.send({ type: "log_child_action", childLabel: label, action, inputs, outputs, txHash });
+  }
+}
+
 async function main() {
   let values = "Prioritize decentralization, support public goods, oppose inflation";
 
@@ -49,6 +55,28 @@ async function main() {
   const fullValues = childPerspective
     ? `${childPerspective}\n\nOwner's governance values: ${values}`
     : values;
+
+  if (process.env.JUDGE_FLOW_RUN_ID && process.env.JUDGE_LINEAGE_SOURCE_CID) {
+    ipcLog(
+      "judge_lineage_loaded",
+      {
+        judgeRunId: process.env.JUDGE_FLOW_RUN_ID,
+        judgeStep: "judge_lineage_loaded",
+        proofChild: true,
+        proofStatus: "lineage_loaded",
+        lineageSourceCid: process.env.JUDGE_LINEAGE_SOURCE_CID,
+        respawnedChild: label,
+      },
+      {
+        judgeRunId: process.env.JUDGE_FLOW_RUN_ID,
+        judgeStep: "judge_lineage_loaded",
+        proofChild: true,
+        proofStatus: "lineage_loaded",
+        lineageSourceCid: process.env.JUDGE_LINEAGE_SOURCE_CID,
+        respawnedChild: label,
+      }
+    );
+  }
 
   await runChildLoop(
     childAddr as `0x${string}`,

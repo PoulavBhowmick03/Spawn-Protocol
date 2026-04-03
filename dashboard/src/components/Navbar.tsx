@@ -10,6 +10,8 @@ const NAV_ITEMS = [
   { href: "/proposals", label: "Proposals", icon: "◈" },
   { href: "/leaderboard", label: "Leaderboard", icon: "▲" },
   { href: "/timeline", label: "Timeline", icon: "≡" },
+  { href: "/judge-flow", label: "Judge Flow", icon: "◇" },
+  { href: "/receipt", label: "Receipts", icon: "▣" },
   { href: "/logs", label: "Exec Log", icon: "◉" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ];
@@ -51,7 +53,7 @@ export function Navbar() {
   const logo = (
     <div className="px-5 py-5 border-b border-gray-800/60">
       <div className="font-mono text-xs text-gray-600 mb-1 tracking-widest uppercase">
-        Synthesis 2026
+        PL Genesis Hackathon 2026
       </div>
       <h1 className="font-mono text-lg font-bold text-green-400 tracking-tight leading-none">
         SPAWN

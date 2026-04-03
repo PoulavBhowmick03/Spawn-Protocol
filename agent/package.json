@@ -8,12 +8,12 @@
     "child": "tsx src/child.ts",
     "demo": "tsx src/demo.ts",
     "spawn-child": "tsx src/spawn-child.ts",
-    "swarm": "tsx src/swarm.ts",
-    "demo:crosschain": "tsx src/demo-crosschain.ts"
+    "swarm": "tsx src/swarm.ts"
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
     "@aws-sdk/client-s3": "^3.1014.0",
+    "@filoz/synapse-sdk": "^0.40.2",
     "@lit-protocol/auth-helpers": "^7.4.0",
     "@lit-protocol/constants": "^7.4.0",
     "@lit-protocol/lit-node-client": "^7.4.0",

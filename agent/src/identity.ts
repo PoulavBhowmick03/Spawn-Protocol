@@ -4,10 +4,15 @@
  * Each agent (parent + children) gets a registered onchain identity with
  * metadata including agent type, assigned DAO, and alignment score.
  * Required for Protocol Labs bounties and improves AI judge scoring.
+ *
+ * Integrates all three ERC-8004 registries:
+ *   1. Identity Registry — agent registration + metadata
+ *   2. Reputation Registry — feedback after alignment evaluations
+ *   3. Validation Registry — third-party verification of agent work
  */
 
-import { type Address, type Hex } from "viem";
-import { account, publicClient, walletClient } from "./chain.js";
+import { type Address, type Hex, keccak256, toHex } from "viem";
+import { account, publicClient, sendTxAndWait, walletClient } from "./chain.js";
 
 // ERC-8004 Agent Registry — deployed on Base Sepolia
 const AGENT_REGISTRY_ADDRESS =
@@ -113,6 +118,10 @@ const localRegistry = new Map<string, RegisteredAgent>();
 // URIs already registered this process lifetime — prevents parent re-registering on every restart
 const registeredUris = new Set<string>();
 
+function findRegisteredAgentByUri(uri: string): RegisteredAgent | null {
+  return Array.from(localRegistry.values()).find((agent) => agent.uri === uri) || null;
+}
+
 // Serialize all onchain writes through a single queue to prevent nonce conflicts.
 // The swarm spawns multiple children concurrently — without this, concurrent
 // writeContract calls from the same EOA collide on nonce and silently revert.
@@ -136,53 +145,14 @@ export async function registerAgent(
 ): Promise<RegisteredAgent> {
   if (registeredUris.has(uri)) {
     console.log(`[ERC-8004] Skipping duplicate registration: ${uri}`);
-    return registerLocal(uri, metadata);
+    return findRegisteredAgentByUri(uri) || registerLocal(uri, metadata);
   }
-  registeredUris.add(uri);
   console.log(`[ERC-8004] Queuing registration: ${uri} (type=${metadata.agentType})`);
 
   if (AGENT_REGISTRY_ADDRESS !== "0x0000000000000000000000000000000000000000") {
     try {
-      const agent = await enqueueWrite(async () => {
-        const txHash = await walletClient.writeContract({
-          address: AGENT_REGISTRY_ADDRESS,
-          abi: ERC8004_ABI,
-          functionName: "register",
-          args: [uri],
-        });
-
-        console.log(`[ERC-8004] Registration TX sent: ${txHash}`);
-
-        const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-
-        // Extract agentId from AgentRegistered event (0xca52e62c...).
-        // The ERC-721 Transfer event is emitted first with topics[1]=from (0x0),
-        // so we must find the AgentRegistered event specifically, not the first log.
-        const AGENT_REGISTERED_SIG = "0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a";
-        let agentId = BigInt(0);
-        for (const log of receipt.logs) {
-          if (
-            log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase() &&
-            log.topics[0] === AGENT_REGISTERED_SIG &&
-            log.topics[1]
-          ) {
-            try { agentId = BigInt(log.topics[1]); } catch {}
-            break;
-          }
-        }
-
-        const agent: RegisteredAgent = {
-          agentId,
-          uri,
-          metadata,
-          owner: account.address,
-          registeredAt: Date.now(),
-          txHash,
-        };
-        localRegistry.set(agentId.toString(), agent);
-        console.log(`[ERC-8004] Registered onchain ID #${agentId}: ${uri}`);
-        return agent;
-      });
+      const agent = await registerAgentOnchain(uri, metadata);
+      if (!agent) throw new Error("Onchain registration returned null");
       return agent;
     } catch (error: any) {
       console.log(`[ERC-8004] Registration failed for ${uri}: ${error?.message?.slice(0, 80)}`);
@@ -190,7 +160,69 @@ export async function registerAgent(
   }
 
   // Fallback: local registration
-  return registerLocal(uri, metadata);
+  registeredUris.add(uri);
+  return findRegisteredAgentByUri(uri) || registerLocal(uri, metadata);
+}
+
+export async function registerAgentOnchain(
+  uri: string,
+  metadata: AgentMetadata
+): Promise<RegisteredAgent | null> {
+  if (AGENT_REGISTRY_ADDRESS === "0x0000000000000000000000000000000000000000") {
+    return null;
+  }
+
+  try {
+    const agent = await enqueueWrite(async () => {
+      const txHash = await walletClient.writeContract({
+        address: AGENT_REGISTRY_ADDRESS,
+        abi: ERC8004_ABI,
+        functionName: "register",
+        args: [uri],
+      });
+
+      console.log(`[ERC-8004] Registration TX sent: ${txHash}`);
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+      // Extract agentId from AgentRegistered event (0xca52e62c...).
+      // The ERC-721 Transfer event is emitted first with topics[1]=from (0x0),
+      // so we must find the AgentRegistered event specifically, not the first log.
+      const AGENT_REGISTERED_SIG = "0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a";
+      let agentId = BigInt(0);
+      for (const log of receipt.logs) {
+        if (
+          log.address.toLowerCase() === AGENT_REGISTRY_ADDRESS.toLowerCase() &&
+          log.topics[0] === AGENT_REGISTERED_SIG &&
+          log.topics[1]
+        ) {
+          try { agentId = BigInt(log.topics[1]); } catch {}
+          break;
+        }
+      }
+
+      if (agentId <= 0n) {
+        throw new Error("AgentRegistered event missing agentId");
+      }
+
+      const agent: RegisteredAgent = {
+        agentId,
+        uri,
+        metadata,
+        owner: account.address,
+        registeredAt: Date.now(),
+        txHash,
+      };
+      localRegistry.set(agentId.toString(), agent);
+      registeredUris.add(uri);
+      console.log(`[ERC-8004] Registered onchain ID #${agentId}: ${uri}`);
+      return agent;
+    });
+    return agent;
+  } catch (error: any) {
+    console.log(`[ERC-8004] Onchain registration failed for ${uri}: ${error?.message?.slice(0, 80)}`);
+    return null;
+  }
 }
 
 /**
@@ -266,6 +298,44 @@ export async function updateAgentMetadata(
     JSON.stringify(metadata)
   );
   return true;
+}
+
+/**
+ * Judge-mode helper: set a single metadata key and return the tx hash.
+ * This is used when the proof flow needs explicit onchain receipts.
+ */
+export async function setAgentMetadataValue(
+  agentId: bigint,
+  key: string,
+  value: string
+): Promise<string | null> {
+  if (AGENT_REGISTRY_ADDRESS === "0x0000000000000000000000000000000000000000") {
+    return null;
+  }
+
+  try {
+    return await enqueueWrite(async () => {
+      const hash = await walletClient.writeContract({
+        address: AGENT_REGISTRY_ADDRESS,
+        abi: ERC8004_ABI,
+        functionName: "setMetadata",
+        args: [agentId, key, value],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+      console.log(`[ERC-8004] setMetadata ${key}=${value} for agent ${agentId} (tx: ${hash})`);
+      return hash;
+    });
+  } catch (err: any) {
+    console.log(`[ERC-8004] setMetadata ${key} failed for ${agentId}: ${err?.message?.slice(0, 60)}`);
+    return null;
+  }
+}
+
+export async function getAgentMetadataValue(
+  agentId: bigint,
+  key: string
+): Promise<string | null> {
+  return fetchMetadata(agentId, key);
 }
 
 /**
@@ -465,4 +535,427 @@ export async function updateAgentURI(
     console.log(`[ERC-8004] setAgentURI failed for ${agentId}: ${err?.message?.slice(0, 50)}`);
     return null;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ERC-8004 Reputation Registry
+// ═══════════════════════════════════════════════════════════════════
+
+const REPUTATION_REGISTRY_ADDRESS =
+  (process.env.REPUTATION_REGISTRY_ADDRESS as Address) ||
+  ("0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14" as Address);
+
+const REPUTATION_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "giveFeedback",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "score", type: "uint256" },
+      { name: "tags", type: "string" },
+      { name: "endpoint", type: "string" },
+      { name: "comment", type: "string" },
+    ],
+    outputs: [{ name: "feedbackId", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "revokeFeedback",
+    inputs: [{ name: "feedbackId", type: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getSummary",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalFeedback", type: "uint256" },
+          { name: "activeFeedback", type: "uint256" },
+          { name: "averageScore", type: "uint256" },
+          { name: "highestScore", type: "uint256" },
+          { name: "lowestScore", type: "uint256" },
+          { name: "lastUpdated", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getFeedbackCount",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      { name: "total", type: "uint256" },
+      { name: "active", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "totalFeedbackCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+] as const;
+
+/**
+ * Submit reputation feedback for an agent after alignment evaluation.
+ * Called by the parent agent in the alignment eval loop.
+ */
+export async function submitReputationFeedback(
+  agentId: bigint,
+  score: number,
+  tags: string,
+  endpoint: string,
+  comment: string = ""
+): Promise<string | null> {
+  try {
+    return await enqueueWrite(async () => {
+      const receipt = await sendTxAndWait({
+        address: REPUTATION_REGISTRY_ADDRESS,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: "giveFeedback",
+        args: [agentId, BigInt(Math.min(Math.max(score, 0), 100)), tags, endpoint, comment],
+      });
+      const hash = receipt.transactionHash;
+      console.log(`[Reputation] Feedback submitted for agent ${agentId}: score=${score} tags=${tags} (tx: ${hash})`);
+      return hash;
+    });
+  } catch (err: any) {
+    console.log(`[Reputation] giveFeedback failed for ${agentId}: ${err?.message?.slice(0, 60)}`);
+    return null;
+  }
+}
+
+/**
+ * Get reputation summary for an agent from the onchain registry.
+ */
+export async function getReputationSummary(agentId: bigint): Promise<{
+  totalFeedback: number;
+  activeFeedback: number;
+  averageScore: number;
+  highestScore: number;
+  lowestScore: number;
+} | null> {
+  try {
+    const summary = await publicClient.readContract({
+      address: REPUTATION_REGISTRY_ADDRESS,
+      abi: REPUTATION_REGISTRY_ABI,
+      functionName: "getSummary",
+      args: [agentId],
+    }) as any;
+    return {
+      totalFeedback: Number(summary.totalFeedback),
+      activeFeedback: Number(summary.activeFeedback),
+      averageScore: Number(summary.averageScore),
+      highestScore: Number(summary.highestScore),
+      lowestScore: Number(summary.lowestScore),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ERC-8004 Validation Registry
+// ═══════════════════════════════════════════════════════════════════
+
+const VALIDATION_REGISTRY_ADDRESS =
+  (process.env.VALIDATION_REGISTRY_ADDRESS as Address) ||
+  ("0x3caE87f24e15970a8e19831CeCD5FAe3c087a546" as Address);
+
+const VALIDATION_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "validationRequest",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "validator", type: "address" },
+      { name: "uri", type: "string" },
+      { name: "contentHash", type: "bytes32" },
+      { name: "actionType", type: "string" },
+    ],
+    outputs: [{ name: "requestId", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "validationResponse",
+    inputs: [
+      { name: "requestId", type: "uint256" },
+      { name: "score", type: "uint256" },
+      { name: "approved", type: "bool" },
+      { name: "comment", type: "string" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getSummary",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalRequests", type: "uint256" },
+          { name: "validated", type: "uint256" },
+          { name: "rejected", type: "uint256" },
+          { name: "pending", type: "uint256" },
+          { name: "averageScore", type: "uint256" },
+          { name: "lastValidated", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "totalValidationCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+] as const;
+
+/**
+ * Request validation of an agent's work (e.g., a vote or alignment eval).
+ * Returns the requestId for later response.
+ */
+export async function requestValidation(
+  agentId: bigint,
+  validatorAddress: Address,
+  uri: string,
+  contentHash: `0x${string}`,
+  actionType: string
+): Promise<{ txHash: string; requestId?: bigint } | null> {
+  try {
+    return await enqueueWrite(async () => {
+      const receipt = await sendTxAndWait({
+        address: VALIDATION_REGISTRY_ADDRESS,
+        abi: VALIDATION_REGISTRY_ABI,
+        functionName: "validationRequest",
+        args: [agentId, validatorAddress, uri, contentHash, actionType],
+      });
+      const hash = receipt.transactionHash;
+      // Extract requestId from ValidationRequested event
+      let requestId: bigint | undefined;
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() === VALIDATION_REGISTRY_ADDRESS.toLowerCase() && log.topics[0]) {
+          try { requestId = BigInt(log.topics[1] || "0"); } catch {}
+          break;
+        }
+      }
+      console.log(`[Validation] Request submitted for agent ${agentId}: type=${actionType} (tx: ${hash})`);
+      return { txHash: hash, requestId };
+    });
+  } catch (err: any) {
+    console.log(`[Validation] validationRequest failed for ${agentId}: ${err?.message?.slice(0, 60)}`);
+    return null;
+  }
+}
+
+/**
+ * Submit a validation response (parent validates child's work).
+ */
+export async function submitValidationResponse(
+  requestId: bigint,
+  score: number,
+  approved: boolean,
+  comment: string = ""
+): Promise<string | null> {
+  try {
+    return await enqueueWrite(async () => {
+      const receipt = await sendTxAndWait({
+        address: VALIDATION_REGISTRY_ADDRESS,
+        abi: VALIDATION_REGISTRY_ABI,
+        functionName: "validationResponse",
+        args: [requestId, BigInt(Math.min(Math.max(score, 0), 100)), approved, comment],
+      });
+      const hash = receipt.transactionHash;
+      console.log(`[Validation] Response submitted for request ${requestId}: score=${score} approved=${approved} (tx: ${hash})`);
+      return hash;
+    });
+  } catch (err: any) {
+    console.log(`[Validation] validationResponse failed for ${requestId}: ${err?.message?.slice(0, 60)}`);
+    return null;
+  }
+}
+
+/**
+ * Get validation summary for an agent.
+ */
+export async function getValidationSummary(agentId: bigint): Promise<{
+  totalRequests: number;
+  validated: number;
+  rejected: number;
+  pending: number;
+  averageScore: number;
+} | null> {
+  try {
+    const summary = await publicClient.readContract({
+      address: VALIDATION_REGISTRY_ADDRESS,
+      abi: VALIDATION_REGISTRY_ABI,
+      functionName: "getSummary",
+      args: [agentId],
+    }) as any;
+    return {
+      totalRequests: Number(summary.totalRequests),
+      validated: Number(summary.validated),
+      rejected: Number(summary.rejected),
+      pending: Number(summary.pending),
+      averageScore: Number(summary.averageScore),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const TRUST_MIN_REPUTATION = Number(process.env.ERC8004_TRUST_MIN_REPUTATION || 45);
+const TRUST_MIN_VALIDATION_SCORE = Number(process.env.ERC8004_TRUST_MIN_VALIDATION_SCORE || 40);
+const TRUST_MAX_REJECTIONS = Number(process.env.ERC8004_TRUST_MAX_REJECTIONS || 0);
+const TRUST_CACHE_TTL_MS = Number(process.env.ERC8004_TRUST_CACHE_TTL_MS || 15_000);
+
+export interface AgentTrustDecision {
+  allowed: boolean;
+  status: "healthy" | "gated";
+  reason: string;
+  checkedAt: number;
+  reputation: Awaited<ReturnType<typeof getReputationSummary>>;
+  validation: Awaited<ReturnType<typeof getValidationSummary>>;
+}
+
+const trustDecisionCache = new Map<string, { expiresAt: number; decision: AgentTrustDecision }>();
+const resolvedAgentIdCache = new Map<string, bigint>();
+const AGENT_ID_SCAN_START = Number(process.env.ERC8004_SCAN_START || 2200);
+const AGENT_ID_SCAN_END = Number(process.env.ERC8004_SCAN_END || 4000);
+
+/**
+ * Evaluate whether an agent should retain autonomous voting authority.
+ * This is intentionally conservative: if the agent has no trust history yet,
+ * it remains allowed. Once it accumulates negative ERC-8004 signals, runtime
+ * callers can gate delegation or voting behavior.
+ */
+export async function getAgentTrustDecision(agentId: bigint): Promise<AgentTrustDecision> {
+  const cacheKey = agentId.toString();
+  const cached = trustDecisionCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.decision;
+  }
+
+  const [reputation, validation] = await Promise.all([
+    getReputationSummary(agentId),
+    getValidationSummary(agentId),
+  ]);
+
+  let allowed = true;
+  let reason = "trust_healthy";
+
+  if (validation && validation.rejected > TRUST_MAX_REJECTIONS) {
+    allowed = false;
+    reason = `validation_rejected_${validation.rejected}`;
+  } else if (
+    validation &&
+    validation.validated > 0 &&
+    validation.averageScore < TRUST_MIN_VALIDATION_SCORE
+  ) {
+    allowed = false;
+    reason = `validation_score_${validation.averageScore}`;
+  } else if (
+    reputation &&
+    reputation.activeFeedback > 0 &&
+    reputation.averageScore < TRUST_MIN_REPUTATION
+  ) {
+    allowed = false;
+    reason = `reputation_score_${reputation.averageScore}`;
+  }
+
+  const decision: AgentTrustDecision = {
+    allowed,
+    status: allowed ? "healthy" : "gated",
+    reason,
+    checkedAt: Date.now(),
+    reputation,
+    validation,
+  };
+
+  trustDecisionCache.set(cacheKey, {
+    expiresAt: Date.now() + TRUST_CACHE_TTL_MS,
+    decision,
+  });
+
+  return decision;
+}
+
+/**
+ * Convenience: hash content for validation request contentHash field.
+ */
+export function hashContent(content: string): `0x${string}` {
+  return keccak256(toHex(content));
+}
+
+// Track ERC-8004 agent IDs by ENS label for the swarm to reference
+const agentIdByLabel = new Map<string, bigint>();
+
+/**
+ * Store a child's ERC-8004 agent ID mapped to its ENS label.
+ */
+export function trackAgentId(label: string, agentId: bigint) {
+  agentIdByLabel.set(label, agentId);
+}
+
+/**
+ * Look up a child's ERC-8004 agent ID by ENS label.
+ */
+export function getAgentIdByLabel(label: string): bigint | undefined {
+  return agentIdByLabel.get(label);
+}
+
+export async function resolveAgentIdByLabelOnchain(label: string): Promise<bigint | undefined> {
+  const cached = agentIdByLabel.get(label) || resolvedAgentIdCache.get(label);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const baseLabel = label.replace(/-v\d+$/, "");
+  const targets = new Set([
+    `spawn://${label}.spawn.eth`.toLowerCase(),
+    `spawn://${baseLabel}.spawn.eth`.toLowerCase(),
+  ]);
+
+  for (let batchStart = AGENT_ID_SCAN_START; batchStart <= AGENT_ID_SCAN_END; batchStart += 20) {
+    const batchEnd = Math.min(batchStart + 19, AGENT_ID_SCAN_END);
+    const ids = Array.from({ length: batchEnd - batchStart + 1 }, (_, index) => BigInt(batchStart + index));
+    const uris = await Promise.all(
+      ids.map((agentId) =>
+        publicClient.readContract({
+          address: AGENT_REGISTRY_ADDRESS,
+          abi: ERC8004_ABI,
+          functionName: "agentURI",
+          args: [agentId],
+        }).catch(() => null)
+      )
+    );
+
+    for (let i = 0; i < ids.length; i++) {
+      const uri = (uris[i] as string | null)?.toLowerCase();
+      if (!uri || !targets.has(uri)) continue;
+      trackAgentId(label, ids[i]);
+      resolvedAgentIdCache.set(label, ids[i]);
+      if (baseLabel !== label) {
+        resolvedAgentIdCache.set(baseLabel, ids[i]);
+      }
+      return ids[i];
+    }
+  }
+
+  return undefined;
 }

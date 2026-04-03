@@ -22,97 +22,147 @@ export interface ChildInfo {
   abstainVotes: number;
 }
 
-export function useSwarmData() {
-  const { client } = useChainContext();
-  const [children, setChildren] = useState<ChildInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+export interface BudgetState {
+  policy: "normal" | "throttled" | "paused";
+  reasons: string[];
+  context?: string;
+  parentEthBalanceWei?: string;
+  parentEthBalance: string;
+  warningEth: string;
+  pauseEth: string;
+  veniceCalls: number;
+  veniceTokens: number;
+  warningTokens: number;
+  pauseTokens: number;
+  activeChildren: number;
+  filecoinAvailable: boolean;
+  pauseProposalCreation: boolean;
+  pauseScaling: boolean;
+  pauseJudgeFlow: boolean;
+  lastUpdatedAt?: string | null;
+}
+
+export interface SwarmMeta {
+  filecoinStateCid: string | null;
+  budgetState: BudgetState | null;
+  delegationHashes: Map<string, string>;
+  revokedDelegations: Set<string>;
+  filecoinIdentityCids: Map<string, string>;
+  erc8004Ids: Map<string, bigint>;
+}
+
+type RawSwarmResponse = {
+  children?: any[];
+  meta?: {
+    filecoinStateCid?: string | null;
+    budgetState?: BudgetState | null;
+    delegationHashes?: Record<string, string>;
+    revokedDelegations?: string[];
+    filecoinIdentityCids?: Record<string, string>;
+    erc8004Ids?: Record<string, string>;
+  };
+  error?: string;
+};
+
+type SwarmResponse = {
+  children: ChildInfo[];
+  meta: SwarmMeta;
+};
+
+const EMPTY_META: SwarmMeta = {
+  filecoinStateCid: null,
+  budgetState: null,
+  delegationHashes: new Map(),
+  revokedDelegations: new Set(),
+  filecoinIdentityCids: new Map(),
+  erc8004Ids: new Map(),
+};
+
+const CLIENT_CACHE_TTL = 12_000;
+const POLL_INTERVAL_MS = 20_000;
+
+const swarmCache = new Map<string, { data: SwarmResponse; fetchedAt: number }>();
+const swarmRequests = new Map<string, Promise<SwarmResponse>>();
+
+function normalizeChild(c: any): ChildInfo {
+  return {
+    ...c,
+    id: BigInt(c.id),
+    budget: BigInt(c.budget),
+    maxGasPerVote: BigInt(c.maxGasPerVote),
+    alignmentScore: BigInt(c.alignmentScore),
+    voteCount: BigInt(c.voteCount),
+    lastVoteTimestamp: BigInt(c.lastVoteTimestamp),
+  };
+}
+
+function normalizeSwarmResponse(raw: RawSwarmResponse): SwarmResponse {
+  return {
+    children: Array.isArray(raw.children) ? raw.children.map(normalizeChild) : [],
+    meta: {
+      filecoinStateCid: raw.meta?.filecoinStateCid ?? null,
+      budgetState: raw.meta?.budgetState ?? null,
+      delegationHashes: new Map(Object.entries(raw.meta?.delegationHashes ?? {})),
+      revokedDelegations: new Set(raw.meta?.revokedDelegations ?? []),
+      filecoinIdentityCids: new Map(Object.entries(raw.meta?.filecoinIdentityCids ?? {})),
+      erc8004Ids: new Map(
+        Object.entries(raw.meta?.erc8004Ids ?? {}).map(([addr, id]) => [addr, BigInt(id)])
+      ),
+    },
+  };
+}
+
+async function fetchSwarmPayload(force = false, includeMeta = true): Promise<SwarmResponse> {
+  const cacheKey = includeMeta ? "full" : "lite";
+  const now = Date.now();
+  const cached = swarmCache.get(cacheKey);
+  if (!force && cached && now - cached.fetchedAt < CLIENT_CACHE_TTL) {
+    return cached.data;
+  }
+
+  const inflight = swarmRequests.get(cacheKey);
+  if (inflight) return inflight;
+
+  const request = (async () => {
+    const res = await fetch(`/api/swarm?meta=${includeMeta ? "1" : "0"}`, { cache: "no-store" });
+    const data: RawSwarmResponse = await res.json();
+    if (!res.ok) throw new Error(data.error || `API ${res.status}`);
+    if (data.error) throw new Error(data.error);
+
+    const normalized = normalizeSwarmResponse(data);
+    swarmCache.set(cacheKey, { data: normalized, fetchedAt: Date.now() });
+    return normalized;
+  })();
+  swarmRequests.set(cacheKey, request);
+
+  try {
+    return await request;
+  } finally {
+    swarmRequests.delete(cacheKey);
+  }
+}
+
+export function useSwarmData(options?: { includeMeta?: boolean }) {
+  const includeMeta = options?.includeMeta ?? true;
+  const cacheKey = includeMeta ? "full" : "lite";
+  const initial = swarmCache.get(cacheKey);
+  const [children, setChildren] = useState<ChildInfo[]>(() => initial?.data.children ?? []);
+  const [meta, setMeta] = useState<SwarmMeta>(() => initial?.data.meta ?? EMPTY_META);
+  const [loading, setLoading] = useState(() => !initial);
   const [error, setError] = useState<string | null>(null);
   const [justVotedSet, setJustVotedSet] = useState<Set<string>>(new Set());
   const prevVoteCounts = useRef<Map<string, number>>(new Map());
 
-  const fetchData = useCallback(async () => {
-    const contracts = CONTRACTS;
+  const fetchData = useCallback(async (options?: { force?: boolean; background?: boolean }) => {
     try {
-      // Step 1: Get active children via getActiveChildren() — single RPC call
-      const activeRaw = (await client.readContract({
-        address: contracts.SpawnFactory.address,
-        abi: contracts.SpawnFactory.abi,
-        functionName: "getActiveChildren",
-      })) as any[];
+      const shouldShowLoading =
+        !options?.background &&
+        !swarmCache.get(cacheKey) &&
+        children.length === 0;
+      if (shouldShowLoading) setLoading(true);
 
-      // Step 2: Enrich ONLY active children with alignment/vote data (9 agents × 3 calls = 27 calls)
-      const activeEnriched: ChildInfo[] = await Promise.all(
-        activeRaw.map(async (child) => {
-          let alignmentScore = BigInt(0);
-          let voteCount = BigInt(0);
-          let lastVoteTimestamp = BigInt(0);
-          let forVotes = 0, againstVotes = 0, abstainVotes = 0;
-          try {
-            const [score, cnt, history] = await Promise.all([
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount" }),
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVotingHistory" }),
-            ]);
-            alignmentScore = score;
-            voteCount = cnt;
-            if (history.length > 0) lastVoteTimestamp = history[history.length - 1].timestamp;
-            for (const v of history) {
-              if (v.support === 1) forVotes++;
-              else if (v.support === 0) againstVotes++;
-              else abstainVotes++;
-            }
-          } catch {}
-          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: true, alignmentScore, voteCount, lastVoteTimestamp, forVotes, againstVotes, abstainVotes };
-        })
-      );
-
-      // Step 3: Fetch recent terminated children (last 40 by ID, lightweight — no enrichment needed for most)
-      const totalCount = Number(await client.readContract({
-        address: contracts.SpawnFactory.address,
-        abi: contracts.SpawnFactory.abi,
-        functionName: "childCount",
-      }));
-
-      const activeIds = new Set(activeRaw.map((c: any) => Number(c.id)));
-      const terminatedStart = Math.max(1, totalCount - 60); // only check last 60
-      const terminatedBatch: ChildInfo[] = [];
-
-      // Fetch all terminated children in parallel (single batch)
-      const allTerminatedIds: number[] = [];
-      for (let i = terminatedStart; i <= totalCount; i++) {
-        if (!activeIds.has(i)) allTerminatedIds.push(i);
-      }
-
-      const rawTerminated = await Promise.all(
-        allTerminatedIds.map((childId) =>
-          client.readContract({
-            address: contracts.SpawnFactory.address,
-            abi: contracts.SpawnFactory.abi,
-            functionName: "getChild",
-            args: [BigInt(childId)],
-          }).catch(() => null)
-        )
-      );
-
-      // Enrich all terminated children in parallel
-      const enrichedTerminated = await Promise.all(
-        rawTerminated.filter((child): child is NonNullable<typeof child> => !!child && !activeIds.has(Number(child.id))).map(async (child) => {
-          let alignmentScore = BigInt(0);
-          let voteCount = BigInt(0);
-          try {
-            const [score, cnt] = await Promise.all([
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "alignmentScore" }),
-              client.readContract({ address: child.childAddr, abi: ChildGovernorABI, functionName: "getVoteCount" }),
-            ]);
-            alignmentScore = score;
-            voteCount = cnt;
-          } catch {}
-          return { id: child.id, childAddr: child.childAddr, governance: child.governance, budget: child.budget, maxGasPerVote: child.maxGasPerVote, ensLabel: child.ensLabel, active: child.active, alignmentScore, voteCount, lastVoteTimestamp: BigInt(0), forVotes: 0, againstVotes: 0, abstainVotes: 0 } as ChildInfo;
-        })
-      );
-      terminatedBatch.push(...enrichedTerminated);
-
-      const enriched = [...activeEnriched, ...terminatedBatch];
+      const payload = await fetchSwarmPayload(options?.force, includeMeta);
+      const enriched = payload.children;
 
       // Detect which children just had their vote count increase
       const newlyVoted = new Set<string>();
@@ -138,23 +188,59 @@ export function useSwarmData() {
       }
 
       setChildren(enriched);
+      setMeta(payload.meta);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch swarm data");
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [cacheKey, children.length, includeMeta]);
 
   useEffect(() => {
-    setLoading(true);
-    setChildren([]);
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
+    fetchData({ background: !!swarmCache.get(cacheKey) });
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      fetchData({ force: true, background: true });
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [cacheKey, fetchData]);
 
-  return { children, loading, error, refetch: fetchData, justVotedSet };
+  return { children, meta, loading, error, refetch: fetchData, justVotedSet };
+}
+
+export function useSwarmMeta() {
+  const cacheKey = "full";
+  const initial = swarmCache.get(cacheKey);
+  const [meta, setMeta] = useState<SwarmMeta>(() => initial?.data.meta ?? EMPTY_META);
+  const [loading, setLoading] = useState(() => !initial);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchMeta = useCallback(async (options?: { force?: boolean; background?: boolean }) => {
+    try {
+      if (!options?.background && !swarmCache.get(cacheKey)) {
+        setLoading(true);
+      }
+      const payload = await fetchSwarmPayload(options?.force, true);
+      setMeta(payload.meta);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch swarm metadata");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMeta({ background: !!swarmCache.get(cacheKey) });
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      fetchMeta({ force: true, background: true });
+    }, 45_000);
+    return () => clearInterval(interval);
+  }, [fetchMeta]);
+
+  return { meta, loading, error, refetch: fetchMeta };
 }
 
 export function useChildData(childId: string) {
@@ -213,9 +299,7 @@ export function useChildData(childId: string) {
           timestamp: v.timestamp,
           revealed: v.revealed,
         }));
-      } catch {
-        // ignore
-      }
+      } catch {}
 
       const lastVoteTimestamp =
         history.length > 0 ? history[history.length - 1].timestamp : BigInt(0);

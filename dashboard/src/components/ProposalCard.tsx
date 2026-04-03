@@ -32,6 +32,12 @@ const TALLY_DAO_SLUGS: Record<string, string> = {
   "Wormhole": "wormhole",
 };
 
+function parsePolymarketSource(desc: string): { name: string; slug: string } | null {
+  const match = desc.match(/\[(.+?)\s*[—–-]\s*Prediction Market via Polymarket\]/);
+  if (!match) return null;
+  return { name: match[1], slug: match[1].toLowerCase().replace(/\s+/g, "-") };
+}
+
 function supportLabel(support: number): string {
   if (support === 1) return "FOR";
   if (support === 0) return "AGAINST";
@@ -44,11 +50,25 @@ function supportColor(support: number): string {
   return "text-yellow-400";
 }
 
+function supportChipColor(support: number): string {
+  if (support === 1) return "text-green-200 border-green-500/60 bg-green-500/15";
+  if (support === 0) return "text-red-200 border-red-500/60 bg-red-500/15";
+  return "text-yellow-200 border-yellow-500/60 bg-yellow-500/15";
+}
+
 export function ProposalCard({ proposal }: ProposalCardProps) {
-  const total =
-    Number(proposal.forVotes) +
-    Number(proposal.againstVotes) +
-    Number(proposal.abstainVotes);
+  const visibleVoters = proposal.voters.filter((v) => !v.childLabel.startsWith("judge-proof-"));
+  const rawForVotes = Number(proposal.forVotes);
+  const rawAgainstVotes = Number(proposal.againstVotes);
+  const rawAbstainVotes = Number(proposal.abstainVotes);
+  const rawTotal = rawForVotes + rawAgainstVotes + rawAbstainVotes;
+  const derivedForVotes = visibleVoters.filter((v) => v.support === 1).length;
+  const derivedAgainstVotes = visibleVoters.filter((v) => v.support === 0).length;
+  const derivedAbstainVotes = visibleVoters.filter((v) => v.support !== 0 && v.support !== 1).length;
+  const effectiveForVotes = rawTotal > 0 ? rawForVotes : derivedForVotes;
+  const effectiveAgainstVotes = rawTotal > 0 ? rawAgainstVotes : derivedAgainstVotes;
+  const effectiveAbstainVotes = rawTotal > 0 ? rawAbstainVotes : derivedAbstainVotes;
+  const total = effectiveForVotes + effectiveAgainstVotes + effectiveAbstainVotes;
 
   const forPct = total > 0 ? (Number(proposal.forVotes) / total) * 100 : 0;
   const againstPct =
@@ -74,8 +94,11 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
 
   // Clean description
   let displayDesc = proposal.description || "(No description)";
-  // Remove all [Source — Real Governance via Tally] tags
+  // Remove all [Source — Real Governance via Tally] and [Source — Prediction Market via Polymarket] tags
   displayDesc = displayDesc.replace(/\[.+?[—–-]\s*Real Governance via Tally\]\s*/g, "");
+  displayDesc = displayDesc.replace(/\[.+?[—–-]\s*Prediction Market via Polymarket\]\s*/g, "");
+  // Remove Polymarket metadata lines (Source:, Market Data:, Volume:, Resolution:)
+  displayDesc = displayDesc.replace(/^(Source|Market Data|Volume|Resolution):.*$/gm, "");
   // Remove leading bracketed tags like [Constitutional], [Uniswap Governance], etc.
   displayDesc = displayDesc.replace(/^(\[.+?\]\s*)+/g, "");
   // Remove any remaining internal bracketed tags
@@ -105,7 +128,7 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
     const majorityPct = Math.max(forPct, againstPct, abstainPct);
     const splitScore = Math.round((1 - (majorityPct - 50) / 50) * 100);
     // Voter engagement: more voters = harder (capped at 9)
-    const voterScore = Math.min(proposal.voters.length / 9, 1) * 100;
+    const voterScore = Math.min(visibleVoters.length / 9, 1) * 100;
     // Description length proxy for complexity
     const descLen = (proposal.description || "").length;
     const complexityScore = Math.min(descLen / 1500, 1) * 100;
@@ -128,6 +151,13 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
   // Tally link for source DAO
   const tallySlug = proposal.sourceDaoName ? TALLY_DAO_SLUGS[proposal.sourceDaoName] : null;
   const tallyUrl = tallySlug ? `https://www.tally.xyz/gov/${tallySlug}` : null;
+
+  // Polymarket source
+  const polySource = parsePolymarketSource(proposal.description);
+  const isPolymarket = !!polySource;
+  // Extract polymarket event slug from description for link
+  const polySlugMatch = proposal.description.match(/polymarket\.com\/event\/([^\s\n]+)/);
+  const polyUrl = polySlugMatch ? `https://polymarket.com/event/${polySlugMatch[1]}` : null;
 
   return (
     <div className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all">
@@ -160,6 +190,22 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
               <span className="text-[10px] border border-gray-700 text-gray-500 rounded px-1 py-0.5 font-mono uppercase">
                 via Tally
               </span>
+            )}
+            {isPolymarket && (
+              <>
+                <span className="text-xs border border-orange-400/30 bg-orange-400/5 text-orange-400 rounded px-1.5 py-0.5 font-mono flex items-center gap-1">
+                  {polyUrl ? (
+                    <a href={polyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                      {polySource.name} ↗
+                    </a>
+                  ) : (
+                    polySource.name
+                  )}
+                </span>
+                <span className="text-[10px] border border-gray-700 text-gray-500 rounded px-1 py-0.5 font-mono uppercase">
+                  via Polymarket
+                </span>
+              </>
             )}
             <span
               className={`text-xs border rounded px-1.5 py-0.5 font-mono ${stateColorClass}`}
@@ -208,14 +254,14 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs font-mono">
             <span className="text-green-400">
-              FOR: {proposal.forVotes.toString()} ({forPct.toFixed(0)}%)
+              FOR: {effectiveForVotes} ({forPct.toFixed(0)}%)
             </span>
             <span className="text-red-400">
-              AGAINST: {proposal.againstVotes.toString()} ({againstPct.toFixed(0)}%)
+              AGAINST: {effectiveAgainstVotes} ({againstPct.toFixed(0)}%)
             </span>
-            {Number(proposal.abstainVotes) > 0 && (
+            {effectiveAbstainVotes > 0 && (
               <span className="text-yellow-400">
-                ABSTAIN: {proposal.abstainVotes.toString()} ({abstainPct.toFixed(0)}%)
+                ABSTAIN: {effectiveAbstainVotes} ({abstainPct.toFixed(0)}%)
               </span>
             )}
           </div>
@@ -228,14 +274,14 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
       )}
 
       {/* Voter breakdown */}
-      {proposal.voters.length > 0 && (
+      {visibleVoters.length > 0 && (
         <div className="mb-3 border-t border-gray-800 pt-2">
           <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Agent Votes</p>
           <div className="flex flex-wrap gap-2">
-            {proposal.voters.map((v, i) => (
+            {visibleVoters.map((v, i) => (
               <span
                 key={i}
-                className={`text-xs font-mono border rounded px-1.5 py-0.5 ${supportColor(v.support)} border-gray-700 bg-gray-900`}
+                className={`text-xs font-mono font-semibold border rounded px-1.5 py-0.5 whitespace-nowrap ${supportChipColor(v.support)}`}
                 title={`${v.childAddr}`}
               >
                 {ensName(v.childLabel) ?? formatAddress(v.childAddr)}: {supportLabel(v.support)}

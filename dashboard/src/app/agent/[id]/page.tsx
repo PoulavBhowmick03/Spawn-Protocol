@@ -15,6 +15,7 @@ import {
   supportColor,
   ensName,
   governorName,
+  storageViewerPath,
 } from "@/lib/contracts";
 
 const ENS_REGISTRY = "0x29170A43352D65329c462e6cDacc1c002419331D";
@@ -24,15 +25,61 @@ const ENS_REGISTRY_ABI = [
 
 // ERC-8004 Agent Registry on Base Sepolia
 const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as Address;
+const REPUTATION_REGISTRY = "0x3d54B01D6cdbeba55eF8Df0F186b82d98Ec5fE14" as Address;
+const VALIDATION_REGISTRY = "0x3caE87f24e15970a8e19831CeCD5FAe3c087a546" as Address;
 const ERC8004_ABI = [
   { type: "function", name: "ownerOf", inputs: [{ name: "agentId", type: "uint256" }], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
   { type: "function", name: "getMetadata", inputs: [{ name: "agentId", type: "uint256" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
   { type: "function", name: "tokenURI", inputs: [{ name: "tokenId", type: "uint256" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" },
 ] as const;
+const REPUTATION_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "getSummary",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalFeedback", type: "uint256" },
+          { name: "activeFeedback", type: "uint256" },
+          { name: "averageScore", type: "uint256" },
+          { name: "highestScore", type: "uint256" },
+          { name: "lowestScore", type: "uint256" },
+          { name: "lastUpdated", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+] as const;
+const VALIDATION_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "getSummary",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalRequests", type: "uint256" },
+          { name: "validated", type: "uint256" },
+          { name: "rejected", type: "uint256" },
+          { name: "pending", type: "uint256" },
+          { name: "averageScore", type: "uint256" },
+          { name: "lastValidated", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+] as const;
 
-// Our tokens start at ~2200 on this shared public registry. Scan 2200–2900.
+// Scan 2200–3500: covers original agents (~2220) and recent judge proof children (~3225–3243).
 const ERC8004_SCAN_START = 2200;
-const ERC8004_SCAN_END = 2900;
+const ERC8004_SCAN_END = 3500;
 
 interface Erc8004Data {
   agentId: bigint;
@@ -45,9 +92,65 @@ interface Erc8004Data {
   owner: Address;
 }
 
+interface TrustSummary {
+  reputation: {
+    totalFeedback: number;
+    activeFeedback: number;
+    averageScore: number;
+    highestScore: number;
+    lowestScore: number;
+  } | null;
+  validation: {
+    totalRequests: number;
+    validated: number;
+    rejected: number;
+    pending: number;
+    averageScore: number;
+  } | null;
+}
+
+type LitPayload = {
+  ciphertext: string;
+  dataToEncryptHash: string;
+  litEncrypted: true;
+};
+
 // Module-level cache — survives React strict mode double-mounts and re-renders.
 // Key = ensLabel, value = resolved ERC-8004 data.
 const erc8004Cache = new Map<string, Erc8004Data>();
+
+function parseHexUtf8(hex?: `0x${string}` | string) {
+  if (!hex || hex === "0x") return null;
+  try {
+    return Buffer.from(hex.slice(2), "hex").toString("utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function parseLitPayload(hex?: `0x${string}` | string): LitPayload | null {
+  const decoded = parseHexUtf8(hex);
+  if (!decoded) return null;
+  try {
+    const parsed = JSON.parse(decoded);
+    if (parsed?.litEncrypted === true && parsed?.ciphertext && parsed?.dataToEncryptHash) {
+      return parsed as LitPayload;
+    }
+  } catch {}
+  return null;
+}
+
+function parsePlaintextRationale(hex?: `0x${string}` | string): string | null {
+  const decoded = parseHexUtf8(hex);
+  if (!decoded) return null;
+  try {
+    const parsed = JSON.parse(decoded);
+    if (parsed?.litEncrypted === true && parsed?.ciphertext) {
+      return null;
+    }
+  } catch {}
+  return decoded;
+}
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -66,6 +169,15 @@ export default function AgentDetailPage({ params }: PageProps) {
     ensLabel ? erc8004Cache.get(ensLabel) ?? null : null
   );
   const [erc8004Loading, setErc8004Loading] = useState(false);
+  const [trustSummary, setTrustSummary] = useState<TrustSummary | null>(null);
+  const [veniceByProposal, setVeniceByProposal] = useState<Map<number, {
+    reasoningProvider: string;
+    reasoningModel: string;
+    decision: string | null;
+    txHash: string | null;
+    timestamp: string | null;
+  }>>(new Map());
+  const isLineagePieceCid = lineageMemoryCid?.startsWith("bafkzci") ?? false;
 
   // Resolve ERC-8004 identity by scanning tokenURI on the shared public registry.
   // Uses module-level cache to survive strict mode double-mounts and re-renders.
@@ -160,44 +272,135 @@ export default function AgentDetailPage({ params }: PageProps) {
     return () => { cancelled = true; };
   }, [ensLabel, client]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch delegation + revocation from ENS text records
+  useEffect(() => {
+    if (!erc8004Data?.agentId) return;
+    let cancelled = false;
+
+    Promise.all([
+      client.readContract({
+        address: REPUTATION_REGISTRY,
+        abi: REPUTATION_REGISTRY_ABI,
+        functionName: "getSummary",
+        args: [erc8004Data.agentId],
+      }).catch(() => null),
+      client.readContract({
+        address: VALIDATION_REGISTRY,
+        abi: VALIDATION_REGISTRY_ABI,
+        functionName: "getSummary",
+        args: [erc8004Data.agentId],
+      }).catch(() => null),
+    ]).then(([reputation, validation]) => {
+      if (cancelled) return;
+      setTrustSummary({
+        reputation: reputation
+          ? {
+              totalFeedback: Number((reputation as any).totalFeedback),
+              activeFeedback: Number((reputation as any).activeFeedback),
+              averageScore: Number((reputation as any).averageScore),
+              highestScore: Number((reputation as any).highestScore),
+              lowestScore: Number((reputation as any).lowestScore),
+            }
+          : null,
+        validation: validation
+          ? {
+              totalRequests: Number((validation as any).totalRequests),
+              validated: Number((validation as any).validated),
+              rejected: Number((validation as any).rejected),
+              pending: Number((validation as any).pending),
+              averageScore: Number((validation as any).averageScore),
+            }
+          : null,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, erc8004Data?.agentId]);
+
+  // Fetch Venice reasoning metadata from agent log, keyed by proposalId.
+  useEffect(() => {
+    if (!ensLabel) return;
+    fetch(`/api/agent/${encodeURIComponent(ensLabel)}/reasoning`, { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : { entries: [] })
+      .then(({ entries }) => {
+        const map = new Map<number, any>();
+        for (const e of entries ?? []) map.set(Number(e.proposalId), e);
+        setVeniceByProposal(map);
+      })
+      .catch(() => {});
+  }, [ensLabel]);
+
+  // Fetch delegation + revocation from ENS text records, with lineage CID
+  // falling back to ERC-8004 metadata when available.
   useEffect(() => {
     if (!child) return;
     const label = child.ensLabel;
-    // Fetch delegation, revocation, and lineage memory all in parallel
     const baseLabel = label.replace(/-v\d+$/, "");
+    const agentId = erc8004Data?.agentId;
     Promise.all([
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation"] }).catch(() => ""),
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "erc7715.delegation.revoked"] }).catch(() => ""),
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [label, "lineage-memory"] }).catch(() => ""),
       client.readContract({ address: ENS_REGISTRY, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [baseLabel, "lineage-memory"] }).catch(() => ""),
-    ]).then(([del, rev, lineageSelf, lineageBase]) => {
-      if (del) try { setDelegation(JSON.parse(del as string)); } catch { setDelegation({ raw: del }); }
-      if (rev) try { setRevocation(JSON.parse(rev as string)); } catch { setRevocation({ raw: rev }); }
-      const cid = (lineageSelf || lineageBase) as string;
+      agentId != null
+        ? client.readContract({ address: ERC8004_REGISTRY, abi: ERC8004_ABI, functionName: "getMetadata", args: [agentId, "lineage-memory"] }).catch(() => "")
+        : Promise.resolve(""),
+    ]).then(([del, rev, lineageSelf, lineageBase, lineageMetadata]) => {
+      let parsedDelegation: any = null;
+      let parsedRevocation: any = null;
+
+      if (del) {
+        try {
+          parsedDelegation = JSON.parse(del as string);
+        } catch {
+          parsedDelegation = { raw: del };
+        }
+      }
+
+      if (rev) {
+        try {
+          parsedRevocation = JSON.parse(rev as string);
+        } catch {
+          parsedRevocation = { raw: rev };
+        }
+      }
+
+      setDelegation(parsedDelegation);
+
+      const delegationHash =
+        parsedDelegation && typeof parsedDelegation === "object" ? parsedDelegation.hash : null;
+      const revocationHash =
+        parsedRevocation && typeof parsedRevocation === "object" ? parsedRevocation.hash : null;
+
+      if (
+        parsedRevocation &&
+        (!delegationHash || !revocationHash || revocationHash === delegationHash)
+      ) {
+        setRevocation(parsedRevocation);
+      } else {
+        setRevocation(null);
+      }
+
+      const cid = (lineageSelf || lineageBase || lineageMetadata) as string;
       if (cid) {
         setLineageMemoryCid(cid);
-        // Try multiple IPFS gateways
-        const gateways = [
-          `https://ipfs.filebase.io/ipfs/${cid}`,
-          `https://ipfs.io/ipfs/${cid}`,
-          `https://cloudflare-ipfs.com/ipfs/${cid}`,
-          `https://dweb.link/ipfs/${cid}`,
-        ];
+        setLineageReport(null);
         (async () => {
-          for (const url of gateways) {
-            try {
-              const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-              if (res.ok) {
-                const data = await res.json();
-                if (data) { setLineageReport(data); return; }
-              }
-            } catch {}
-          }
+          try {
+            const res = await fetch(`/api/storage?cid=${encodeURIComponent(cid)}`, {
+              cache: "no-store",
+            });
+            if (!res.ok) return;
+            const payload = await res.json();
+            if (payload?.data) {
+              setLineageReport(payload.data);
+            }
+          } catch {}
         })();
       }
     }).catch(() => {});
-  }, [child, client]);
+  }, [child, client, erc8004Data]);
 
   if (loading) {
     return (
@@ -247,11 +450,6 @@ export default function AgentDetailPage({ params }: PageProps) {
             </div>
             <h1 className="text-lg md:text-xl font-mono font-bold text-green-400 mb-1 flex items-center gap-2 flex-wrap">
               {ensDisplay}
-              {ensName(child.ensLabel) && (
-                <span className="text-[10px] border border-green-500/30 bg-green-500/10 text-green-400 rounded px-1.5 py-0.5 font-mono uppercase">
-                  ENS
-                </span>
-              )}
               {delegation && !revocation && (
                 <span className="text-[10px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1.5 py-0.5 font-mono uppercase">
                   ERC-7715
@@ -412,6 +610,47 @@ export default function AgentDetailPage({ params }: PageProps) {
                   </p>
                 </div>
               )}
+
+              {trustSummary && (() => {
+                const hasReputation = trustSummary.reputation && trustSummary.reputation.totalFeedback > 0;
+                const hasValidation = trustSummary.validation && trustSummary.validation.totalRequests > 0;
+                if (!hasReputation && !hasValidation) {
+                  return (
+                    <p className="mt-3 text-[10px] font-mono text-gray-600">
+                      No onchain reputation or validation receipts yet — written during judge flow runs.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    {hasReputation && (
+                      <div className="rounded border border-emerald-400/20 bg-emerald-400/5 p-3">
+                        <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 mb-2">Reputation Summary</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                          <div className="text-gray-300">Avg score: <span className="text-emerald-300 font-bold">{trustSummary.reputation!.averageScore}</span></div>
+                          <div className="text-gray-300">Active: <span className="text-emerald-300">{trustSummary.reputation!.activeFeedback}</span></div>
+                          <div className="text-gray-300">Total: <span className="text-emerald-300">{trustSummary.reputation!.totalFeedback}</span></div>
+                          <div className="text-gray-300">Range: <span className="text-emerald-300">{trustSummary.reputation!.lowestScore}–{trustSummary.reputation!.highestScore}</span></div>
+                        </div>
+                      </div>
+                    )}
+                    {hasValidation && (
+                      <div className="rounded border border-cyan-400/20 bg-cyan-400/5 p-3">
+                        <p className="text-[10px] uppercase tracking-wider text-cyan-400/70 mb-2">Validation Summary</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                          <div className="text-gray-300">Avg score: <span className="text-cyan-300 font-bold">{trustSummary.validation!.averageScore}</span></div>
+                          <div className="text-gray-300">Total: <span className="text-cyan-300">{trustSummary.validation!.totalRequests}</span></div>
+                          <div className="text-gray-300">Validated: <span className="text-cyan-300">{trustSummary.validation!.validated}</span></div>
+                          <div className="text-gray-300">Rejected: <span className="text-cyan-300">{trustSummary.validation!.rejected}</span></div>
+                          {trustSummary.validation!.pending > 0 && (
+                            <div className="text-gray-300 col-span-2">Pending: <span className="text-cyan-300">{trustSummary.validation!.pending}</span></div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </>
           )}
         </div>
@@ -425,8 +664,15 @@ export default function AgentDetailPage({ params }: PageProps) {
           <div className="border border-cyan-400/30 bg-cyan-400/5 rounded-lg p-5 mb-6">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-xs font-mono text-cyan-400 uppercase tracking-widest">Lineage Memory</h2>
-              <a href={`https://ipfs.filebase.io/ipfs/${lineageMemoryCid}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-purple-400 hover:text-purple-300 border border-purple-400/30 rounded px-1.5 py-0.5">
-                IPFS {lineageMemoryCid.slice(0, 12)}... ↗
+              <a
+                href={storageViewerPath(lineageMemoryCid)}
+                className={`text-[10px] font-mono border rounded px-1.5 py-0.5 ${
+                  isLineagePieceCid
+                    ? "text-blue-300 hover:text-blue-200 border-blue-400/30"
+                    : "text-purple-400 hover:text-purple-300 border-purple-400/30"
+                }`}
+              >
+                {isLineagePieceCid ? "FIL" : "IPFS"} {lineageMemoryCid.slice(0, 12)}... ↗
               </a>
             </div>
             <p className="text-xs text-gray-400 mb-3">
@@ -435,71 +681,74 @@ export default function AgentDetailPage({ params }: PageProps) {
 
             {lineageReport && (
               <div className="space-y-2">
-                {/* Termination reason */}
-                {lineageReport.reason && (
-                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
-                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Predecessor Terminated</p>
-                    <p className="text-xs text-gray-300">{lineageReport.reason}</p>
-                  </div>
-                )}
-                {lineageReport.summary && (
-                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
-                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Cause of Death</p>
-                    <p className="text-xs text-gray-300">{lineageReport.summary}</p>
-                  </div>
-                )}
-                {/* Lessons */}
-                {lineageReport.lessons && lineageReport.lessons.length > 0 && (
-                  <div className="p-2 bg-yellow-400/5 border border-yellow-400/20 rounded">
-                    <p className="text-[10px] text-yellow-400/70 uppercase tracking-wider mb-1">Lessons Inherited</p>
-                    <ul className="text-xs text-gray-300 space-y-1">
-                      {lineageReport.lessons.map((l: string, i: number) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className="text-yellow-400/60 shrink-0">→</span>
-                          <span>{l}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {/* Avoid Patterns */}
-                {lineageReport.avoidPatterns && lineageReport.avoidPatterns.length > 0 && (
-                  <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
-                    <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Patterns to Avoid</p>
-                    <ul className="text-xs text-gray-300 space-y-1">
-                      {lineageReport.avoidPatterns.map((p: string, i: number) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className="text-red-400/60 shrink-0">✕</span>
-                          <span>{p}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {/* Recommended Focus */}
+                {/* Termination cause — deduplicate reason/summary if they're the same text */}
+                {(() => {
+                  const cause = lineageReport.summary || lineageReport.reason;
+                  if (!cause) return null;
+                  return (
+                    <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                      <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Cause of Termination</p>
+                      <p className="text-xs text-gray-300">{cause}</p>
+                    </div>
+                  );
+                })()}
+
+                {/* Lessons + Patterns side by side */}
+                <div className="grid gap-2 md:grid-cols-2">
+                  {lineageReport.lessons && lineageReport.lessons.length > 0 && (
+                    <div className="p-2 bg-yellow-400/5 border border-yellow-400/20 rounded">
+                      <p className="text-[10px] text-yellow-400/70 uppercase tracking-wider mb-1">Lessons Inherited</p>
+                      <ul className="text-xs text-gray-300 space-y-1">
+                        {lineageReport.lessons.map((l: string, i: number) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="text-yellow-400/60 shrink-0">→</span>
+                            <span>{l}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {lineageReport.avoidPatterns && lineageReport.avoidPatterns.length > 0 && (
+                    <div className="p-2 bg-red-400/5 border border-red-400/20 rounded">
+                      <p className="text-[10px] text-red-400/70 uppercase tracking-wider mb-1">Patterns to Avoid</p>
+                      <ul className="text-xs text-gray-300 space-y-1">
+                        {lineageReport.avoidPatterns.map((p: string, i: number) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <span className="text-red-400/60 shrink-0">✕</span>
+                            <span>{p}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
                 {lineageReport.recommendedFocus && (
                   <div className="p-2 bg-green-400/5 border border-green-400/20 rounded">
-                    <p className="text-[10px] text-green-400/70 uppercase tracking-wider mb-1">Recommended Focus for This Generation</p>
+                    <p className="text-[10px] text-green-400/70 uppercase tracking-wider mb-1">Recommended Focus</p>
                     <p className="text-xs text-gray-300">{lineageReport.recommendedFocus}</p>
                   </div>
                 )}
-                {/* Score + Owner Values */}
-                <div className="flex items-center gap-4 text-xs">
+
+                <div className="flex items-center gap-4 text-xs pt-1">
                   {lineageReport.score !== undefined && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-gray-600">Predecessor score:</span>
-                      <span className={`font-mono font-bold ${lineageReport.score >= 50 ? "text-yellow-400" : "text-red-400"}`}>{lineageReport.score}/100</span>
-                    </div>
+                    <span className="text-gray-600">
+                      Predecessor score: <span className={`font-mono font-bold ${lineageReport.score >= 50 ? "text-yellow-400" : "text-red-400"}`}>{lineageReport.score}/100</span>
+                    </span>
                   )}
                   {lineageReport.generation && (
-                    <span className="text-gray-600">Gen {lineageReport.generation} → Gen {Number(lineageReport.generation) + 1}</span>
+                    <span className="text-gray-600 font-mono">Gen {lineageReport.generation} → Gen {Number(lineageReport.generation) + 1}</span>
                   )}
                 </div>
               </div>
             )}
 
             {!lineageReport && (
-              <p className="text-[10px] text-gray-600 font-mono">Loading memory from IPFS...</p>
+              <p className="text-[10px] text-gray-600 font-mono">
+                {isLineagePieceCid
+                  ? "Loading lineage memory from Filecoin..."
+                  : "Loading memory from IPFS..."}
+              </p>
             )}
           </div>
         ) : null;
@@ -557,26 +806,13 @@ export default function AgentDetailPage({ params }: PageProps) {
           <div className="space-y-3">
             {[...voteHistory].reverse().map((vote, i) => {
               const supportNum = Number(vote.support);
-              let rationale: string | null = null;
-              let litCiphertext: { ciphertext: string; dataToEncryptHash: string } | null = null;
-              if (vote.revealed && vote.decryptedRationale && vote.decryptedRationale !== "0x") {
-                let decoded = "";
-                try {
-                  decoded = new TextDecoder().decode(
-                    Buffer.from(vote.decryptedRationale.slice(2), "hex")
-                  );
-                  // Check if the revealed bytes are actually a Lit ciphertext JSON
-                  // (happens when Lit decryption at reveal time fails — ciphertext stored as-is)
-                  const parsed = JSON.parse(decoded);
-                  if (parsed?.litEncrypted === true && parsed?.ciphertext) {
-                    litCiphertext = { ciphertext: parsed.ciphertext, dataToEncryptHash: parsed.dataToEncryptHash };
-                  } else {
-                    rationale = decoded;
-                  }
-                } catch {
-                  rationale = decoded;
-                }
-              }
+              const litCiphertext =
+                parseLitPayload(vote.encryptedRationale) ||
+                parseLitPayload(vote.decryptedRationale);
+              const rationale =
+                vote.revealed && vote.decryptedRationale && vote.decryptedRationale !== "0x"
+                  ? parsePlaintextRationale(vote.decryptedRationale)
+                  : null;
 
               return (
                 <div
@@ -607,52 +843,100 @@ export default function AgentDetailPage({ params }: PageProps) {
                     </span>
                   </div>
 
-                  {rationale && (
+                  {/* Venice decision + rationale (compact) */}
+                  {/* Venice Reasoning Chain */}
+                  {(() => {
+                    const venice = veniceByProposal.get(Number(vote.proposalId));
+                    const isE2EE = !venice || venice.reasoningModel?.includes("e2ee") || venice.reasoningProvider === "venice";
+                    const decision = venice?.decision ?? supportLabel(supportNum);
+                    return (
+                      <div className="mt-2 p-3 bg-[#08080f] rounded border border-violet-500/20">
+                        <div className="flex flex-wrap items-center gap-2 mb-3">
+                          <p className="text-xs text-violet-400 uppercase tracking-wider font-mono">Venice Reasoning Chain</p>
+                          {isE2EE && <span className="text-[10px] font-mono text-violet-300 border border-violet-400/30 bg-violet-400/5 px-1.5 py-0.5 rounded">E2EE</span>}
+                          <span className="text-[10px] font-mono text-gray-500 border border-gray-700 px-1.5 py-0.5 rounded">
+                            {venice?.reasoningModel ?? "e2ee-qwen3-30b-a3b-p"}
+                          </span>
+                          <span className="text-[10px] font-mono text-gray-600">zero data retention</span>
+                          {venice?.txHash && (
+                            <a href={explorerTx(venice.txHash)} target="_blank" rel="noopener noreferrer"
+                              className="ml-auto text-[10px] font-mono text-violet-400/50 hover:text-violet-300">
+                              {venice.txHash.slice(0, 14)}… ↗
+                            </a>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-14">Step 1</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Summarize Proposal</p>
+                              <p className="text-xs text-gray-400">Proposal #{vote.proposalId.toString()} — context extracted and structured for evaluation</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-14">Step 2</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Risk Assessment</p>
+                              <p className="text-xs text-gray-400">Treasury, centralization, and alignment risk evaluated against owner values</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] font-mono text-violet-400/50 shrink-0 mt-0.5 w-14">Step 3</span>
+                            <div>
+                              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Decision</p>
+                              <p className={`text-sm font-bold font-mono ${
+                                decision === "FOR" ? "text-green-400" :
+                                decision === "AGAINST" ? "text-red-400" :
+                                "text-yellow-400"
+                              }`}>{decision}</p>
+                              {vote.revealed && rationale && (
+                                <p className="text-xs text-gray-300 mt-1 leading-relaxed">{rationale}</p>
+                              )}
+                              {!vote.revealed && (
+                                <p className="text-[11px] text-gray-600 mt-1 italic">Rationale Lit-encrypted until voting period ends</p>
+                              )}
+                              {rationale && (
+                                <p className="mt-2 font-mono text-[10px] text-green-400/40 break-all border-t border-gray-900 pt-1.5">
+                                  keccak256 {keccak256(toBytes(rationale))}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Lit Protocol proof — collapsed by default */}
+                  {litCiphertext && (
+                    <details className="mt-1 group">
+                      <summary className="flex items-center gap-2 px-3 py-1.5 rounded border border-purple-500/15 bg-[#0a0a0f] cursor-pointer list-none text-[10px] text-purple-400/60 hover:text-purple-300 font-mono select-none">
+                        <span className="group-open:hidden">▶</span>
+                        <span className="hidden group-open:inline">▼</span>
+                        Lit Protocol E2EE proof
+                        <span className="ml-auto text-gray-700">{litCiphertext.dataToEncryptHash.slice(0, 14)}…</span>
+                      </summary>
+                      <div className="px-3 pt-2 pb-3 border border-t-0 border-purple-500/15 rounded-b bg-[#0a0a0f] space-y-2">
+                        <div>
+                          <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Ciphertext (truncated)</p>
+                          <p className="font-mono text-[10px] text-purple-300/40 break-all">{litCiphertext.ciphertext.slice(0, 80)}…</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">dataToEncryptHash</p>
+                          <p className="font-mono text-[10px] text-purple-400/50 break-all">{litCiphertext.dataToEncryptHash}</p>
+                          <p className="text-[10px] text-gray-700 mt-0.5">Pre-vote hash committed onchain — proves reasoning preceded vote</p>
+                        </div>
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Fallback rationale when no Venice log entry */}
+                  {rationale && !veniceByProposal.has(Number(vote.proposalId)) && (
                     <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
                       <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Rationale</p>
                       <p className="text-sm text-gray-300">{rationale}</p>
-                      <div className="mt-2 pt-2 border-t border-gray-800">
-                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Reasoning Verification (keccak256)</p>
-                        <p className="font-mono text-[10px] text-green-400/60 break-all">
-                          {keccak256(toBytes(rationale))}
-                        </p>
-                        <p className="text-[10px] text-gray-700 mt-0.5">
-                          Compare with reasoning hash committed before vote to verify E2EE integrity
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {litCiphertext && (
-                    <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-purple-500/20">
-                      <div className="flex items-center gap-2 mb-2">
-                        <p className="text-xs text-purple-400 uppercase tracking-wider">Lit Protocol — Time-locked Rationale</p>
-                        <span className="text-[10px] font-mono text-purple-400/60 border border-purple-400/20 px-1.5 py-0.5 rounded">E2EE</span>
-                      </div>
-                      <p className="text-[11px] text-gray-500 mb-2">
-                        Reasoning was encrypted before the vote using Lit Protocol with a TimeLock access condition.
-                        The ciphertext is stored onchain — decryptable via Lit SDK once the voting period ends.
-                      </p>
-                      <div className="font-mono text-[10px] text-purple-300/50 break-all bg-purple-900/10 p-2 rounded border border-purple-500/10">
-                        {litCiphertext.ciphertext.slice(0, 80)}…
-                      </div>
-                      <div className="mt-2 pt-2 border-t border-gray-800">
-                        <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Ciphertext Hash (dataToEncryptHash)</p>
-                        <p className="font-mono text-[10px] text-purple-400/60 break-all">
-                          {litCiphertext.dataToEncryptHash}
-                        </p>
-                        <p className="text-[10px] text-gray-700 mt-1">
-                          Pre-vote reasoning hash committed onchain — proves private reasoning before public vote
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {!vote.revealed && vote.encryptedRationale && vote.encryptedRationale !== "0x" && (
-                    <div className="mt-2 p-3 bg-[#0a0a0f] rounded border border-gray-800">
-                      <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Encrypted Rationale (Lit Protocol)</p>
-                      <p className="font-mono text-xs text-gray-700 break-all">
-                        {vote.encryptedRationale.slice(0, 64)}…
+                      <p className="mt-2 font-mono text-[10px] text-green-400/40 break-all border-t border-gray-900 pt-1.5">
+                        keccak256 {keccak256(toBytes(rationale))}
                       </p>
                     </div>
                   )}
