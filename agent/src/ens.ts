@@ -211,6 +211,31 @@ export async function registerSubdomain(
   }
 }
 
+export async function updateSubdomainAddress(
+  label: string,
+  childAddress: Address
+): Promise<{ name: string; txHash?: string }> {
+  const normalizedLabel = (() => { try { return ens_normalize(label); } catch { return label.toLowerCase().replace(/[^a-z0-9-]/g, ""); } })();
+  const fullName = `${normalizedLabel}.${PARENT_DOMAIN}`;
+
+  console.log(`[ENS] Updating subdomain onchain: ${fullName} => ${childAddress}`);
+
+  try {
+    const receipt = await sendTxAndWait({
+      address: SPAWN_ENS_REGISTRY_ADDRESS,
+      abi: SpawnENSRegistryABI,
+      functionName: "updateAddress",
+      args: [normalizedLabel, childAddress],
+    });
+
+    console.log(`[ENS] Updated onchain: ${fullName} => ${childAddress} (tx: ${receipt.transactionHash})`);
+    return { name: fullName, txHash: receipt.transactionHash };
+  } catch (err: any) {
+    console.log(`[ENS] Address update failed: ${err?.message?.slice(0, 80)}`);
+    return { name: fullName };
+  }
+}
+
 /**
  * Deregister a subdomain onchain when a child is terminated.
  */

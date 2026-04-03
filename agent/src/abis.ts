@@ -482,6 +482,13 @@ export const ChildGovernorABI = [
   },
   {
     type: "function",
+    name: "maxGasPerVote",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "alignmentScore",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],

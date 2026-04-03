@@ -136,7 +136,7 @@ Safety guardrails are structural:
 - `ChildGovernor.sol` stores reasoning commitments and reveal state
 - `agent_log.json` and Filecoin snapshots give an independently verifiable execution history
 
-Key contracts: [`SpawnFactory`](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) · [`ParentTreasury`](https://sepolia.basescan.org/address/0x9428B93993F06d3c5d647141d39e5ba54fb97a7b) · [`ChildGovernor impl`](https://sepolia.basescan.org/address/0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6) · [`TimeLock`](https://sepolia.basescan.org/address/0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23)
+Key contracts: [`SpawnFactory`](https://sepolia.basescan.org/address/0x8Ccd24213E765d636605a1F820336cd9E1c8A9C8) · [`ParentTreasury`](https://sepolia.basescan.org/address/0x9428B93993F06d3c5d647141d39e5ba54fb97a7b) · [`ChildGovernor impl`](https://sepolia.basescan.org/address/0xc82228e6C72b62a38b1946E29F981ad5D4641703) · [`TimeLock`](https://sepolia.basescan.org/address/0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23)
 
 ---
 
@@ -269,9 +269,9 @@ The full end-to-end path on live infra takes approximately 237s (Base Sepolia + 
 
 | Contract | Address |
 |---|---|
-| SpawnFactory | [`0xfEb8D54149b1a303Ab88135834220b85091D93A1`](https://sepolia.basescan.org/address/0xfEb8D54149b1a303Ab88135834220b85091D93A1) |
+| SpawnFactory | [`0x8Ccd24213E765d636605a1F820336cd9E1c8A9C8`](https://sepolia.basescan.org/address/0x8Ccd24213E765d636605a1F820336cd9E1c8A9C8) |
 | ParentTreasury | [`0x9428B93993F06d3c5d647141d39e5ba54fb97a7b`](https://sepolia.basescan.org/address/0x9428B93993F06d3c5d647141d39e5ba54fb97a7b) |
-| ChildGovernor implementation | [`0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6`](https://sepolia.basescan.org/address/0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6) |
+| ChildGovernor implementation | [`0xc82228e6C72b62a38b1946E29F981ad5D4641703`](https://sepolia.basescan.org/address/0xc82228e6C72b62a38b1946E29F981ad5D4641703) |
 | MockGovernor: Uniswap | [`0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9`](https://sepolia.basescan.org/address/0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9) |
 | MockGovernor: Lido | [`0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC`](https://sepolia.basescan.org/address/0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC) |
 | MockGovernor: ENS | [`0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C`](https://sepolia.basescan.org/address/0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C) |

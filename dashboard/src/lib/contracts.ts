@@ -6,7 +6,7 @@ import {
 } from "./abis";
 
 // Latest deployment — Base Sepolia (chain 84532)
-// maxChildren=30, spawnChildWithOperator, 3 perspectives per DAO
+// SpawnFactory upgraded on April 4, 2026 to use the vote-forwarding ChildGovernor implementation.
 export const CONTRACTS = {
   MockGovernor: {
     address: "0xd91e80324f0fa9fdefb64a46e68bcbe79a8b2ca9" as const,
@@ -17,11 +17,11 @@ export const CONTRACTS = {
     abi: ParentTreasuryABI,
   },
   SpawnFactory: {
-    address: "0xfeb8d54149b1a303ab88135834220b85091d93a1" as const,
+    address: "0x8ccd24213e765d636605a1f820336cd9e1c8a9c8" as const,
     abi: SpawnFactoryABI,
   },
   ChildGovernorImpl: {
-    address: "0x9cc050508b7d7deea1d2cd81cea484eb3550fcf6" as const,
+    address: "0xc82228e6c72b62a38b1946e29f981ad5d4641703" as const,
     abi: ChildGovernorABI,
   },
 } as const;

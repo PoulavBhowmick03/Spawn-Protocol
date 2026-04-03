@@ -76,6 +76,16 @@ contract IntegrationTest is Test {
         // 4. Verify vote records
         assertEq(ChildGovernor(payable(c1.childAddr)).getVoteCount(), 2);
         assertEq(ChildGovernor(payable(c3.childAddr)).getVoteCount(), 2);
+        assertTrue(mockGov.hasVoted(prop1, c1.childAddr));
+        assertTrue(mockGov.hasVoted(prop1, c2.childAddr));
+        assertTrue(mockGov.hasVoted(prop1, c3.childAddr));
+
+        MockGovernor.ProposalInfo memory prop1Info = mockGov.getProposal(prop1);
+        MockGovernor.ProposalInfo memory prop2Info = mockGov.getProposal(prop2);
+        assertEq(prop1Info.forVotes, 2);
+        assertEq(prop1Info.againstVotes, 1);
+        assertEq(prop2Info.forVotes, 2);
+        assertEq(prop2Info.againstVotes, 1);
 
         // 5. Parent evaluates alignment and kills child3
         vm.startPrank(parentAgent);

@@ -41,6 +41,9 @@ function getStartDelayMs() {
 let litAvailable = false;
 let litInitAttempted = false;
 const lastTrustStatusByChild = new Map<string, string>();
+const ENABLE_ERC7715_REDEMPTION = process.env.ENABLE_ERC7715_REDEMPTION === "true";
+const MIN_CHILD_MAX_GAS_PER_VOTE = BigInt(process.env.CHILD_MAX_GAS_PER_VOTE || "2000000");
+const MAX_ONCHAIN_RATIONALE_CHARS = Number(process.env.MAX_ONCHAIN_RATIONALE_CHARS || "1200");
 async function ensureLit(): Promise<boolean> {
   if (litInitAttempted) return litAvailable;
   litInitAttempted = true;
@@ -147,6 +150,39 @@ Your owner's governance values: ${governanceValues}`;
     }
     await sleep(getCycleIntervalMs());
   }
+}
+
+async function writeWithRetry(
+  wallet: any,
+  readClient: any,
+  request: Record<string, any>,
+  childLabel: string,
+  action: string,
+  retries = 6
+): Promise<`0x${string}`> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const hash = await wallet.writeContract(request);
+      const receipt = await readClient.waitForTransactionReceipt({ hash });
+      if (receipt?.status === "reverted" || receipt?.status === 0 || receipt?.status === 0n) {
+        throw new Error(`${action} reverted onchain (${hash})`);
+      }
+      return hash as `0x${string}`;
+    } catch (err: any) {
+      const msg = err?.shortMessage || err?.details || err?.message || String(err);
+      const isRetryable = ["nonce", "underpriced", "already known", "rate limit", "timeout",
+        "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "429"].some((t) => msg.includes(t));
+      if (isRetryable && attempt < retries - 1) {
+        // Randomized backoff to break convoy effect when multiple children retry together
+        const delay = 2000 + attempt * 2000 + Math.floor(Math.random() * 4000);
+        console.log(`[Child:${childLabel}] ${action} retry in ${(delay/1000).toFixed(1)}s (${attempt + 2}/${retries}): ${msg.slice(0, 60)}`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`${action} failed after ${retries} attempts`);
 }
 
 async function childCycle(
@@ -322,9 +358,19 @@ async function childCycle(
       console.log(`[Child:${childLabel}] Decision: ${decision}`);
       console.log(`[Child:${childLabel}] Reasoning: ${reasoning.slice(0, 100)}...`);
 
-      // Venice private→public proof: hash reasoning onchain BEFORE vote
+      const onchainReasoning =
+        !currentJudgeRunId && reasoning.length > MAX_ONCHAIN_RATIONALE_CHARS
+          ? `${reasoning.slice(0, Math.max(0, MAX_ONCHAIN_RATIONALE_CHARS - 3))}...`
+          : reasoning;
+      if (onchainReasoning !== reasoning) {
+        console.log(
+          `[Child:${childLabel}] Rationale trimmed from ${reasoning.length} to ${onchainReasoning.length} chars for onchain gas budget`
+        );
+      }
+
+      // Venice private→public proof: hash the exact rationale that will be committed onchain.
       const { keccak256: k256, toBytes } = await import("viem");
-      const reasoningHash = k256(toBytes(reasoning));
+      const reasoningHash = k256(toBytes(onchainReasoning));
       console.log(`[Child:${childLabel}] Reasoning hash: ${reasoningHash.slice(0, 18)}...`);
 
       // Encrypt rationale via Lit Protocol (time-locked to proposal end)
@@ -333,7 +379,7 @@ async function childCycle(
       await ensureLit(); // lazy-init Lit on first vote
       if (litAvailable) {
         try {
-          const litResult = await encryptRationale(reasoning, proposal.endTime);
+          const litResult = await encryptRationale(onchainReasoning, proposal.endTime);
           encryptedRationale = toHex(JSON.stringify({
             ciphertext: litResult.ciphertext,
             dataToEncryptHash: litResult.dataToEncryptHash,
@@ -343,10 +389,10 @@ async function childCycle(
           console.log(`[Child:${childLabel}] Rationale encrypted via Lit Protocol (TimeLock: ${proposal.endTime})`);
         } catch (litErr: any) {
           console.warn(`[Child:${childLabel}] Lit encryption failed (${litErr?.message?.slice(0, 60)}), using keccak256 hash fallback`);
-          encryptedRationale = toHex(reasoning);
+          encryptedRationale = toHex(onchainReasoning);
         }
       } else {
-        encryptedRationale = toHex(reasoning);
+        encryptedRationale = toHex(onchainReasoning);
         console.log(`[Child:${childLabel}] Rationale hex-encoded (Lit unavailable — keccak256 hash still onchain)`);
       }
 
@@ -363,7 +409,7 @@ async function childCycle(
 
       // Try to vote via DelegationManager redemption (ERC-7715 enforced onchain)
       let usedDelegation = false;
-      if (childAddress && !currentJudgeRunId) {
+      if (ENABLE_ERC7715_REDEMPTION && childAddress && !currentJudgeRunId) {
         const delegations = getDelegationsForChild(childAddress);
         // Match by childAddr (ChildGovernor clone) — governanceContract stores the delegation
         // target which is the ChildGovernor address, not the MockGovernor (governanceAddr)
@@ -393,21 +439,28 @@ async function childCycle(
         }
       }
 
-      // Fallback: direct writeContract call.
-      // On base-sepolia the DeleGator is now operator, so the parent EOA (authorized as
-      // `parent` in onlyAuthorized) is used. On celo-sepolia operator = child wallet still.
+      // Fallback: direct writeContract call using the child's own wallet.
+      // The child wallet is the ChildGovernor operator (set at spawn via spawnChildWithOperator),
+      // so it passes the onlyAuthorized check on every chain.
       if (!usedDelegation) {
-        const fallbackChain = process.env.CHILD_CHAIN || "base-sepolia";
-        const fallbackWallet =
-          fallbackChain === "celo-sepolia"
-            ? childWalletClient
-            : walletClient;
-        hash = await fallbackWallet.writeContract({
+        let maxGasPerVote = MIN_CHILD_MAX_GAS_PER_VOTE;
+        try {
+          const configuredMaxGasPerVote = (await readClient.readContract({
+            address: childAddr,
+            abi: ChildGovernorABI,
+            functionName: "maxGasPerVote",
+          })) as bigint;
+          if (configuredMaxGasPerVote > maxGasPerVote) {
+            maxGasPerVote = configuredMaxGasPerVote;
+          }
+        } catch {}
+        hash = await writeWithRetry(childWalletClient, readClient, {
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "castVote",
           args: [i, support, encryptedRationale],
-        });
+          gas: maxGasPerVote,
+        }, childLabel, "castVote");
       }
 
       const receipt = await readClient.waitForTransactionReceipt({ hash: hash! });
@@ -508,19 +561,12 @@ async function childCycle(
           console.log(`[Child:${childLabel}] Revealing rationale (Lit init failed — using stored hex)`);
         }
 
-        const revealChain = process.env.CHILD_CHAIN || "base-sepolia";
-        const revealWallet =
-          revealChain === "celo-sepolia"
-            ? childWalletClient
-            : walletClient;
-
-        const hash = await revealWallet.writeContract({
+        const hash = await writeWithRetry(childWalletClient, readClient, {
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "revealRationale",
           args: [proposalId, decryptedRationaleHex],
-        });
-        await readClient.waitForTransactionReceipt({ hash });
+        }, childLabel, "revealRationale");
         console.log(`[Child:${childLabel}] Rationale revealed for proposal ${proposalId} (tx: ${hash})`);
         try { ipcLog(childLabel, "reveal_rationale", { proposalId: Number(proposalId) }, { txHash: hash }, hash); } catch {}
       } catch (revealErr: any) {
