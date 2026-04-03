@@ -388,8 +388,20 @@ export async function GET(request: Request) {
     const voteSummaries = buildVoteSummaries(logEntries);
     const alignmentSummaries = buildAlignmentSummaries(logEntries);
 
+    // Deduplicate by ensLabel before enrichment. When ghost entries exist from an older
+    // crashed incarnation, the latest child id is a safer proxy for the live replacement
+    // than historical vote count.
+    const activeByLabel = new Map<string, any>();
+    for (const child of activeRaw) {
+      const existing = activeByLabel.get(child.ensLabel);
+      if (!existing || Number(child.id) > Number(existing.id)) {
+        activeByLabel.set(child.ensLabel, child);
+      }
+    }
+    const dedupedActiveRaw = Array.from(activeByLabel.values());
+
     const activeEnriched = await Promise.all(
-      activeRaw.map((child) => enrichActiveChild(child, voteSummaries.byChild, alignmentSummaries))
+      dedupedActiveRaw.map((child) => enrichActiveChild(child, voteSummaries.byChild, alignmentSummaries))
     );
 
     const totalCount = Number(
@@ -400,7 +412,7 @@ export async function GET(request: Request) {
       })
     );
 
-    const activeIds = new Set(activeRaw.map((child: any) => Number(child.id)));
+    const activeIds = new Set(dedupedActiveRaw.map((child: any) => Number(child.id)));
     const terminatedStart = Math.max(1, totalCount - 60);
     const terminatedIds: number[] = [];
     for (let id = terminatedStart; id <= totalCount; id++) {

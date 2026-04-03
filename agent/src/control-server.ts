@@ -2,9 +2,23 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { JUDGE_FLOW_CONTROL_PATH } from "./judge-flow.js";
+import {
+  appendRegisteredDAO,
+  createRegisteredDAO,
+  extractSnapshotSpace,
+  extractTallyOrganizationInput,
+  getAllRegisteredDAOs,
+  getRegisteredDAOBySlug,
+  getRegisteredDAOBySource,
+  normalizeSlug,
+  type RegisteredDAO,
+} from "./dao-registry.js";
 
 const BUDGET_STATE_PATH = join(process.cwd(), "..", "runtime_budget_state.json");
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
+const DASHBOARD_BASE_URL = (process.env.DASHBOARD_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const TALLY_ENDPOINT = "https://api.tally.xyz/query";
+const SNAPSHOT_ENDPOINT = "https://hub.snapshot.org/graphql";
 
 type JudgeEvent = {
   action: string;
@@ -140,6 +154,10 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+function buildDashboardUrl(slug: string) {
+  return `${DASHBOARD_BASE_URL}/dao/${encodeURIComponent(slug)}`;
+}
+
 function safeReadJson<T>(path: string): T | null {
   if (!existsSync(path)) return null;
   try {
@@ -164,6 +182,102 @@ function readBody(req: IncomingMessage): Promise<any> {
     });
     req.on("error", () => resolve({}));
   });
+}
+
+async function verifyTallyOrg(rawInput: string): Promise<{ id: string; slug: string; name: string } | null> {
+  const apiKey = process.env.TALLY_API_KEY;
+  if (!apiKey) {
+    throw new Error("TALLY_API_KEY is not configured");
+  }
+
+  const parsed = extractTallyOrganizationInput(rawInput);
+  if (!parsed.id && !parsed.slug) return null;
+
+  const variables = parsed.id
+    ? { input: { id: Number(parsed.id) } }
+    : { input: { slug: parsed.slug } };
+
+  const response = await fetch(TALLY_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Api-Key": apiKey,
+    },
+    body: JSON.stringify({
+      query: `query Organization($input: OrganizationInput!) {
+        organization(input: $input) {
+          id
+          slug
+          name
+        }
+      }`,
+      variables,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Tally verification failed (${response.status})`);
+  }
+
+  const json = (await response.json()) as {
+    data?: { organization?: { id: number | string; slug: string; name: string } | null };
+    errors?: Array<{ message: string }>;
+  };
+
+  if (json.errors?.length) {
+    return null;
+  }
+
+  const organization = json.data?.organization;
+  if (!organization?.id || !organization.slug || !organization.name) return null;
+
+  return {
+    id: String(organization.id),
+    slug: organization.slug,
+    name: organization.name,
+  };
+}
+
+async function verifySnapshotSpace(rawInput: string): Promise<{ id: string; name: string } | null> {
+  const spaceId = extractSnapshotSpace(rawInput);
+  if (!spaceId) return null;
+
+  const response = await fetch(SNAPSHOT_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: `query Space($id: String!) {
+        space(id: $id) {
+          id
+          name
+        }
+      }`,
+      variables: { id: spaceId },
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Snapshot verification failed (${response.status})`);
+  }
+
+  const json = (await response.json()) as {
+    data?: { space?: { id: string; name: string } | null };
+    errors?: Array<{ message: string }>;
+  };
+
+  if (json.errors?.length) {
+    return null;
+  }
+
+  const space = json.data?.space;
+  if (!space?.id || !space.name) return null;
+
+  return {
+    id: space.id,
+    name: space.name,
+  };
 }
 
 function extractDetailValue(details: string | undefined, key: string): string | undefined {
@@ -336,6 +450,103 @@ export function startControlServer() {
         200,
         current ? { ...EMPTY_BUDGET_STATE, ...current, context: current.context || "agent_runtime" } : EMPTY_BUDGET_STATE
       );
+    }
+
+    if (method === "GET" && url.pathname === "/daos") {
+      return json(res, 200, { daos: getAllRegisteredDAOs() });
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/daos/")) {
+      const slug = normalizeSlug(decodeURIComponent(url.pathname.slice("/daos/".length)));
+      const dao = getRegisteredDAOBySlug(slug);
+      if (!dao) {
+        return json(res, 404, { error: `DAO not found: ${slug}` });
+      }
+      return json(res, 200, dao);
+    }
+
+    if (method === "POST" && url.pathname === "/dao/register") {
+      const body = await readBody(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const source = body.source === "tally" || body.source === "snapshot" ? body.source : null;
+      const rawSourceRef = typeof body.sourceRef === "string" ? body.sourceRef.trim() : "";
+      const displaySlug = typeof body.displaySlug === "string" ? body.displaySlug.trim() : "";
+      const philosophy = typeof body.philosophy === "string" ? body.philosophy.trim() : "";
+      const contact = typeof body.contact === "string" ? body.contact.trim() : "";
+
+      if (!name) {
+        return json(res, 422, { error: "name is required" });
+      }
+      if (!source) {
+        return json(res, 422, { error: "source must be 'tally' or 'snapshot'" });
+      }
+      if (!rawSourceRef) {
+        return json(res, 422, { error: "sourceRef is required" });
+      }
+
+      try {
+        let verified: { id: string; slug?: string; name: string } | null = null;
+        let normalizedSourceRef = rawSourceRef;
+
+        if (source === "tally") {
+          verified = await verifyTallyOrg(rawSourceRef);
+          if (!verified) {
+            return json(res, 422, { error: `Tally organization not found: ${rawSourceRef}` });
+          }
+          normalizedSourceRef = verified.id;
+        } else {
+          verified = await verifySnapshotSpace(rawSourceRef);
+          if (!verified) {
+            return json(res, 422, { error: `Snapshot space not found: ${rawSourceRef}` });
+          }
+          normalizedSourceRef = verified.id;
+        }
+
+        const existingBySource = getRegisteredDAOBySource(source, normalizedSourceRef);
+        if (existingBySource) {
+          return json(res, 409, {
+            error: `${name} is already registered`,
+            daoId: existingBySource.id,
+            slug: existingBySource.slug,
+            dashboardUrl: buildDashboardUrl(existingBySource.slug),
+          });
+        }
+
+        const desiredSlug = normalizeSlug(displaySlug || name);
+        const existingBySlug = getRegisteredDAOBySlug(desiredSlug);
+        if (existingBySlug) {
+          return json(res, 409, { error: `DAO slug already registered: ${desiredSlug}` });
+        }
+
+        const dao = createRegisteredDAO({
+          name,
+          slug: desiredSlug,
+          source,
+          sourceRef: normalizedSourceRef,
+          philosophy,
+          contact,
+        });
+
+        let created: RegisteredDAO;
+        try {
+          created = appendRegisteredDAO(dao);
+        } catch (err: any) {
+          return json(res, 409, { error: err?.message || "DAO registration conflict" });
+        }
+
+        return json(res, 201, {
+          daoId: created.id,
+          slug: created.slug,
+          status: created.status,
+          dashboardUrl: buildDashboardUrl(created.slug),
+          source: created.source,
+          sourceRef: created.sourceRef,
+          resolvedName: verified.name,
+          resolvedSlug: verified.slug ?? null,
+        });
+      } catch (err: any) {
+        return json(res, 500, { error: err?.message || "Failed to register DAO" });
+      }
     }
 
     if (method === "POST" && url.pathname === "/judge-flow/start") {

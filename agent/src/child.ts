@@ -9,6 +9,7 @@ import { toHex, type Hex, type Address } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 import { logChildAction } from "./logger.js";
 import { readJudgeFlowState } from "./judge-flow.js";
+import { findMirroredProposalByInternal } from "./mirror-index.js";
 
 /**
  * Log a child action via IPC if running as a forked process (single-writer pattern),
@@ -41,6 +42,51 @@ function getStartDelayMs() {
 let litAvailable = false;
 let litInitAttempted = false;
 const lastTrustStatusByChild = new Map<string, string>();
+const delegationRedemptionEnabledByChild = new Map<string, boolean>();
+
+function isRetryableWriteError(message: string) {
+  return [
+    "nonce",
+    "underpriced",
+    "already known",
+    "rate limit",
+    "timeout",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "429",
+  ].some((token) => message.includes(token));
+}
+
+async function writeContractWithRetries(
+  wallet: any,
+  readClient: any,
+  request: Record<string, any>,
+  childLabel: string,
+  action: string,
+  retries = 4
+) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const hash = await wallet.writeContract(request);
+      await readClient.waitForTransactionReceipt({ hash });
+      return hash as `0x${string}`;
+    } catch (err: any) {
+      const msg = err?.shortMessage || err?.details || err?.message || String(err);
+      if (isRetryableWriteError(msg) && attempt < retries - 1) {
+        const delay = 2000 + attempt * 2000;
+        console.log(
+          `[Child:${childLabel}] ${action} write retry after ${msg.slice(0, 80)} (${attempt + 2}/${retries})`
+        );
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`${action} write failed after ${retries} attempts`);
+}
+
 async function ensureLit(): Promise<boolean> {
   if (litInitAttempted) return litAvailable;
   litInitAttempted = true;
@@ -105,6 +151,12 @@ export async function runChildLoop(
       console.log(`[Child:${childLabel}] Failed to parse DELEGATION_DATA: ${parseErr?.message?.slice(0, 60)}`);
     }
   }
+  const delegationRedemptionEnabled =
+    process.env.DELEGATION_REDEMPTION_ENABLED === "true" && !!process.env.DELEGATION_DATA;
+  delegationRedemptionEnabledByChild.set(childLabel, delegationRedemptionEnabled);
+  if (!delegationRedemptionEnabled && process.env.DELEGATION_DATA) {
+    console.log(`[Child:${childLabel}] Delegation metadata present but redemption disabled — using direct writes`);
+  }
 
   console.log(`[Child:${childLabel}] Starting child agent loop...`);
   console.log(`[Child:${childLabel}] Contract: ${childAddr}`);
@@ -161,6 +213,7 @@ async function childCycle(
 ) {
   const currentJudgeRunId = process.env.JUDGE_FLOW_RUN_ID;
   const childAgentId = process.env.ERC8004_AGENT_ID ? BigInt(process.env.ERC8004_AGENT_ID) : undefined;
+  let delegationRedemptionEnabled = delegationRedemptionEnabledByChild.get(childLabel) === true;
   if (!currentJudgeRunId) {
     const judgeState = readJudgeFlowState();
     if (judgeState.status === "running") {
@@ -271,6 +324,7 @@ async function childCycle(
         functionName: "getProposal",
         args: [i],
       })) as ProposalInfo;
+      const mirroredProposal = findMirroredProposalByInternal(governanceAddr, i);
 
       const proposalJudgeRunId = proposal.description.match(/\[JUDGE_FLOW:([^\]]+)\]/)?.[1] || null;
       if (currentJudgeRunId) {
@@ -357,13 +411,13 @@ async function childCycle(
       }
 
       // Cast vote onchain — try delegation redemption first, fall back to direct call
-      let hash: `0x${string}`;
+      let hash: `0x${string}` | null = null;
       const childAccount = childWalletClient.account;
       const childAddress = childAccount?.address as Address | undefined;
 
       // Try to vote via DelegationManager redemption (ERC-7715 enforced onchain)
       let usedDelegation = false;
-      if (childAddress && !currentJudgeRunId) {
+      if (childAddress && !currentJudgeRunId && delegationRedemptionEnabled) {
         const delegations = getDelegationsForChild(childAddress);
         // Match by childAddr (ChildGovernor clone) — governanceContract stores the delegation
         // target which is the ChildGovernor address, not the MockGovernor (governanceAddr)
@@ -389,6 +443,9 @@ async function childCycle(
               `[Child:${childLabel}] Delegation redemption failed: ${delegationErr?.message?.slice(0, 300)}`,
               `\n  Falling back to direct writeContract`
             );
+            delegationRedemptionEnabled = false;
+            delegationRedemptionEnabledByChild.set(childLabel, false);
+            console.log(`[Child:${childLabel}] Delegation redemption disabled for subsequent cycles`);
           }
         }
       }
@@ -401,18 +458,24 @@ async function childCycle(
         const fallbackWallet =
           fallbackChain === "celo-sepolia"
             ? childWalletClient
-            : walletClient;
-        hash = await fallbackWallet.writeContract({
+            : delegationRedemptionEnabled
+              ? walletClient
+              : childWalletClient;
+        hash = await writeContractWithRetries(fallbackWallet, readClient, {
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "castVote",
           args: [i, support, encryptedRationale],
-        });
+        }, childLabel, "cast_vote");
       }
-
-      const receipt = await readClient.waitForTransactionReceipt({ hash: hash! });
+      if (!hash) {
+        throw new Error(`Vote transaction hash missing for proposal ${i}`);
+      }
+      if (usedDelegation) {
+        await readClient.waitForTransactionReceipt({ hash });
+      }
       console.log(
-        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${usedDelegation ? " [via delegation]" : ""}`
+        `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${hash})${usedDelegation ? " [via delegation]" : ""}`
       );
       try {
         const judgePayload = currentJudgeRunId
@@ -433,10 +496,16 @@ async function childCycle(
             reasoningHash: reasoningHash.slice(0, 18),
             veniceTokensUsed: Math.max(0, getVeniceMetrics().totalTokens - veniceBefore.totalTokens),
             veniceCallsUsed: Math.max(0, getVeniceMetrics().totalCalls - veniceBefore.totalCalls),
+            ...(mirroredProposal?.sourceDaoId ? { sourceDaoId: mirroredProposal.sourceDaoId } : {}),
+            ...(mirroredProposal?.sourceDaoSlug ? { sourceDaoSlug: mirroredProposal.sourceDaoSlug } : {}),
+            ...(mirroredProposal?.sourceRef ? { sourceRef: mirroredProposal.sourceRef } : {}),
+            ...(mirroredProposal?.externalProposalKey
+              ? { sourceProposalKey: mirroredProposal.externalProposalKey }
+              : {}),
             ...judgePayload,
           },
-          { txHash: receipt.transactionHash, ...judgePayload },
-          receipt.transactionHash
+          { txHash: hash, ...judgePayload },
+          hash
         );
       } catch {}
     }
@@ -512,15 +581,16 @@ async function childCycle(
         const revealWallet =
           revealChain === "celo-sepolia"
             ? childWalletClient
-            : walletClient;
+            : delegationRedemptionEnabled
+              ? walletClient
+              : childWalletClient;
 
-        const hash = await revealWallet.writeContract({
+        const hash = await writeContractWithRetries(revealWallet, readClient, {
           address: childAddr,
           abi: ChildGovernorABI,
           functionName: "revealRationale",
           args: [proposalId, decryptedRationaleHex],
-        });
-        await readClient.waitForTransactionReceipt({ hash });
+        }, childLabel, "reveal_rationale");
         console.log(`[Child:${childLabel}] Rationale revealed for proposal ${proposalId} (tx: ${hash})`);
         try { ipcLog(childLabel, "reveal_rationale", { proposalId: Number(proposalId) }, { txHash: hash }, hash); } catch {}
       } catch (revealErr: any) {

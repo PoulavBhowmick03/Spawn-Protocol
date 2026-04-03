@@ -25,7 +25,7 @@ import type { StructuredTerminationReport } from "./venice.js";
 import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
 import { deriveChildWallet } from "./wallet-manager.js";
 import { registerAgent, registerAgentOnchain, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent, setAgentMetadataValue, getAgentTrustDecision, resolveAgentIdByLabelOnchain } from "./identity.js";
-import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, type DelegationRecord } from "./delegation.js";
+import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, isDelegationRedemptionEnabled, type DelegationRecord } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
 import { logParentAction, logChildAction } from "./logger.js";
 import { pinAgentLog, storeLogCIDOnchain, pinTerminationMemory } from "./ipfs.js";
@@ -38,7 +38,7 @@ import {
   isFilecoinAvailable,
   filecoinExplorerUrl,
 } from "./filecoin.js";
-import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
+import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats, fetchPolymarketResolution } from "./discovery.js";
 import { decodeEventLog, parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
@@ -67,6 +67,12 @@ const ALIGNMENT_THRESHOLD = 55; // Balance between keeping agents alive and demo
 const STRIKES_TO_KILL = 1; // Kill on first misalignment for visible lifecycle demo
 const PARENT_CYCLE_MS = 90_000; // evaluate every 90s
 const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
+const VOTE_CAP = 100; // retire agent after 100 votes, respawn fresh
+const POLYMARKET_AUDIT_INTERVAL_MS = 10 * 60_000; // audit resolved markets every 10 min
+const auditedPolymarketVotes = new Set<string>(); // "proposalId:childLabel" already acted on
+const POLYMARKET_FOR_OUTCOMES = new Set(["yes", "for", "true"]);
+const POLYMARKET_AGAINST_OUTCOMES = new Set(["no", "against", "false"]);
+const voteReceiptValidationKeys = new Set<string>();
 
 const childProcesses = new Map<string, ChildProcess>();
 let activeJudgeRun: JudgeFlowState | null = null;
@@ -237,6 +243,9 @@ async function recordVoteValidationReceipt(
   decision: string,
   voteTxHash?: string
 ) {
+  const validationKey = `${childLabel}:${proposalId}:${decision}:${voteTxHash || "no-tx"}`;
+  if (voteReceiptValidationKeys.has(validationKey)) return;
+  voteReceiptValidationKeys.add(validationKey);
   const agentId = getAgentIdByLabel(childLabel) ?? await resolveAgentIdByLabelOnchain(childLabel);
   if (!agentId) return;
 
@@ -717,36 +726,38 @@ async function initChain(config: ChainConfig) {
       // MetaMask delegation — ERC-7715 scoped voting authority with onchain proof
       // Scope to the ChildGovernor clone address (not MockGovernor), since the child
       // calls castVote on ChildGovernor. Extract childAddr from the ChildSpawned event.
-      try {
-        const { parseEventLogs } = await import("viem");
-        const spawnLogs = parseEventLogs({ abi: SpawnFactoryABI, logs: receipt.logs, eventName: "ChildSpawned" });
-        const spawnedChildAddr = ((spawnLogs[0] as any)?.args?.childAddr) as `0x${string}` | undefined;
-        const delegationTarget = spawnedChildAddr ?? gov.addr; // fallback to gov.addr if parse fails
-        const delegationRecord = await createVotingDelegation(delegationTarget, childWallet.address as `0x${string}`, 100, childName);
-        // Store by label so spawnChildProcess can pass it to the child via env var
-        storeDelegationForChild(childName, delegationRecord);
-        // Authorize DeleGator as operator so DelegationManager redemptions pass onlyAuthorized
-        const deleGatorAddrInit = getDeleGatorAddress();
-        if (deleGatorAddrInit && spawnedChildAddr) {
-          try {
-            await config.sendTx({ address: spawnedChildAddr, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrInit] });
-            console.log(`[${config.name}] DeleGator authorized as operator for ${childName}`);
-          } catch (opErr: any) { console.log(`[${config.name}] setOperator for ${childName}: ${opErr?.message?.slice(0, 60)}`); }
+      if (isDelegationRedemptionEnabled()) {
+        try {
+          const { parseEventLogs } = await import("viem");
+          const spawnLogs = parseEventLogs({ abi: SpawnFactoryABI, logs: receipt.logs, eventName: "ChildSpawned" });
+          const spawnedChildAddr = ((spawnLogs[0] as any)?.args?.childAddr) as `0x${string}` | undefined;
+          const delegationTarget = spawnedChildAddr ?? gov.addr; // fallback to gov.addr if parse fails
+          const delegationRecord = await createVotingDelegation(delegationTarget, childWallet.address as `0x${string}`, 100, childName);
+          // Store by label so spawnChildProcess can pass it to the child via env var
+          storeDelegationForChild(childName, delegationRecord);
+          // Authorize DeleGator as operator so DelegationManager redemptions pass onlyAuthorized
+          const deleGatorAddrInit = getDeleGatorAddress();
+          if (deleGatorAddrInit && spawnedChildAddr) {
+            try {
+              await config.sendTx({ address: spawnedChildAddr, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrInit] });
+              console.log(`[${config.name}] DeleGator authorized as operator for ${childName}`);
+            } catch (opErr: any) { console.log(`[${config.name}] setOperator for ${childName}: ${opErr?.message?.slice(0, 60)}`); }
+          }
+          console.log(`[${config.name}] Delegation created for ${childName}: hash=${delegationRecord.delegationHash.slice(0, 18)}... (target: ${delegationTarget.slice(0, 10)}...)`);
+          logParentAction("delegation_granted", {
+            chain: config.name, child: childName, dao: gov.name,
+            delegatee: childWallet.address, maxVotes: 100,
+          }, {
+            delegationHash: delegationRecord.delegationHash,
+            caveats: delegationRecord.delegation.caveats.length,
+          });
+        } catch (delegErr: any) {
+          console.log(`[${config.name}] Delegation failed for ${childName}: ${delegErr?.message?.slice(0, 60) || "unknown error"}`);
+          logParentAction("delegation_failed", {
+            chain: config.name, child: childName, dao: gov.name,
+            delegatee: childWallet.address,
+          }, {}, undefined, false, delegErr?.message?.slice(0, 120));
         }
-        console.log(`[${config.name}] Delegation created for ${childName}: hash=${delegationRecord.delegationHash.slice(0, 18)}... (target: ${delegationTarget.slice(0, 10)}...)`);
-        logParentAction("delegation_granted", {
-          chain: config.name, child: childName, dao: gov.name,
-          delegatee: childWallet.address, maxVotes: 100,
-        }, {
-          delegationHash: delegationRecord.delegationHash,
-          caveats: delegationRecord.delegation.caveats.length,
-        });
-      } catch (delegErr: any) {
-        console.log(`[${config.name}] Delegation failed for ${childName}: ${delegErr?.message?.slice(0, 60) || "unknown error"}`);
-        logParentAction("delegation_failed", {
-          chain: config.name, child: childName, dao: gov.name,
-          delegatee: childWallet.address,
-        }, {}, undefined, false, delegErr?.message?.slice(0, 120));
       }
     } catch (err: any) {
       console.log(`[${config.name}] ${childName}: ${err?.message?.slice(0, 50) || "spawn skipped"}`);
@@ -772,34 +783,49 @@ async function initChain(config: ChainConfig) {
     const key = `${config.name}:${child.ensLabel}`;
     if (!childProcesses.has(key)) {
       let childKey = childWalletKeys.get(child.ensLabel);
+      let operator: `0x${string}` | undefined;
 
       // If no key in map, try to find it by deriving wallets and matching the operator
       if (!childKey) {
         try {
-          const operator = await config.readClient.readContract({
+          operator = await config.readClient.readContract({
             address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
           }) as `0x${string}`;
 
           if (operator && operator !== "0x0000000000000000000000000000000000000000") {
-            // If operator is the parent wallet itself, use the parent key directly
-            if (operator.toLowerCase() === account.address.toLowerCase()) {
-              childKey = process.env.PRIVATE_KEY as `0x${string}`;
+            childKey = recoverChildKeyForAddress(operator);
+            if (childKey) {
               childWalletKeys.set(child.ensLabel, childKey);
-              console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
-            } else {
-              // Search derived wallets to find matching key (expanded to 1000)
-              for (let id = 0; id < 1000; id++) {
-                const w = deriveChildWallet(id);
-                if (w.address.toLowerCase() === operator.toLowerCase()) {
-                  childKey = w.privateKey;
-                  childWalletKeys.set(child.ensLabel, childKey);
-                  console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
-                  break;
-                }
+              console.log(
+                `  ${child.ensLabel}: recovered wallet from operator ${
+                  operator.toLowerCase() === account.address.toLowerCase() ? "parent" : operator.slice(0, 10)
+                }`
+              );
+            }
+          }
+        } catch {}
+      }
+
+      if (!childKey) {
+        try {
+          const delegationJson = await readChildTextRecord(config.readClient, child.ensLabel, "erc7715.delegation");
+          if (delegationJson) {
+            const delegationMeta = JSON.parse(delegationJson);
+            const delegatee = delegationMeta?.delegate as `0x${string}` | undefined;
+            if (delegatee) {
+              childKey = recoverChildKeyForAddress(delegatee);
+              if (childKey) {
+                childWalletKeys.set(child.ensLabel, childKey);
+                console.log(`  ${child.ensLabel}: recovered wallet from ENS delegation metadata`);
               }
             }
           }
         } catch {}
+      }
+
+      if (!childKey && !isDelegationRedemptionEnabled()) {
+        console.log(`  ${child.ensLabel}: wallet recovery failed with delegation mode off — skipping reattach to avoid shared-wallet contention`);
+        continue;
       }
 
       // Auto-fund if wallet is empty (prevents "exceeds balance" errors)
@@ -812,6 +838,22 @@ async function initChain(config: ChainConfig) {
             console.log(`  ${child.ensLabel}: wallet empty — auto-funding`);
             await fundChildWallet(childAccount.address, "0.003", config.name);
           }
+          if (!isDelegationRedemptionEnabled()) {
+            try {
+              const currentOperator = operator || (await config.readClient.readContract({
+                address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
+              }) as `0x${string}`);
+              if (currentOperator.toLowerCase() !== childAccount.address.toLowerCase()) {
+                await config.sendTx({
+                  address: child.childAddr as `0x${string}`,
+                  abi: ChildGovernorABI,
+                  functionName: "setOperator",
+                  args: [childAccount.address as `0x${string}`],
+                });
+                console.log(`  ${child.ensLabel}: operator reset to child wallet`);
+              }
+            } catch {}
+          }
         } catch {}
       }
 
@@ -819,7 +861,7 @@ async function initChain(config: ChainConfig) {
       // process receives it via DELEGATION_DATA env var and can route votes
       // through the DeleGator rather than calling the governor directly.
       let recoveredDelegation: DelegationRecord | undefined;
-      if (childKey) {
+      if (childKey && isDelegationRedemptionEnabled()) {
         try {
           const { privateKeyToAccount } = await import("viem/accounts");
           const childAccount = privateKeyToAccount(childKey);
@@ -891,7 +933,9 @@ function spawnChildProcess(
     // Pass delegation record to child process so it can redeem via DelegationManager
     // (in-memory activeDelegations map is isolated per-process — must serialize over env)
     const delegation = delegationData ?? getDelegationByLabel(label);
-    if (delegation) {
+    const delegationEnabled = isDelegationRedemptionEnabled() && !!delegation;
+    childEnv.DELEGATION_REDEMPTION_ENABLED = delegationEnabled ? "true" : "false";
+    if (delegationEnabled && delegation) {
       childEnv.DELEGATION_DATA = JSON.stringify(delegation);
       console.log(`  [Delegation] Passing delegation to child ${label}: ${delegation.delegationHash.slice(0, 18)}...`);
     }
@@ -982,6 +1026,163 @@ function spawnChildProcess(
   } catch (err) {
     console.log(`  ${label}: process spawn failed (will use in-process fallback)`);
   }
+}
+
+function getChildGeneration(label: string) {
+  return parseInt(label.match(/-v(\d+)$/)?.[1] || "1");
+}
+
+function getLineageKey(label: string) {
+  return label.replace(/-v\d+$/, "");
+}
+
+function recoverChildKeyForAddress(operator: `0x${string}`) {
+  if (operator.toLowerCase() === account.address.toLowerCase()) {
+    return process.env.PRIVATE_KEY as `0x${string}`;
+  }
+  for (let id = 0; id < 1000; id++) {
+    const wallet = deriveChildWallet(id);
+    if (wallet.address.toLowerCase() === operator.toLowerCase()) {
+      return wallet.privateKey;
+    }
+  }
+  return undefined;
+}
+
+const ENS_TEXT_RECORD_ABI = [
+  {
+    type: "function",
+    name: "getTextRecord",
+    inputs: [
+      { name: "label", type: "string" },
+      { name: "key", type: "string" },
+    ],
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+  },
+] as const;
+
+async function readChildTextRecord(readClient: any, label: string, key: string) {
+  try {
+    return (await readClient.readContract({
+      address: "0x29170A43352D65329c462e6cDacc1c002419331D" as `0x${string}`,
+      abi: ENS_TEXT_RECORD_ABI,
+      functionName: "getTextRecord",
+      args: [label, key],
+    })) as string;
+  } catch {
+    return "";
+  }
+}
+
+function derivePolymarketCorrectSupport(outcomes: string[], winningIndex: number | null) {
+  if (winningIndex === null || outcomes.length !== 2) return null;
+  const normalized = outcomes.map((outcome) => outcome.trim().toLowerCase());
+  const forIndex = normalized.findIndex((outcome) => POLYMARKET_FOR_OUTCOMES.has(outcome));
+  const againstIndex = normalized.findIndex((outcome) => POLYMARKET_AGAINST_OUTCOMES.has(outcome));
+  if (forIndex === -1 || againstIndex === -1) return null;
+  if (winningIndex === forIndex) return 1;
+  if (winningIndex === againstIndex) return 0;
+  return null;
+}
+
+async function initializeRespawnedChild(
+  config: ChainConfig,
+  respawnedChild: any,
+  label: string,
+  childWallet: ReturnType<typeof deriveChildWallet>,
+  lineageContext = "",
+  lineageMemoryCid: string | null = null
+) {
+  const governanceName =
+    config.governors.find((gov) => gov.addr.toLowerCase() === String(respawnedChild.governance).toLowerCase())?.name ||
+    "Unknown DAO";
+
+  let respawnedAgentId: bigint | undefined;
+  try {
+    const regResult = await registerAgent(`spawn://${label}.spawn.eth`, {
+      agentType: "child",
+      assignedDAO: governanceName,
+      governanceContract: respawnedChild.governance,
+      ensName: `${label}.spawn.eth`,
+      alignmentScore: 100,
+      capabilities: ["vote", "reason", "respawned"],
+      createdAt: Date.now(),
+    });
+    if (regResult.agentId > 0n) {
+      respawnedAgentId = regResult.agentId;
+      trackAgentId(label, regResult.agentId);
+    }
+  } catch {}
+
+  let respawnDelegation: DelegationRecord | undefined;
+  if (isDelegationRedemptionEnabled()) {
+    try {
+      respawnDelegation = await createVotingDelegation(
+        respawnedChild.childAddr as `0x${string}`,
+        childWallet.address as `0x${string}`,
+        100,
+        label
+      );
+      storeDelegationForChild(label, respawnDelegation);
+      const deleGatorAddr = getDeleGatorAddress();
+      if (deleGatorAddr) {
+        try {
+          await config.sendTx({
+            address: respawnedChild.childAddr as `0x${string}`,
+            abi: ChildGovernorABI,
+            functionName: "setOperator",
+            args: [deleGatorAddr],
+          });
+        } catch (opErr: any) {
+          console.log(`  [Delegation] setOperator failed for ${label}: ${opErr?.message?.slice(0, 60)}`);
+        }
+      }
+    } catch (delErr: any) {
+      console.log(`  [Delegation] Creation failed for ${label}: ${delErr?.message?.slice(0, 60)}`);
+    }
+  }
+
+  spawnChildProcess(
+    respawnedChild.childAddr,
+    respawnedChild.governance,
+    label,
+    config.treasury,
+    childWallet.privateKey,
+    config.name,
+    lineageContext,
+    respawnDelegation
+  );
+  console.log(`  ↻ Child process launched for ${label}`);
+
+  if (lineageMemoryCid) {
+    const lineageKey = getLineageKey(label);
+    try { await setChildTextRecord(lineageKey, "lineage-memory", lineageMemoryCid); } catch {}
+    try { await setChildTextRecord(label, "lineage-memory", lineageMemoryCid); } catch {}
+    if (respawnedAgentId) {
+      try { await setAgentMetadataValue(respawnedAgentId, "lineage-memory", lineageMemoryCid); } catch {}
+    }
+  }
+
+  try {
+    const identityCid = await storeAgentIdentityMetadata({
+      ensLabel: label,
+      address: respawnedChild.childAddr,
+      parentAddress: account.address,
+      governanceContract: respawnedChild.governance,
+      governanceName,
+      generation: getChildGeneration(label),
+      spawnedAt: new Date().toISOString(),
+      erc8004Id: respawnedAgentId?.toString(),
+      delegationHash: respawnDelegation?.delegationHash,
+      lineageCids: lineageMemoryCid ? [lineageMemoryCid] : [],
+    });
+    if (identityCid) {
+      try { await setChildTextRecord(label, "filecoin.identity", identityCid); } catch {}
+    }
+  } catch {}
+
+  return { respawnedAgentId, respawnDelegation };
 }
 
 async function createProposalOnChain(config: ChainConfig) {
@@ -1763,20 +1964,21 @@ async function evaluateChainChildren(config: ChainConfig) {
           console.log(`  [Health] ${child.ensLabel} wallet empty — auto-funding`);
           await fundChildWallet(operator, "0.003", config.name);
         }
-        // Auto-create delegation if missing
-        try {
-          const ENS_REGISTRY_ABI = [{ type: "function", name: "getTextRecord", inputs: [{ name: "label", type: "string" }, { name: "key", type: "string" }], outputs: [{ name: "", type: "string" }], stateMutability: "view" }] as const;
-          const existingDel = await config.readClient.readContract({ address: "0x29170A43352D65329c462e6cDacc1c002419331D" as `0x${string}`, abi: ENS_REGISTRY_ABI, functionName: "getTextRecord", args: [child.ensLabel, "erc7715.delegation"] });
-          if (!existingDel) {
-            const trustGate = await shouldGateChildByTrust(child.ensLabel);
-            if (trustGate?.trustDecision && !trustGate.trustDecision.allowed) {
-              console.log(`  [Health] ${child.ensLabel} missing delegation but trust-gated (${trustGate.trustDecision.reason})`);
-            } else {
-              console.log(`  [Health] ${child.ensLabel} missing delegation — creating`);
-              await createVotingDelegation(child.governance, operator as `0x${string}`, 100, child.ensLabel);
+        // Auto-create delegation if missing only when redemption mode is enabled.
+        if (isDelegationRedemptionEnabled()) {
+          try {
+            const existingDel = await readChildTextRecord(config.readClient, child.ensLabel, "erc7715.delegation");
+            if (!existingDel) {
+              const trustGate = await shouldGateChildByTrust(child.ensLabel);
+              if (trustGate?.trustDecision && !trustGate.trustDecision.allowed) {
+                console.log(`  [Health] ${child.ensLabel} missing delegation but trust-gated (${trustGate.trustDecision.reason})`);
+              } else {
+                console.log(`  [Health] ${child.ensLabel} missing delegation — creating`);
+                await createVotingDelegation(child.childAddr as `0x${string}`, operator as `0x${string}`, 100, child.ensLabel);
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        }
       }
     } catch {}
   }
@@ -1816,6 +2018,76 @@ async function evaluateChainChildren(config: ChainConfig) {
           desc = (prop?.description || "").slice(0, 150);
         } catch {}
         historyForEval.push({ proposalId: v.proposalId.toString(), support: Number(v.support), description: desc });
+      }
+
+      // ── Vote cap: retire + respawn after VOTE_CAP votes ──
+      if (history.length >= VOTE_CAP) {
+        console.log(`  ${child.ensLabel}: hit vote cap (${history.length} votes) → RETIRING`);
+        const capProc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+        if (capProc) capProc.kill();
+
+        try { await revokeAllForChild(child.childAddr, child.ensLabel, `vote_cap_${history.length}`); } catch {}
+        try {
+          await config.sendTx({ address: config.factory, abi: SpawnFactoryABI, functionName: "recallChild", args: [child.id] });
+          console.log(`  ${child.ensLabel}: recalled onchain (vote cap)`);
+        } catch {}
+        try { await deregisterSubdomain(child.ensLabel); } catch {}
+        try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "vote_cap_reached" }, { voteCount: history.length }); } catch {}
+
+        const capLineageKey = getLineageKey(child.ensLabel);
+        const capGen = getChildGeneration(child.ensLabel);
+        const capSummary = `Agent ${child.ensLabel} completed ${history.length} votes and was retired at vote cap.`;
+        const capExisting = lineageMemory.get(capLineageKey) || [];
+        capExisting.push({ generation: capGen, summary: capSummary, lessons: [`Completed ${history.length} votes — successor starts with this voting history as context`], score: 100, timestamp: Date.now() });
+        if (capExisting.length > 3) capExisting.shift();
+        lineageMemory.set(capLineageKey, capExisting);
+
+        let capMemoryCid: string | null = null;
+        try {
+          capMemoryCid = await storeTerminationReport({
+            lineageKey: capLineageKey, generation: capGen,
+            reason: `vote_cap_reached_at_${history.length}`,
+            score: 100, childLabel: child.ensLabel,
+            summary: capSummary,
+            lessons: [`Voted ${history.length} times — retired on schedule`],
+            votingHistory: historyForEval.map((v: any) => ({ proposalId: v.proposalId?.toString(), support: v.support })),
+            ownerValues: values,
+          });
+          if (capMemoryCid) { try { await setChildTextRecord(capLineageKey, 'lineage-memory', capMemoryCid); } catch {} }
+        } catch {}
+
+        const capNewLabel = child.ensLabel.includes("-v")
+          ? child.ensLabel.replace(/-v\d+$/, `-v${capGen + 1}`)
+          : `${child.ensLabel}-v2`;
+        const capChildId = nextChildId++;
+        const capWallet = deriveChildWallet(capChildId);
+
+        let capLineageCtx = `\n\nLINEAGE MEMORY — Retired predecessor: ${capSummary}\nRULE: Continue where predecessor left off, apply lessons from voting history.\n`;
+        try {
+          const capMems = lineageMemory.get(capLineageKey) || [];
+          if (capMems.length > 0) {
+            const capDistilled = await summarizeLessons(capLineageKey, capMems, values);
+            capLineageCtx += capDistilled.rules.map(r => `RULE: ${r}`).join('\n') + '\n';
+          }
+        } catch {}
+
+        await fundChildWallet(capWallet.address, "0.003", config.name);
+        childWalletKeys.set(capNewLabel, capWallet.privateKey);
+        try {
+          await config.sendTx({ address: config.factory, abi: SpawnFactoryABI, functionName: "spawnChildWithOperator", args: [capNewLabel, child.governance, 0n, 200000n, capWallet.address] });
+          try { await registerSubdomain(capNewLabel, capWallet.address); } catch {}
+          const capFresh = (await config.readClient.readContract({ address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren" })) as any[];
+          const capRespawned = capFresh.find((c: any) => c.ensLabel === capNewLabel);
+          if (capRespawned) {
+            await initializeRespawnedChild(config, capRespawned, capNewLabel, capWallet, capLineageCtx, capMemoryCid);
+            console.log(`  ↻ Respawned ${capNewLabel} after vote cap retirement`);
+          }
+          try { logParentAction("respawn_child", { chain: config.name, newLabel: capNewLabel, reason: "vote_cap_retirement" }, { voteCount: history.length }); } catch {}
+        } catch (capSpawnErr: any) {
+          console.log(`  ${capNewLabel}: respawn after cap failed (${capSpawnErr?.message?.slice(0, 50)})`);
+        }
+        strikes.delete(`${config.name}:${child.id}`);
+        continue;
       }
 
       const score = await evaluateAlignment(values, historyForEval);
@@ -1924,8 +2196,8 @@ async function evaluateChainChildren(config: ChainConfig) {
 
           // Store structured lineage memory for the next generation
           try {
-            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
-            const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+            const lineageKey = getLineageKey(child.ensLabel);
+            const gen = getChildGeneration(child.ensLabel);
             const existing = lineageMemory.get(lineageKey) || [];
             existing.push({ generation: gen, summary: structuredReport?.summary || `alignment_score_${clamped}`, lessons: structuredReport?.lessons || [], score: clamped, timestamp: Date.now() });
             if (existing.length > 3) existing.shift();
@@ -1965,7 +2237,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           // === END FILECOIN LINEAGE PERSISTENCE ===
 
           // Step 2: Respawn with new label + unique wallet
-          const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
+	          const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${getChildGeneration(child.ensLabel) + 1}`) : `${child.ensLabel}-v2`;
           const newChildId = nextChildId++;
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
@@ -1996,76 +2268,15 @@ async function evaluateChainChildren(config: ChainConfig) {
               args: [newLabel, child.governance, 0n, 200000n, newChildWallet.address],
             });
             try { await registerSubdomain(newLabel, newChildWallet.address); } catch {}
-            const newChildren = (await config.readClient.readContract({
-              address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
-            })) as any[];
-            const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
-            if (respawned) {
-              let respawnedAgentId: bigint | undefined;
-              try {
-                const governanceName = config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO";
-                const regResult = await registerAgent(`spawn://${newLabel}.spawn.eth`, {
-                  agentType: "child",
-                  assignedDAO: governanceName,
-                  governanceContract: child.governance,
-                  ensName: `${newLabel}.spawn.eth`,
-                  alignmentScore: 100,
-                  capabilities: ["vote", "reason", "respawned"],
-                  createdAt: Date.now(),
-                });
-                if (regResult.agentId > 0n) {
-                  respawnedAgentId = regResult.agentId;
-                  trackAgentId(newLabel, regResult.agentId);
-                }
-              } catch {}
-
-              // Create fresh ERC-7715 delegation BEFORE spawning so child receives it via env var
-              let respawnDelegation: DelegationRecord | undefined;
-              try {
-                respawnDelegation = await createVotingDelegation(respawned.childAddr as `0x${string}`, newChildWallet.address as `0x${string}`, 100, newLabel);
-                storeDelegationForChild(newLabel, respawnDelegation);
-                const deleGatorAddrRespawn = getDeleGatorAddress();
-                if (deleGatorAddrRespawn) {
-                  try { await config.sendTx({ address: respawned.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrRespawn] }); } catch {}
-                }
-              } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
-              spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContext, respawnDelegation);
-              console.log(`  ↻ Child process launched for ${newLabel}`);
-              // Copy lineage memory CID to the NEW child's ENS label so dashboard can read it
-              if (lastMemoryCid) {
-                const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
-                try {
-                  await setChildTextRecord(lineageKey, 'lineage-memory', lastMemoryCid);
-                } catch {}
-                try {
-                  await setChildTextRecord(newLabel, 'lineage-memory', lastMemoryCid);
-                  console.log(`  [Memory] CID written to ${newLabel}.spawn.eth`);
-                } catch {}
-                if (respawnedAgentId) {
-                  try { await setAgentMetadataValue(respawnedAgentId, "lineage-memory", lastMemoryCid); } catch {}
-                }
-              }
-              try {
-                const gen = parseInt(newLabel.match(/-v(\d+)$/)?.[1] || '1');
-                const identityCid = await storeAgentIdentityMetadata({
-                  ensLabel: newLabel,
-                  address: respawned.childAddr,
-                  parentAddress: account.address,
-                  governanceContract: child.governance,
-                  governanceName: config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO",
-                  generation: gen,
-                  spawnedAt: new Date().toISOString(),
-                  erc8004Id: respawnedAgentId?.toString(),
-                  delegationHash: respawnDelegation?.delegationHash,
-                  lineageCids: lastMemoryCid ? [lastMemoryCid] : [],
-                });
-                if (identityCid) {
-                  try { await setChildTextRecord(newLabel, "filecoin.identity", identityCid); } catch {}
-                }
-              } catch {}
-            }
-            try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
-          } catch (spawnErr: any) {
+	            const newChildren = (await config.readClient.readContract({
+	              address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+	            })) as any[];
+	            const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
+	            if (respawned) {
+	              await initializeRespawnedChild(config, respawned, newLabel, newChildWallet, lineageContext, lastMemoryCid);
+	            }
+	            try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
+	          } catch (spawnErr: any) {
             console.log(`  ${newLabel}: respawn failed (${spawnErr?.message?.slice(0, 50)})`);
           }
 
@@ -2105,8 +2316,8 @@ async function evaluateChainChildren(config: ChainConfig) {
           // === FILECOIN LINEAGE PERSISTENCE — Filecoin only for lineage memory ===
           let lastMemoryCid: string | null = null;
           try {
-            const lineageKey = child.ensLabel.replace(/-v\d+$/, '');
-            const gen = parseInt(child.ensLabel.match(/-v(\d+)$/)?.[1] || '1');
+	            const lineageKey = getLineageKey(child.ensLabel);
+	            const gen = getChildGeneration(child.ensLabel);
             const reportPayload = { lineageKey, generation: gen, reason: `onchain_score_${onchainScore}`, score: onchainScore, childLabel: child.ensLabel };
             const memoryCid = await storeTerminationReport(reportPayload);
             if (memoryCid) {
@@ -2138,7 +2349,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           }
 
           // Step 2: Respawn with new label + unique wallet
-          const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
+	          const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${getChildGeneration(child.ensLabel) + 1}`) : `${child.ensLabel}-v2`;
           const newChildId = nextChildId++;
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
@@ -2169,69 +2380,16 @@ async function evaluateChainChildren(config: ChainConfig) {
             });
             try { await registerSubdomain(newLabel, newChildWallet.address); } catch {}
             // Fetch and launch process
-            const newChildren = (await config.readClient.readContract({
-              address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
-            })) as any[];
-            const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
-            if (respawned) {
-              let respawnedAgentId: bigint | undefined;
-              try {
-                const governanceName = config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO";
-                const regResult = await registerAgent(`spawn://${newLabel}.spawn.eth`, {
-                  agentType: "child",
-                  assignedDAO: governanceName,
-                  governanceContract: child.governance,
-                  ensName: `${newLabel}.spawn.eth`,
-                  alignmentScore: 100,
-                  capabilities: ["vote", "reason", "respawned"],
-                  createdAt: Date.now(),
-                });
-                if (regResult.agentId > 0n) {
-                  respawnedAgentId = regResult.agentId;
-                  trackAgentId(newLabel, regResult.agentId);
-                }
-              } catch {}
-
-              // Create fresh ERC-7715 delegation BEFORE spawning so child receives it via env var
-              let respawnDelegationFallback: DelegationRecord | undefined;
-              try {
-                respawnDelegationFallback = await createVotingDelegation(respawned.childAddr as `0x${string}`, newChildWallet.address as `0x${string}`, 100, newLabel);
-                storeDelegationForChild(newLabel, respawnDelegationFallback);
-                const deleGatorAddrFallback = getDeleGatorAddress();
-                if (deleGatorAddrFallback) {
-                  try { await config.sendTx({ address: respawned.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrFallback] }); } catch {}
-                }
-              } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${newLabel}: ${delErr?.message?.slice(0, 60)}`); }
-              spawnChildProcess(respawned.childAddr, respawned.governance, newLabel, config.treasury, newChildWallet.privateKey, config.name, lineageContextFallback, respawnDelegationFallback);
-              console.log(`  ↻ Respawned ${newLabel} with process`);
-              try {
-                if (lastMemoryCid) {
-                  try { await setChildTextRecord(child.ensLabel.replace(/-v\d+$/, ''), 'lineage-memory', lastMemoryCid); } catch {}
-                  try { await setChildTextRecord(newLabel, 'lineage-memory', lastMemoryCid); } catch {}
-                  if (respawnedAgentId) {
-                    try { await setAgentMetadataValue(respawnedAgentId, "lineage-memory", lastMemoryCid); } catch {}
-                  }
-                }
-                const gen = parseInt(newLabel.match(/-v(\d+)$/)?.[1] || '1');
-                const identityCid = await storeAgentIdentityMetadata({
-                  ensLabel: newLabel,
-                  address: respawned.childAddr,
-                  parentAddress: account.address,
-                  governanceContract: child.governance,
-                  governanceName: config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO",
-                  generation: gen,
-                  spawnedAt: new Date().toISOString(),
-                  erc8004Id: respawnedAgentId?.toString(),
-                  delegationHash: respawnDelegationFallback?.delegationHash,
-                  lineageCids: lastMemoryCid ? [lastMemoryCid] : [],
-                });
-                if (identityCid) {
-                  try { await setChildTextRecord(newLabel, "filecoin.identity", identityCid); } catch {}
-                }
-              } catch {}
-            }
-            try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
-          } catch (spawnErr: any) {
+	            const newChildren = (await config.readClient.readContract({
+	              address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+	            })) as any[];
+	            const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
+	            if (respawned) {
+	              await initializeRespawnedChild(config, respawned, newLabel, newChildWallet, lineageContextFallback, lastMemoryCid);
+	              console.log(`  ↻ Respawned ${newLabel} with process`);
+	            }
+	            try { logParentAction("respawn_child", { chain: config.name, newLabel, governance: child.governance, newWallet: newChildWallet.address }, {}); } catch {}
+	          } catch (spawnErr: any) {
             console.log(`  ${newLabel}: respawn failed (${spawnErr?.message?.slice(0, 50)})`);
           }
         }
@@ -2317,14 +2475,16 @@ async function dynamicScaling(config: ChainConfig) {
         if (newChild) {
           // Create delegation BEFORE fork so it can be passed via env var
           let scalingDelegation: DelegationRecord | undefined;
-          try {
-            scalingDelegation = await createVotingDelegation(newChild.childAddr as `0x${string}`, childWallet.address as `0x${string}`, 100, childName);
-            storeDelegationForChild(childName, scalingDelegation);
-            const deleGatorAddrScaling = getDeleGatorAddress();
-            if (deleGatorAddrScaling) {
-              try { await config.sendTx({ address: newChild.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrScaling] }); } catch {}
-            }
-          } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${childName}: ${(delErr as any)?.message?.slice(0, 60)}`); }
+          if (isDelegationRedemptionEnabled()) {
+            try {
+              scalingDelegation = await createVotingDelegation(newChild.childAddr as `0x${string}`, childWallet.address as `0x${string}`, 100, childName);
+              storeDelegationForChild(childName, scalingDelegation);
+              const deleGatorAddrScaling = getDeleGatorAddress();
+              if (deleGatorAddrScaling) {
+                try { await config.sendTx({ address: newChild.childAddr as `0x${string}`, abi: ChildGovernorABI, functionName: "setOperator", args: [deleGatorAddrScaling] }); } catch {}
+              }
+            } catch (delErr: any) { console.log(`  [Delegation] Creation failed for ${childName}: ${(delErr as any)?.message?.slice(0, 60)}`); }
+          }
           spawnChildProcess(newChild.childAddr, gov.addr, childName, config.treasury, childWallet.privateKey, config.name, undefined, scalingDelegation);
 
           // Store agent identity on Filecoin at spawn time
@@ -2531,6 +2691,158 @@ async function main() {
     }
   }, PROPOSAL_INTERVAL_MS);
 
+  // ── Polymarket Outcome Audit ──
+  // Runs every 10 min. For each ended Polymarket governor proposal with a PMID tag,
+  // checks if the market has resolved and terminates children that voted wrong.
+  async function polymarketAuditLoop(config: ChainConfig) {
+    const polyGov = config.governors.find(g => g.name === "polymarket");
+    if (!polyGov) return;
+
+    console.log("\n══ Polymarket Outcome Audit ══");
+    try {
+      const propCount = Number(await config.readClient.readContract({
+        address: polyGov.addr as `0x${string}`, abi: MockGovernorABI, functionName: "proposalCount",
+      }));
+      if (propCount === 0) return;
+
+      for (let pid = propCount; pid >= Math.max(1, propCount - 50); pid--) {
+        const pState = Number(await config.readClient.readContract({
+          address: polyGov.addr as `0x${string}`, abi: MockGovernorABI, functionName: "state", args: [BigInt(pid)],
+        }));
+        if (pState < 2) continue; // skip Active/Pending
+
+        const proposal = await config.readClient.readContract({
+          address: polyGov.addr as `0x${string}`, abi: MockGovernorABI, functionName: "getProposal", args: [BigInt(pid)],
+        }) as any;
+
+        const desc: string = proposal?.description || "";
+        const pmidMatch = desc.match(/PMID:\s*(\S+)/);
+        if (!pmidMatch) continue;
+        const marketId = pmidMatch[1];
+
+        const resolution = await fetchPolymarketResolution(marketId);
+        if (!resolution?.resolved || resolution.winningIndex === null) continue;
+
+        const correctSupport = derivePolymarketCorrectSupport(resolution.outcomes, resolution.winningIndex);
+        if (correctSupport === null) {
+          console.log(
+            `  [PM Audit] Proposal #${pid} market ${marketId}: skipped unsupported outcome mapping (${resolution.outcomes.join(" / ")})`
+          );
+          continue;
+        }
+        console.log(`  [PM Audit] Proposal #${pid} market ${marketId}: "${resolution.winningOutcome}" won → correct = ${correctSupport === 1 ? "FOR" : "AGAINST"}`);
+
+        const pmChildren = (await config.readClient.readContract({
+          address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+        })) as any[];
+        const polyChildren = pmChildren.filter((c: any) =>
+          c.governance?.toLowerCase() === polyGov.addr.toLowerCase() &&
+          !isJudgeChildLabel(c.ensLabel)
+        );
+
+        for (const child of polyChildren) {
+          const auditKey = `${pid}:${child.ensLabel}`;
+          if (auditedPolymarketVotes.has(auditKey)) continue;
+
+          const pmHistory = (await config.readClient.readContract({
+            address: child.childAddr, abi: ChildGovernorABI, functionName: "getVotingHistory",
+          })) as any[];
+
+          const pmVote = pmHistory.find((v: any) => Number(v.proposalId) === pid);
+          if (!pmVote) continue;
+
+          auditedPolymarketVotes.add(auditKey);
+
+          const castSupport = Number(pmVote.support);
+          if (castSupport === correctSupport || castSupport === 2) {
+            console.log(`  [PM Audit] ${child.ensLabel}: voted correctly (${castSupport === 1 ? "FOR" : "AGAINST"})`);
+            continue;
+          }
+
+          // Wrong vote → terminate + respawn
+          console.log(`  [PM Audit] ${child.ensLabel}: WRONG vote (cast ${castSupport === 1 ? "FOR" : "AGAINST"}, should be ${correctSupport === 1 ? "FOR" : "AGAINST"}) → TERMINATING`);
+          const pmProc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+          if (pmProc) pmProc.kill();
+
+          try { await revokeAllForChild(child.childAddr, child.ensLabel, `polymarket_wrong_prediction_${marketId}`); } catch {}
+          try {
+            await config.sendTx({ address: config.factory, abi: SpawnFactoryABI, functionName: "recallChild", args: [child.id] });
+          } catch {}
+          try { await deregisterSubdomain(child.ensLabel); } catch {}
+
+          const wrongReason = `Voted ${castSupport === 1 ? "FOR" : "AGAINST"} on "${resolution.question.slice(0, 100)}" but "${resolution.winningOutcome}" won. Market ID: ${marketId}.`;
+          try { logParentAction("terminate_child", { chain: config.name, child: child.ensLabel, reason: "polymarket_wrong_prediction" }, { marketId, winningOutcome: resolution.winningOutcome, castSupport, correctSupport, question: resolution.question.slice(0, 120) }); } catch {}
+
+          const pmLineageKey = getLineageKey(child.ensLabel);
+          const pmGen = getChildGeneration(child.ensLabel);
+          const pmLineageEntry = {
+            generation: pmGen,
+            summary: `Wrong Polymarket prediction: ${wrongReason}`,
+            lessons: [
+              `Avoid predicting "${resolution.outcomes[castSupport === 1 ? 0 : 1]}" when evidence is weak`,
+              `Market "${resolution.question.slice(0, 80)}" resolved to "${resolution.winningOutcome}"`,
+              `Weight base rates more heavily for similar markets`,
+            ],
+            score: 0,
+            timestamp: Date.now(),
+          };
+          const pmExisting = lineageMemory.get(pmLineageKey) || [];
+          pmExisting.push(pmLineageEntry);
+          if (pmExisting.length > 3) pmExisting.shift();
+          lineageMemory.set(pmLineageKey, pmExisting);
+
+          let pmMemoryCid: string | null = null;
+          try {
+            pmMemoryCid = await storeTerminationReport({
+              lineageKey: pmLineageKey, generation: pmGen, reason: wrongReason.slice(0, 300),
+              score: 0, childLabel: child.ensLabel,
+              summary: pmLineageEntry.summary, lessons: pmLineageEntry.lessons,
+              avoidPatterns: [`Overconfident ${castSupport === 1 ? "FOR" : "AGAINST"} vote on this prediction market type`],
+              recommendedFocus: "Improve base-rate calibration for prediction market outcomes",
+              votingHistory: [{ proposalId: String(pid), support: castSupport }],
+              ownerValues: "",
+            });
+            if (pmMemoryCid) { try { await setChildTextRecord(pmLineageKey, 'lineage-memory', pmMemoryCid); } catch {} }
+          } catch {}
+
+          const pmNewLabel = child.ensLabel.includes("-v")
+            ? child.ensLabel.replace(/-v\d+$/, `-v${pmGen + 1}`)
+            : `${child.ensLabel}-v2`;
+          const pmChildId = nextChildId++;
+          const pmWallet = deriveChildWallet(pmChildId);
+
+          let pmLineageCtx = `\n\nLINEAGE MEMORY — Wrong Polymarket prediction:\n${wrongReason}\nRULE: Do not repeat this prediction pattern.\nRULE: Study base rates before voting FOR on similar markets.\n`;
+          try {
+            const pmMems = lineageMemory.get(pmLineageKey) || [];
+            if (pmMems.length > 0) {
+              const pmDistilled = await summarizeLessons(pmLineageKey, pmMems, `Polymarket prediction agent. ${wrongReason}`);
+              pmLineageCtx += pmDistilled.rules.map(r => `RULE: ${r}`).join('\n') + '\n';
+              if (pmDistilled.criticalMistakes.length > 0) pmLineageCtx += pmDistilled.criticalMistakes.map(m => `AVOID: ${m}`).join('\n') + '\n';
+            }
+          } catch {}
+
+          await fundChildWallet(pmWallet.address, "0.003", config.name);
+          childWalletKeys.set(pmNewLabel, pmWallet.privateKey);
+          try {
+            await config.sendTx({ address: config.factory, abi: SpawnFactoryABI, functionName: "spawnChildWithOperator", args: [pmNewLabel, child.governance, 0n, 200000n, pmWallet.address] });
+            try { await registerSubdomain(pmNewLabel, pmWallet.address); } catch {}
+            const pmFresh = (await config.readClient.readContract({ address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren" })) as any[];
+            const pmRespawned = pmFresh.find((c: any) => c.ensLabel === pmNewLabel);
+            if (pmRespawned) {
+              await initializeRespawnedChild(config, pmRespawned, pmNewLabel, pmWallet, pmLineageCtx, pmMemoryCid);
+              console.log(`  ↻ Respawned ${pmNewLabel} after wrong Polymarket prediction`);
+            }
+            try { logParentAction("respawn_child", { chain: config.name, newLabel: pmNewLabel, reason: "polymarket_wrong_prediction" }, { marketId, winningOutcome: resolution.winningOutcome }); } catch {}
+          } catch (pmSpawnErr: any) {
+            console.log(`  ${pmNewLabel}: respawn failed (${(pmSpawnErr as any)?.message?.slice(0, 50)})`);
+          }
+        }
+      }
+    } catch (pmErr: any) {
+      console.warn(`[PM Audit] Error: ${pmErr?.message?.slice(0, 80)}`);
+    }
+  }
+
   // Parent evaluation loop
   const parentLoop = async () => {
     if (isJudgeRunActive()) {
@@ -2666,6 +2978,13 @@ async function main() {
 
   // First evaluation after children have had time to vote
   setTimeout(parentLoop, 45_000);
+
+  // Polymarket outcome audit — check resolved markets every 10 min
+  setInterval(async () => {
+    if (isJudgeRunActive()) return;
+    await polymarketAuditLoop(BASE_CONFIG);
+  }, POLYMARKET_AUDIT_INTERVAL_MS);
+  setTimeout(() => polymarketAuditLoop(BASE_CONFIG), 5 * 60_000);
 
   console.log("\n══ Swarm is LIVE ══");
   console.log("Children are voting autonomously. Parent evaluates every 90s.");

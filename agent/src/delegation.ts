@@ -32,6 +32,8 @@ const environment = getDeleGatorEnvironment(baseSepolia.id);
 // DeleGator smart account for the parent (initialized lazily)
 let parentSmartAccount: any = null;
 let smartAccountAddress: Address | null = null;
+let delegationRedemptionEnabled = process.env.ENABLE_DELEGATION_REDEMPTION === "true";
+let delegationRedemptionDisableReason = delegationRedemptionEnabled ? null : "disabled_by_default";
 
 /**
  * Initialize the DeleGator smart account for the parent.
@@ -40,6 +42,10 @@ let smartAccountAddress: Address | null = null;
  */
 export async function initDeleGatorAccount(): Promise<Address | null> {
   if (smartAccountAddress) return smartAccountAddress;
+  if (!delegationRedemptionEnabled) {
+    console.log("[Delegation] Redemption disabled — set ENABLE_DELEGATION_REDEMPTION=true to opt in");
+    return null;
+  }
   try {
     parentSmartAccount = await toMetaMaskSmartAccount({
       client: publicClient as any,
@@ -54,6 +60,8 @@ export async function initDeleGatorAccount(): Promise<Address | null> {
     logParentAction("init_delegator_account", { type: "DeleGator", implementation: "Hybrid" }, { address: smartAccountAddress });
     return smartAccountAddress;
   } catch (err: any) {
+    delegationRedemptionEnabled = false;
+    delegationRedemptionDisableReason = err?.message?.slice(0, 80) || "init_failed";
     console.log(`[Delegation] DeleGator init failed: ${err?.message?.slice(0, 80)} — using EOA fallback`);
     return null;
   }
@@ -61,6 +69,25 @@ export async function initDeleGatorAccount(): Promise<Address | null> {
 
 export function getDeleGatorAddress(): Address | null {
   return smartAccountAddress;
+}
+
+export function isDelegationRedemptionEnabled(): boolean {
+  return delegationRedemptionEnabled && !!smartAccountAddress;
+}
+
+export function disableDelegationRedemption(reason: string): void {
+  if (!delegationRedemptionEnabled && delegationRedemptionDisableReason === reason) return;
+  delegationRedemptionEnabled = false;
+  delegationRedemptionDisableReason = reason;
+  console.log(`[Delegation] Redemption disabled: ${reason}`);
+}
+
+export function getDelegationRedemptionStatus() {
+  return {
+    enabled: delegationRedemptionEnabled && !!smartAccountAddress,
+    smartAccountAddress,
+    reason: delegationRedemptionDisableReason,
+  };
 }
 
 // Store delegations in memory for the demo runtime

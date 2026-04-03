@@ -724,7 +724,46 @@ const VALIDATION_REGISTRY_ABI = [
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
   },
+  {
+    type: "function",
+    name: "getValidationStatus",
+    inputs: [{ name: "requestId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "agentId", type: "uint256" },
+          { name: "requester", type: "address" },
+          { name: "validator", type: "address" },
+          { name: "uri", type: "string" },
+          { name: "contentHash", type: "bytes32" },
+          { name: "actionType", type: "string" },
+          { name: "status", type: "uint8" },
+          { name: "score", type: "uint256" },
+          { name: "validatorComment", type: "string" },
+          { name: "requestedAt", type: "uint256" },
+          { name: "respondedAt", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
 ] as const;
+
+async function getValidationRequestStatus(requestId: bigint): Promise<any | null> {
+  try {
+    return await publicClient.readContract({
+      address: VALIDATION_REGISTRY_ADDRESS,
+      abi: VALIDATION_REGISTRY_ABI,
+      functionName: "getValidationStatus",
+      args: [requestId],
+    });
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Request validation of an agent's work (e.g., a vote or alignment eval).
@@ -773,7 +812,25 @@ export async function submitValidationResponse(
   comment: string = ""
 ): Promise<string | null> {
   try {
+    const current = await getValidationRequestStatus(requestId);
+    if (!current) {
+      console.log(`[Validation] request ${requestId} not found — skipping response`);
+      return null;
+    }
+    if (Number(current.status) !== 0) {
+      console.log(`[Validation] request ${requestId} already closed (status=${current.status}) — skipping response`);
+      return null;
+    }
+    if (String(current.validator).toLowerCase() !== account.address.toLowerCase()) {
+      console.log(`[Validation] request ${requestId} assigned to ${current.validator}, not parent ${account.address} — skipping response`);
+      return null;
+    }
     return await enqueueWrite(async () => {
+      const latest = await getValidationRequestStatus(requestId);
+      if (!latest || Number(latest.status) !== 0) {
+        console.log(`[Validation] request ${requestId} no longer pending — skipping response`);
+        return null;
+      }
       const receipt = await sendTxAndWait({
         address: VALIDATION_REGISTRY_ADDRESS,
         abi: VALIDATION_REGISTRY_ABI,

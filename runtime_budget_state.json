@@ -1,0 +1,19 @@
+{
+  "policy": "normal",
+  "reasons": [],
+  "context": "startup",
+  "parentEthBalanceWei": "669466941686478829",
+  "parentEthBalance": "0.6695",
+  "warningEth": "0.0300",
+  "pauseEth": "0.0150",
+  "veniceCalls": 858,
+  "veniceTokens": 441109,
+  "warningTokens": 200000,
+  "pauseTokens": 350000,
+  "activeChildren": 21,
+  "filecoinAvailable": true,
+  "pauseProposalCreation": false,
+  "pauseScaling": false,
+  "pauseJudgeFlow": false,
+  "lastUpdatedAt": "2026-04-01T00:37:36.525Z"
+}

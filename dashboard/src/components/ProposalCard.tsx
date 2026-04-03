@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   proposalStateLabel,
   proposalStateColor,
@@ -186,9 +187,14 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
                 )}
               </span>
             )}
-            {proposal.tallySource && (
+            {proposal.sourceType === "tally" && (
               <span className="text-[10px] border border-gray-700 text-gray-500 rounded px-1 py-0.5 font-mono uppercase">
                 via Tally
+              </span>
+            )}
+            {proposal.sourceType === "snapshot" && (
+              <span className="text-[10px] border border-gray-700 text-gray-500 rounded px-1 py-0.5 font-mono uppercase">
+                via Snapshot
               </span>
             )}
             {isPolymarket && (
@@ -279,13 +285,24 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
           <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Agent Votes</p>
           <div className="flex flex-wrap gap-2">
             {visibleVoters.map((v, i) => (
-              <span
-                key={i}
-                className={`text-xs font-mono font-semibold border rounded px-1.5 py-0.5 whitespace-nowrap ${supportChipColor(v.support)}`}
-                title={`${v.childAddr}`}
-              >
-                {ensName(v.childLabel) ?? formatAddress(v.childAddr)}: {supportLabel(v.support)}
-              </span>
+              v.childId ? (
+                <Link
+                  key={i}
+                  href={`/agent/${encodeURIComponent(v.childId)}`}
+                  className={`text-xs font-mono font-semibold border rounded px-1.5 py-0.5 whitespace-nowrap hover:border-blue-400/60 hover:text-blue-200 ${supportChipColor(v.support)}`}
+                  title={`${v.childAddr}`}
+                >
+                  {ensName(v.childLabel) ?? formatAddress(v.childAddr)}: {supportLabel(v.support)}
+                </Link>
+              ) : (
+                <span
+                  key={i}
+                  className={`text-xs font-mono font-semibold border rounded px-1.5 py-0.5 whitespace-nowrap ${supportChipColor(v.support)}`}
+                  title={`${v.childAddr}`}
+                >
+                  {ensName(v.childLabel) ?? formatAddress(v.childAddr)}: {supportLabel(v.support)}
+                </span>
+              )
             ))}
           </div>
         </div>
