@@ -57,7 +57,7 @@ import {
   updateJudgeFlowState,
   writeJudgeFlowState,
 } from "./judge-flow.js";
-import { writeFileSync } from "fs";
+import { writeFileSync, readFileSync, existsSync } from "fs";
 import { startControlServer } from "./control-server.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -374,7 +374,7 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
       console.log(`[Judge] Failed to recall stale proof child ${child.ensLabel}: ${err?.message?.slice(0, 60)}`);
     }
 
-    childWalletKeys.delete(child.ensLabel);
+    deleteChildKey(child.ensLabel);
   }
 }
 
@@ -521,7 +521,43 @@ async function fundChildWallet(
   return result;
 }
 const strikes = new Map<string, number>();
+
+// ── Persistent child key store ──
+// Child keys are derived deterministically but the mapping (label → key) must survive
+// restarts so children whose operator was changed to DeleGator can still be recovered.
+const CHILD_KEYS_PATH = join(__dirname, "..", "..", "child_keys.json");
 const childWalletKeys = new Map<string, `0x${string}`>(); // label => child private key
+
+function loadPersistedChildKeys() {
+  try {
+    if (existsSync(CHILD_KEYS_PATH)) {
+      const data = JSON.parse(readFileSync(CHILD_KEYS_PATH, "utf-8")) as Record<string, string>;
+      for (const [label, key] of Object.entries(data)) {
+        childWalletKeys.set(label, key as `0x${string}`);
+      }
+      console.log(`[Keys] Loaded ${childWalletKeys.size} child keys from disk`);
+    }
+  } catch {}
+}
+
+function saveChildKey(label: string, key: `0x${string}`) {
+  childWalletKeys.set(label, key);
+  try {
+    const data: Record<string, string> = {};
+    for (const [l, k] of childWalletKeys) data[l] = k;
+    writeFileSync(CHILD_KEYS_PATH, JSON.stringify(data, null, 2));
+  } catch {}
+}
+
+function deleteChildKey(label: string) {
+  childWalletKeys.delete(label);
+  try {
+    const data: Record<string, string> = {};
+    for (const [l, k] of childWalletKeys) data[l] = k;
+    writeFileSync(CHILD_KEYS_PATH, JSON.stringify(data, null, 2));
+  } catch {}
+}
+
 let nextChildId = 1; // global counter for deterministic wallet derivation
 
 // ── Multi-DAO Addresses (3 governors per chain) ──
@@ -684,7 +720,7 @@ async function initChain(config: ChainConfig) {
       }
 
       // Store the child private key + perspective for the child process
-      childWalletKeys.set(childName, childWallet.privateKey);
+      saveChildKey(childName, childWallet.privateKey);
 
       // Spawn with operator set atomically — one tx instead of two
       const receipt = await config.sendTx({
@@ -779,7 +815,7 @@ async function initChain(config: ChainConfig) {
             // If operator is the parent wallet itself, use the parent key directly
             if (onchainOperator.toLowerCase() === account.address.toLowerCase()) {
               childKey = process.env.PRIVATE_KEY as `0x${string}`;
-              childWalletKeys.set(child.ensLabel, childKey);
+              saveChildKey(child.ensLabel, childKey);
               console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
             } else {
               // Search derived wallets to find matching key (expanded to 1000)
@@ -787,7 +823,7 @@ async function initChain(config: ChainConfig) {
                 const w = deriveChildWallet(id);
                 if (w.address.toLowerCase() === onchainOperator.toLowerCase()) {
                   childKey = w.privateKey;
-                  childWalletKeys.set(child.ensLabel, childKey);
+                  saveChildKey(child.ensLabel, childKey);
                   console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
                   break;
                 }
@@ -859,6 +895,28 @@ async function initChain(config: ChainConfig) {
           console.log(`  ${child.ensLabel}: delegation recreated (hash=${recoveredDelegation.delegationHash.slice(0, 18)}...)`);
         } catch (delErr: any) {
           console.log(`  ${child.ensLabel}: delegation recreation failed (${delErr?.message?.slice(0, 60)})`);
+        }
+      }
+
+      // Last resort: if we still have no key (e.g. operator was DeleGator and persisted
+      // mapping pre-dates this fix), derive a fresh wallet and re-key the child onchain.
+      // The parent EOA is always authorized via `msg.sender == parent` in onlyAuthorized.
+      if (!childKey) {
+        try {
+          const rekeyId = nextChildId++;
+          const rekeyWallet = deriveChildWallet(rekeyId);
+          await fundChildWallet(rekeyWallet.address, "0.003", config.name);
+          await config.sendTx({
+            address: child.childAddr as `0x${string}`,
+            abi: ChildGovernorABI,
+            functionName: "setOperator",
+            args: [rekeyWallet.address],
+          });
+          childKey = rekeyWallet.privateKey;
+          saveChildKey(child.ensLabel, childKey);
+          console.log(`  ${child.ensLabel}: re-keyed with new wallet ${rekeyWallet.address.slice(0, 10)}...`);
+        } catch (rekeyErr: any) {
+          console.log(`  ${child.ensLabel}: re-key failed (${rekeyErr?.message?.slice(0, 60)}) — spawning with shared wallet`);
         }
       }
 
@@ -1100,7 +1158,7 @@ async function spawnJudgeProofChild(config: ChainConfig, runId: string, governor
   const childId = nextChildId++;
   const childWallet = deriveChildWallet(childId);
   await fundChildWallet(childWallet.address, "0.003", config.name);
-  childWalletKeys.set(proofChildLabel, childWallet.privateKey);
+  saveChildKey(proofChildLabel, childWallet.privateKey);
 
   const receipt = await config.sendTx({
     address: config.factory,
@@ -1503,7 +1561,7 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
   const respawnChildId = nextChildId++;
   const respawnWallet = deriveChildWallet(respawnChildId);
   await fundChildWallet(respawnWallet.address, "0.003", config.name);
-  childWalletKeys.set(respawnLabel, respawnWallet.privateKey);
+  saveChildKey(respawnLabel, respawnWallet.privateKey);
 
   const respawnReceipt = await config.sendTx({
     address: config.factory,
@@ -2005,7 +2063,7 @@ async function evaluateChainChildren(config: ChainConfig) {
 
           await fundChildWallet(newChildWallet.address, "0.003", config.name);
 
-          childWalletKeys.set(newLabel, newChildWallet.privateKey);
+          saveChildKey(newLabel, newChildWallet.privateKey);
 
           try {
             await config.sendTx({
@@ -2174,7 +2232,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           } catch {}
 
           await fundChildWallet(newChildWallet.address, "0.003", config.name);
-          childWalletKeys.set(newLabel, newChildWallet.privateKey);
+          saveChildKey(newLabel, newChildWallet.privateKey);
 
           try {
             await config.sendTx({
@@ -2312,7 +2370,7 @@ async function dynamicScaling(config: ChainConfig) {
 
         await fundChildWallet(childWallet.address, "0.003", config.name);
 
-        childWalletKeys.set(childName, childWallet.privateKey);
+        saveChildKey(childName, childWallet.privateKey);
 
         await config.sendTx({
           address: config.factory, abi: SpawnFactoryABI,
@@ -2405,7 +2463,7 @@ async function dynamicScaling(config: ChainConfig) {
               idleCycleCount.delete(key);
               idleCycleCount.delete(`${key}:votes`);
               strikes.delete(key);
-              childWalletKeys.delete(child.ensLabel);
+              deleteChildKey(child.ensLabel);
             } catch (err: any) {
               console.log(`[Scaling] Recall failed: ${err?.message?.slice(0, 40)}`);
             }
@@ -2425,6 +2483,7 @@ async function dynamicScaling(config: ChainConfig) {
 
 // ── Main ──
 async function main() {
+  loadPersistedChildKeys();
   startControlServer();
   console.log("╔══════════════════════════════════════════════════════╗");
   console.log("║  SPAWN PROTOCOL — AUTONOMOUS GOVERNANCE SWARM       ║");
