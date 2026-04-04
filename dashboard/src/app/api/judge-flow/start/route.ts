@@ -9,6 +9,7 @@ const CONTROL_PATH =
   process.env.JUDGE_FLOW_CONTROL_PATH ||
   join(process.cwd(), "..", "judge_flow_state.json");
 const BUDGET_STATE_PATH = join(process.cwd(), "..", "runtime_budget_state.json");
+const JUDGE_FAST_CHILD_INTERVAL_MS = Number(process.env.JUDGE_FAST_CHILD_INTERVAL_MS || 1500);
 
 const EMPTY_STATE = {
   runId: null,
@@ -17,6 +18,13 @@ const EMPTY_STATE = {
   forcedScore: 15,
   events: [],
 };
+
+function normalizeJudgeChildCycleInterval(body: Record<string, unknown>): number | undefined {
+  const explicit = Number(body.childCycleIntervalMs);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  if (body.fastMode === true) return JUDGE_FAST_CHILD_INTERVAL_MS;
+  return undefined;
+}
 
 export async function POST(request: Request) {
   try {
@@ -62,6 +70,7 @@ export async function POST(request: Request) {
       runId,
       status: "queued",
       governor: body.governor || "uniswap",
+      childCycleIntervalMs: normalizeJudgeChildCycleInterval(body),
       forcedScore: Number(body.forcedScore || 15),
       requestedAt: new Date().toISOString(),
       startedAt: undefined,

@@ -50,6 +50,7 @@ export interface JudgeFlowState {
   status: JudgeStatus;
   governor: string;
   governorAddress?: string;
+  childCycleIntervalMs?: number;
   proofChildLabel?: string;
   proofChildAgentId?: string;
   respawnedChildLabel?: string;

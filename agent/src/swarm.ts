@@ -72,6 +72,7 @@ const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
 const childProcesses = new Map<string, ChildProcess>();
 let activeJudgeRun: JudgeFlowState | null = null;
 let judgeFlowInFlight = false;
+const SWARM_BOOTED_AT_MS = Date.now();
 
 // Lineage memory — stores structured termination reports from predecessors so respawned agents can learn
 const lineageMemory = new Map<string, Array<{ generation: number; summary: string; lessons: string[]; score: number; timestamp: number }>>();
@@ -131,6 +132,45 @@ let swarmVeniceTokens = 0;
 
 function buildJudgeProofLabel(runId: string) {
   return `judge-proof-${runId}`;
+}
+
+function getJudgeChildCycleOverrideMs(state?: Pick<JudgeFlowState, "childCycleIntervalMs"> | null): number | undefined {
+  const candidate = Number(state?.childCycleIntervalMs);
+  if (!Number.isFinite(candidate) || candidate <= 0) return undefined;
+  return Math.floor(candidate);
+}
+
+function buildJudgeChildEnv(
+  state: Pick<JudgeFlowState, "runId" | "childCycleIntervalMs">,
+  extra: Record<string, string | undefined> = {}
+): Record<string, string> {
+  const env: Record<string, string> = {
+    JUDGE_FLOW_RUN_ID: state.runId || "",
+    CHILD_START_DELAY_MS: "250",
+  };
+  const cycleOverrideMs = getJudgeChildCycleOverrideMs(state);
+  if (cycleOverrideMs) {
+    env.CHILD_CYCLE_INTERVAL_MS = String(cycleOverrideMs);
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
+function isQueuedJudgeRunFresh(state: JudgeFlowState): boolean {
+  if (state.status !== "queued") return true;
+  const requestedAtMs = state.requestedAt ? Date.parse(state.requestedAt) : Number.NaN;
+  if (!Number.isFinite(requestedAtMs)) return false;
+  return requestedAtMs >= SWARM_BOOTED_AT_MS;
+}
+
+function shouldUseJudgePriorityBoot(): boolean {
+  if (!JUDGE_FLOW_PRIORITY_BOOT) return false;
+  const state = readJudgeFlowState();
+  if (state.status === "running") return true;
+  if (state.status === "queued") return isQueuedJudgeRunFresh(state);
+  return false;
 }
 
 function getGovernorForJudgeRun(config: ChainConfig, governorName?: string) {
@@ -817,7 +857,7 @@ async function initChain(config: ChainConfig) {
     console.log(`[${config.name}] No children — spawning fresh`);
   }
 
-  if (JUDGE_FLOW_PRIORITY_BOOT) {
+  if (shouldUseJudgePriorityBoot()) {
     console.log(`[Judge] Priority boot enabled — deferring normal child spawn and process reattachment`);
     return;
   }
@@ -1366,12 +1406,9 @@ function launchJudgeProofChildProcess(
     config.name,
     undefined,
     undefined,
-    {
-      JUDGE_FLOW_RUN_ID: runId,
+    buildJudgeChildEnv(activeJudgeRun ?? readJudgeFlowState(), {
       JUDGE_PROPOSAL_ID: proposalId,
-      CHILD_START_DELAY_MS: "250",
-      CHILD_CYCLE_INTERVAL_MS: "1500",
-    }
+    })
   );
 }
 
@@ -1726,12 +1763,9 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
     config.name,
     lineageContext,
     undefined,
-    {
-      JUDGE_FLOW_RUN_ID: runId,
+    buildJudgeChildEnv(activeJudgeRun ?? readJudgeFlowState(), {
       JUDGE_LINEAGE_SOURCE_CID: memoryCid,
-      CHILD_START_DELAY_MS: "250",
-      CHILD_CYCLE_INTERVAL_MS: "1500",
-    }
+    })
   );
   logParentAction(
     "judge_child_respawned",
@@ -1922,6 +1956,38 @@ function startJudgeFlowController(config: ChainConfig) {
         }
       )
     );
+  } else if (existing.status === "queued" && !isQueuedJudgeRunFresh(existing)) {
+    writeJudgeFlowState({
+      ...existing,
+      runId: null,
+      status: "idle",
+      requestedAt: undefined,
+      startedAt: undefined,
+      completedAt: undefined,
+      durationMs: undefined,
+      failureReason: undefined,
+      childCycleIntervalMs: undefined,
+      proofChildLabel: undefined,
+      proofChildAgentId: undefined,
+      respawnedChildLabel: undefined,
+      respawnedChildAgentId: undefined,
+      proposalId: undefined,
+      proposalDescription: undefined,
+      filecoinCid: undefined,
+      filecoinUrl: undefined,
+      validationRequestId: undefined,
+      validationTxHash: undefined,
+      validationResponseTxHash: undefined,
+      reputationTxHash: undefined,
+      alignmentTxHash: undefined,
+      terminationTxHash: undefined,
+      proposalTxHash: undefined,
+      respawnTxHash: undefined,
+      voteTxHash: undefined,
+      lineageSourceCid: undefined,
+      proofStatus: undefined,
+      events: [],
+    });
   } else if (!existing.runId) {
     writeJudgeFlowState(existing);
   }
@@ -2674,7 +2740,7 @@ async function main() {
     console.log(`[Judge] Controller active — polling every ${Math.floor(JUDGE_FLOW_POLL_MS / 1000)}s`);
   }
 
-  if (JUDGE_FLOW_PRIORITY_BOOT) {
+  if (shouldUseJudgePriorityBoot()) {
     console.log("[Judge] Priority boot enabled — discovery feed, proposal seeding, and parent loop deferred");
     console.log("\n══ Judge-mode swarm is LIVE ══");
     console.log("Queue a canonical judge run to exercise the proof path.");
