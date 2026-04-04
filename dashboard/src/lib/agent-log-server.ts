@@ -220,9 +220,20 @@ export function buildVoteSummaries(entries: AgentLogEntry[]) {
 
     const proposalId = entry.inputs?.proposalId;
     const daoSlug = getDaoSlugFromChildLabel(label);
-    if (!daoSlug || proposalId === undefined || proposalId === null) continue;
 
-    const proposalKey = `${daoSlug}-${String(proposalId)}`;
+    // Prefer explicit sourceProposalKey written by child (set for external DAO proposals)
+    const explicitProposalKey =
+      typeof entry.inputs?.sourceProposalKey === "string"
+        ? entry.inputs.sourceProposalKey
+        : typeof entry.outputs?.sourceProposalKey === "string"
+        ? entry.outputs.sourceProposalKey
+        : null;
+    const fallbackProposalKey =
+      daoSlug && proposalId !== undefined && proposalId !== null
+        ? `${daoSlug}-${String(proposalId)}`
+        : null;
+    const proposalKey = explicitProposalKey || fallbackProposalKey;
+    if (!proposalKey) continue;
     const voters = byProposal.get(proposalKey) || new Map<string, ProposalVoterSummary>();
     voters.set(lowerLabel, {
       childLabel: label,

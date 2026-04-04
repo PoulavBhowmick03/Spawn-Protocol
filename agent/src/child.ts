@@ -9,6 +9,7 @@ import { toHex, type Hex, type Address } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 import { logChildAction } from "./logger.js";
 import { readJudgeFlowState } from "./judge-flow.js";
+import { findMirroredProposalByInternal } from "./mirror-index.js";
 
 /**
  * Log a child action via IPC if running as a forked process (single-writer pattern),
@@ -307,6 +308,7 @@ async function childCycle(
         functionName: "getProposal",
         args: [i],
       })) as ProposalInfo;
+      const mirroredProposal = findMirroredProposalByInternal(governanceAddr, i);
 
       const proposalJudgeRunId = proposal.description.match(/\[JUDGE_FLOW:([^\]]+)\]/)?.[1] || null;
       if (currentJudgeRunId) {
@@ -486,6 +488,10 @@ async function childCycle(
             reasoningHash: reasoningHash.slice(0, 18),
             veniceTokensUsed: Math.max(0, getVeniceMetrics().totalTokens - veniceBefore.totalTokens),
             veniceCallsUsed: Math.max(0, getVeniceMetrics().totalCalls - veniceBefore.totalCalls),
+            ...(mirroredProposal?.sourceDaoId ? { sourceDaoId: mirroredProposal.sourceDaoId } : {}),
+            ...(mirroredProposal?.sourceDaoSlug ? { sourceDaoSlug: mirroredProposal.sourceDaoSlug } : {}),
+            ...(mirroredProposal?.sourceRef ? { sourceRef: mirroredProposal.sourceRef } : {}),
+            ...(mirroredProposal?.externalProposalKey ? { sourceProposalKey: mirroredProposal.externalProposalKey } : {}),
             ...judgePayload,
           },
           { txHash: receipt.transactionHash, ...judgePayload },
