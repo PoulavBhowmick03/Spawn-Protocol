@@ -23,7 +23,7 @@ import {
 import { evaluateAlignment, generateSwarmReport, generateTerminationReport, generateStructuredTerminationReport, summarizeLessons, getVeniceMetrics, validateVeniceProvider } from "./venice.js";
 import type { StructuredTerminationReport } from "./venice.js";
 import { registerSubdomain, updateSubdomainAddress, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
-import { deriveChildWallet } from "./wallet-manager.js";
+import { createWalletClientFromKey, deriveChildWallet } from "./wallet-manager.js";
 import { registerAgent, registerAgentOnchain, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent, setAgentMetadataValue, getAgentTrustDecision, resolveAgentIdByLabelOnchain } from "./identity.js";
 import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, type DelegationRecord } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
@@ -39,7 +39,7 @@ import {
   filecoinExplorerUrl,
 } from "./filecoin.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
-import { decodeEventLog, parseEther } from "viem";
+import { decodeEventLog, formatEther, parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -82,7 +82,9 @@ const JUDGE_FLOW_PRIORITY_BOOT = process.env.JUDGE_FLOW_PRIORITY_BOOT === "true"
 const JUDGE_PROOF_PROMPT =
   "You are the canonical Spawn Protocol proof child for a live judge run. Focus only on the marked judge proposal, reason clearly, cast exactly one vote, and stop considering unrelated proposals.";
 const DEFAULT_MAX_GAS_PER_VOTE = BigInt(process.env.DEFAULT_MAX_GAS_PER_VOTE || "2000000");
-const CHILD_WALLET_TARGET_BALANCE_ETH = process.env.CHILD_WALLET_TARGET_BALANCE_ETH || "0.02";
+const CHILD_WALLET_TARGET_BALANCE_ETH = process.env.CHILD_WALLET_TARGET_BALANCE_ETH || "0.005";
+const CHILD_WALLET_SWEEP_RESERVE_ETH = process.env.CHILD_WALLET_SWEEP_RESERVE_ETH || "0.0001";
+const CHILD_WALLET_SWEEP_RESERVE_WEI = parseEther(CHILD_WALLET_SWEEP_RESERVE_ETH);
 const RUNTIME_BUDGET_STATE_PATH = join(__dirname, "..", "..", "runtime_budget_state.json");
 const RUNTIME_BUDGET_WARNING_ETH = parseEther(process.env.RUNTIME_BUDGET_WARNING_ETH || "0.03");
 const RUNTIME_BUDGET_PAUSE_ETH = parseEther(process.env.RUNTIME_BUDGET_PAUSE_ETH || "0.015");
@@ -405,6 +407,7 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
       if (proc) proc.kill();
     } catch {}
 
+    let recalled = false;
     try {
       await config.sendTx({
         address: config.factory,
@@ -412,12 +415,17 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
         functionName: "recallChild",
         args: [child.id],
       });
+      recalled = true;
       console.log(`[Judge] Recalled stale proof child ${child.ensLabel}`);
     } catch (err: any) {
       console.log(`[Judge] Failed to recall stale proof child ${child.ensLabel}: ${err?.message?.slice(0, 60)}`);
     }
 
-    deleteChildKey(child.ensLabel);
+    if (!recalled) continue;
+
+    if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+      deleteChildKey(child.ensLabel);
+    }
   }
 }
 
@@ -540,18 +548,14 @@ async function fundChildWallet(
           return true;
         }
 
+        const topUp = targetBalance - balance;
         const fundHash = await (wc as any).sendTransaction({
           to: targetAddr as `0x${string}`,
-          value: parseEther(amount),
+          value: topUp,
         });
         await pc.waitForTransactionReceipt({ hash: fundHash, timeout: 60_000 });
-
-        // Verify
-        const newBalance = await pc.getBalance({ address: targetAddr as `0x${string}` });
-        if (newBalance >= targetBalance) {
-          console.log(`  [Fund] ${targetAddr.slice(0, 10)}... funded with ${amount} ETH`);
-          return true;
-        }
+        console.log(`  [Fund] ${targetAddr.slice(0, 10)}... topped up by ${formatEther(topUp)} ETH (target ${amount} ETH)`);
+        return true;
       } catch (err: any) {
         const msg = err?.message?.slice(0, 50) || "unknown error";
         console.log(`  [Fund] Attempt ${attempt + 1}/${maxRetries} for ${targetAddr.slice(0, 10)}...: ${msg}`);
@@ -564,6 +568,54 @@ async function fundChildWallet(
   fundingLock = result.then(() => {}).catch(() => {}); // chain without propagating errors
   return result;
 }
+
+async function sweepChildWallet(deadLabel: string, config: ChainConfig, childAddr?: string): Promise<boolean> {
+  try {
+    let deadKey = childWalletKeys.get(deadLabel);
+    if (!deadKey && childAddr) {
+      try {
+        const operator = await config.readClient.readContract({
+          address: childAddr as `0x${string}`,
+          abi: ChildGovernorABI,
+          functionName: "operator",
+        }) as `0x${string}`;
+        if (
+          operator &&
+          operator !== "0x0000000000000000000000000000000000000000" &&
+          operator.toLowerCase() !== account.address.toLowerCase()
+        ) {
+          const recoveredId = findDerivedChildIdByAddress(operator);
+          if (recoveredId !== null) {
+            deadKey = deriveChildWallet(recoveredId).privateKey;
+            saveChildKey(deadLabel, deadKey);
+            console.log(`  [Sweep] Recovered key for ${deadLabel} (childId=${recoveredId})`);
+          }
+        }
+      } catch {}
+    }
+    if (!deadKey) return false;
+
+    const deadAcct = privateKeyToAccount(deadKey);
+    const balance = await config.readClient.getBalance({ address: deadAcct.address });
+    if (balance <= CHILD_WALLET_SWEEP_RESERVE_WEI) return true;
+
+    const sweepAmount = balance - CHILD_WALLET_SWEEP_RESERVE_WEI;
+    const deadWc = createWalletClientFromKey(deadKey, config.name);
+    const sweepHash = await (deadWc as any).sendTransaction({
+      account: deadAcct,
+      to: account.address,
+      value: sweepAmount,
+    });
+    await config.readClient.waitForTransactionReceipt({ hash: sweepHash, timeout: 60_000 });
+    console.log(`  [Sweep] Recovered ${formatEther(sweepAmount)} ETH from dead ${deadLabel} wallet`);
+    return true;
+  } catch (err: any) {
+    const msg = err?.shortMessage || err?.message || "unknown error";
+    console.log(`  [Sweep] Failed for ${deadLabel}: ${String(msg).slice(0, 80)}`);
+    return false;
+  }
+}
+
 const strikes = new Map<string, number>();
 
 // ── Persistent child key store ──
@@ -1730,6 +1782,9 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
   const respawnLabel = `${child.ensLabel}-v2`;
   const respawnChildId = allocateChildId();
   const respawnWallet = deriveChildWallet(respawnChildId);
+  if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+    deleteChildKey(child.ensLabel);
+  }
   await fundChildWallet(respawnWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
   saveChildKey(respawnLabel, respawnWallet.privateKey);
 
@@ -2260,6 +2315,9 @@ async function evaluateChainChildren(config: ChainConfig) {
             }
           } catch {}
 
+          if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+            deleteChildKey(child.ensLabel);
+          }
           await fundChildWallet(newChildWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
 
           saveChildKey(newLabel, newChildWallet.privateKey);
@@ -2430,6 +2488,9 @@ async function evaluateChainChildren(config: ChainConfig) {
             }
           } catch {}
 
+          if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+            deleteChildKey(child.ensLabel);
+          }
           await fundChildWallet(newChildWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
           saveChildKey(newLabel, newChildWallet.privateKey);
 
@@ -2657,12 +2718,13 @@ async function dynamicScaling(config: ChainConfig) {
                 functionName: "recallChild", args: [child.id],
               });
               try { await deregisterSubdomain(child.ensLabel); } catch {}
+              const swept = await sweepChildWallet(child.ensLabel, config, child.childAddr);
 
-              try { logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, {}); } catch {}
+              try { logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, { walletSwept: swept }); } catch {}
               idleCycleCount.delete(key);
               idleCycleCount.delete(`${key}:votes`);
               strikes.delete(key);
-              deleteChildKey(child.ensLabel);
+              if (swept) deleteChildKey(child.ensLabel);
             } catch (err: any) {
               console.log(`[Scaling] Recall failed: ${err?.message?.slice(0, 40)}`);
             }
