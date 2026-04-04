@@ -53,7 +53,7 @@ export function Navbar() {
   const logo = (
     <div className="px-5 py-5 border-b border-gray-800/60">
       <div className="font-mono text-xs text-gray-600 mb-1 tracking-widest uppercase">
-        Synthesis Hackathon 2026
+        PL Genesis Hackathon 2026
       </div>
       <h1 className="font-mono text-lg font-bold text-green-400 tracking-tight leading-none">
         SPAWN

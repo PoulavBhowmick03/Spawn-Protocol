@@ -183,7 +183,7 @@ export default function JudgeFlowPage() {
       const res = await fetch("/api/judge-flow/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ governor: "uniswap", forcedScore: 15 }),
+        body: JSON.stringify({ governor: "uniswap", forcedScore: 15, fastMode: false }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -237,6 +237,9 @@ export default function JudgeFlowPage() {
           </h1>
           <p className="mt-1 text-sm text-gray-500">
             One canonical proof run for Agent Only, ERC-8004, Filecoin, and AI &amp; Robotics. Live duration depends on Base Sepolia and Filecoin latency.
+          </p>
+          <p className="mt-2 text-xs text-gray-600">
+            The dashboard button queues a standard judge run. Fast judge-child polling is disabled unless explicitly requested through the start API.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">

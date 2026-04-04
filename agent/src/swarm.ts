@@ -22,8 +22,8 @@ import {
 } from "./abis.js";
 import { evaluateAlignment, generateSwarmReport, generateTerminationReport, generateStructuredTerminationReport, summarizeLessons, getVeniceMetrics, validateVeniceProvider } from "./venice.js";
 import type { StructuredTerminationReport } from "./venice.js";
-import { registerSubdomain, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
-import { deriveChildWallet } from "./wallet-manager.js";
+import { registerSubdomain, updateSubdomainAddress, deregisterSubdomain, setAgentMetadata, resolveChild, setChildTextRecord } from "./ens.js";
+import { createWalletClientFromKey, deriveChildWallet } from "./wallet-manager.js";
 import { registerAgent, registerAgentOnchain, updateAgentMetadata, trackAgentId, getAgentIdByLabel, submitReputationFeedback, requestValidation, submitValidationResponse, hashContent, setAgentMetadataValue, getAgentTrustDecision, resolveAgentIdByLabelOnchain } from "./identity.js";
 import { createVotingDelegation, revokeAllForChild, initDeleGatorAccount, storeDelegationForChild, getDelegationByLabel, getDeleGatorAddress, type DelegationRecord } from "./delegation.js";
 import { logYieldStatus, initSimulatedTreasury } from "./lido.js";
@@ -39,7 +39,7 @@ import {
   filecoinExplorerUrl,
 } from "./filecoin.js";
 import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
-import { decodeEventLog, parseEther } from "viem";
+import { decodeEventLog, formatEther, parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -57,6 +57,7 @@ import {
   updateJudgeFlowState,
   writeJudgeFlowState,
 } from "./judge-flow.js";
+import { privateKeyToAccount } from "viem/accounts";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { startControlServer } from "./control-server.js";
 
@@ -71,6 +72,7 @@ const PROPOSAL_INTERVAL_MS = 180_000; // new proposal every 3 min
 const childProcesses = new Map<string, ChildProcess>();
 let activeJudgeRun: JudgeFlowState | null = null;
 let judgeFlowInFlight = false;
+const SWARM_BOOTED_AT_MS = Date.now();
 
 // Lineage memory — stores structured termination reports from predecessors so respawned agents can learn
 const lineageMemory = new Map<string, Array<{ generation: number; summary: string; lessons: string[]; score: number; timestamp: number }>>();
@@ -79,6 +81,10 @@ const JUDGE_DEFAULT_GOVERNOR = "uniswap";
 const JUDGE_FLOW_PRIORITY_BOOT = process.env.JUDGE_FLOW_PRIORITY_BOOT === "true";
 const JUDGE_PROOF_PROMPT =
   "You are the canonical Spawn Protocol proof child for a live judge run. Focus only on the marked judge proposal, reason clearly, cast exactly one vote, and stop considering unrelated proposals.";
+const DEFAULT_MAX_GAS_PER_VOTE = BigInt(process.env.DEFAULT_MAX_GAS_PER_VOTE || "2000000");
+const CHILD_WALLET_TARGET_BALANCE_ETH = process.env.CHILD_WALLET_TARGET_BALANCE_ETH || "0.005";
+const CHILD_WALLET_SWEEP_RESERVE_ETH = process.env.CHILD_WALLET_SWEEP_RESERVE_ETH || "0.0001";
+const CHILD_WALLET_SWEEP_RESERVE_WEI = parseEther(CHILD_WALLET_SWEEP_RESERVE_ETH);
 const RUNTIME_BUDGET_STATE_PATH = join(__dirname, "..", "..", "runtime_budget_state.json");
 const RUNTIME_BUDGET_WARNING_ETH = parseEther(process.env.RUNTIME_BUDGET_WARNING_ETH || "0.03");
 const RUNTIME_BUDGET_PAUSE_ETH = parseEther(process.env.RUNTIME_BUDGET_PAUSE_ETH || "0.015");
@@ -128,6 +134,45 @@ let swarmVeniceTokens = 0;
 
 function buildJudgeProofLabel(runId: string) {
   return `judge-proof-${runId}`;
+}
+
+function getJudgeChildCycleOverrideMs(state?: Pick<JudgeFlowState, "childCycleIntervalMs"> | null): number | undefined {
+  const candidate = Number(state?.childCycleIntervalMs);
+  if (!Number.isFinite(candidate) || candidate <= 0) return undefined;
+  return Math.floor(candidate);
+}
+
+function buildJudgeChildEnv(
+  state: Pick<JudgeFlowState, "runId" | "childCycleIntervalMs">,
+  extra: Record<string, string | undefined> = {}
+): Record<string, string> {
+  const env: Record<string, string> = {
+    JUDGE_FLOW_RUN_ID: state.runId || "",
+    CHILD_START_DELAY_MS: "250",
+  };
+  const cycleOverrideMs = getJudgeChildCycleOverrideMs(state);
+  if (cycleOverrideMs) {
+    env.CHILD_CYCLE_INTERVAL_MS = String(cycleOverrideMs);
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
+function isQueuedJudgeRunFresh(state: JudgeFlowState): boolean {
+  if (state.status !== "queued") return true;
+  const requestedAtMs = state.requestedAt ? Date.parse(state.requestedAt) : Number.NaN;
+  if (!Number.isFinite(requestedAtMs)) return false;
+  return requestedAtMs >= SWARM_BOOTED_AT_MS;
+}
+
+function shouldUseJudgePriorityBoot(): boolean {
+  if (!JUDGE_FLOW_PRIORITY_BOOT) return false;
+  const state = readJudgeFlowState();
+  if (state.status === "running") return true;
+  if (state.status === "queued") return isQueuedJudgeRunFresh(state);
+  return false;
 }
 
 function getGovernorForJudgeRun(config: ChainConfig, governorName?: string) {
@@ -362,6 +407,7 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
       if (proc) proc.kill();
     } catch {}
 
+    let recalled = false;
     try {
       await config.sendTx({
         address: config.factory,
@@ -369,12 +415,17 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
         functionName: "recallChild",
         args: [child.id],
       });
+      recalled = true;
       console.log(`[Judge] Recalled stale proof child ${child.ensLabel}`);
     } catch (err: any) {
       console.log(`[Judge] Failed to recall stale proof child ${child.ensLabel}: ${err?.message?.slice(0, 60)}`);
     }
 
-    deleteChildKey(child.ensLabel);
+    if (!recalled) continue;
+
+    if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+      deleteChildKey(child.ensLabel);
+    }
   }
 }
 
@@ -478,7 +529,7 @@ let fundingLock = Promise.resolve();
 
 async function fundChildWallet(
   targetAddr: string,
-  amount: string = "0.003",
+  amount: string = CHILD_WALLET_TARGET_BALANCE_ETH,
   chainName: string = "base-sepolia",
   maxRetries: number = 4
 ): Promise<boolean> {
@@ -486,28 +537,25 @@ async function fundChildWallet(
   const result = fundingLock.then(async () => {
     const wc = walletClient;
     const pc = publicClient;
+    const targetBalance = parseEther(amount);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        // Check if already funded
+        // Keep child wallets topped up so they can afford large encrypted-vote writes.
         const balance = await pc.getBalance({ address: targetAddr as `0x${string}` });
-        if (balance > 0n) {
-          console.log(`  [Fund] ${targetAddr.slice(0, 10)}... already has balance`);
+        if (balance >= targetBalance) {
+          console.log(`  [Fund] ${targetAddr.slice(0, 10)}... already funded`);
           return true;
         }
 
+        const topUp = targetBalance - balance;
         const fundHash = await (wc as any).sendTransaction({
           to: targetAddr as `0x${string}`,
-          value: parseEther(amount),
+          value: topUp,
         });
         await pc.waitForTransactionReceipt({ hash: fundHash, timeout: 60_000 });
-
-        // Verify
-        const newBalance = await pc.getBalance({ address: targetAddr as `0x${string}` });
-        if (newBalance > 0n) {
-          console.log(`  [Fund] ${targetAddr.slice(0, 10)}... funded with ${amount} ETH`);
-          return true;
-        }
+        console.log(`  [Fund] ${targetAddr.slice(0, 10)}... topped up by ${formatEther(topUp)} ETH (target ${amount} ETH)`);
+        return true;
       } catch (err: any) {
         const msg = err?.message?.slice(0, 50) || "unknown error";
         console.log(`  [Fund] Attempt ${attempt + 1}/${maxRetries} for ${targetAddr.slice(0, 10)}...: ${msg}`);
@@ -520,13 +568,64 @@ async function fundChildWallet(
   fundingLock = result.then(() => {}).catch(() => {}); // chain without propagating errors
   return result;
 }
+
+async function sweepChildWallet(deadLabel: string, config: ChainConfig, childAddr?: string): Promise<boolean> {
+  try {
+    let deadKey = childWalletKeys.get(deadLabel);
+    if (!deadKey && childAddr) {
+      try {
+        const operator = await config.readClient.readContract({
+          address: childAddr as `0x${string}`,
+          abi: ChildGovernorABI,
+          functionName: "operator",
+        }) as `0x${string}`;
+        if (
+          operator &&
+          operator !== "0x0000000000000000000000000000000000000000" &&
+          operator.toLowerCase() !== account.address.toLowerCase()
+        ) {
+          const recoveredId = findDerivedChildIdByAddress(operator);
+          if (recoveredId !== null) {
+            deadKey = deriveChildWallet(recoveredId).privateKey;
+            saveChildKey(deadLabel, deadKey);
+            console.log(`  [Sweep] Recovered key for ${deadLabel} (childId=${recoveredId})`);
+          }
+        }
+      } catch {}
+    }
+    if (!deadKey) return false;
+
+    const deadAcct = privateKeyToAccount(deadKey);
+    const balance = await config.readClient.getBalance({ address: deadAcct.address });
+    if (balance <= CHILD_WALLET_SWEEP_RESERVE_WEI) return true;
+
+    const sweepAmount = balance - CHILD_WALLET_SWEEP_RESERVE_WEI;
+    const deadWc = createWalletClientFromKey(deadKey, config.name);
+    const sweepHash = await (deadWc as any).sendTransaction({
+      account: deadAcct,
+      to: account.address,
+      value: sweepAmount,
+    });
+    await config.readClient.waitForTransactionReceipt({ hash: sweepHash, timeout: 60_000 });
+    console.log(`  [Sweep] Recovered ${formatEther(sweepAmount)} ETH from dead ${deadLabel} wallet`);
+    return true;
+  } catch (err: any) {
+    const msg = err?.shortMessage || err?.message || "unknown error";
+    console.log(`  [Sweep] Failed for ${deadLabel}: ${String(msg).slice(0, 80)}`);
+    return false;
+  }
+}
+
 const strikes = new Map<string, number>();
 
 // ── Persistent child key store ──
 // Child keys are derived deterministically but the mapping (label → key) must survive
 // restarts so children whose operator was changed to DeleGator can still be recovered.
 const CHILD_KEYS_PATH = join(__dirname, "..", "..", "child_keys.json");
+const CHILD_ID_STATE_PATH = join(__dirname, "..", "..", "child_id_state.json");
+const CHILD_ID_RECOVERY_SCAN_LIMIT = Number(process.env.CHILD_ID_RECOVERY_SCAN_LIMIT || "4096");
 const childWalletKeys = new Map<string, `0x${string}`>(); // label => child private key
+let nextChildId = 1; // persisted across restarts via CHILD_ID_STATE_PATH
 
 function loadPersistedChildKeys() {
   try {
@@ -538,6 +637,37 @@ function loadPersistedChildKeys() {
       console.log(`[Keys] Loaded ${childWalletKeys.size} child keys from disk`);
     }
   } catch {}
+}
+
+function loadPersistedChildIdCounter() {
+  try {
+    if (existsSync(CHILD_ID_STATE_PATH)) {
+      const data = JSON.parse(readFileSync(CHILD_ID_STATE_PATH, "utf-8")) as { nextChildId?: number };
+      if (Number.isFinite(data.nextChildId) && Number(data.nextChildId) > 0) {
+        nextChildId = Number(data.nextChildId);
+        console.log(`[Keys] Loaded next child id ${nextChildId} from disk`);
+      }
+    }
+  } catch {}
+}
+
+function persistNextChildId() {
+  try {
+    writeFileSync(CHILD_ID_STATE_PATH, JSON.stringify({ nextChildId }, null, 2));
+  } catch {}
+}
+
+function bumpNextChildId(minNextId: number) {
+  if (Number.isFinite(minNextId) && minNextId > nextChildId) {
+    nextChildId = minNextId;
+    persistNextChildId();
+  }
+}
+
+function allocateChildId(): number {
+  const childId = nextChildId++;
+  persistNextChildId();
+  return childId;
 }
 
 function saveChildKey(label: string, key: `0x${string}`) {
@@ -558,8 +688,6 @@ function deleteChildKey(label: string) {
   } catch {}
 }
 
-let nextChildId = 1; // global counter for deterministic wallet derivation
-
 // ── Multi-DAO Addresses (3 governors per chain) ──
 
 interface ChainConfig {
@@ -576,7 +704,7 @@ const BASE_CONFIG: ChainConfig = {
   sendTx: sendTxAndWait,
   readClient: publicClient,
   treasury: "0x9428B93993F06d3c5d647141d39e5ba54fb97a7b",
-  factory: "0xfEb8D54149b1a303Ab88135834220b85091D93A1",
+  factory: "0x8Ccd24213E765d636605a1F820336cd9E1c8A9C8",
   governors: [
     { name: "uniswap-dao", addr: "0xD91E80324F0fa9FDEFb64A46e68bCBe79A8B2Ca9" },
     { name: "lido-dao", addr: "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC" },
@@ -628,6 +756,110 @@ const POLYMARKET_PERSPECTIVES = [
 
 let proposalIndex = 0;
 
+function findDerivedChildIdByAddress(targetAddress: `0x${string}`): number | null {
+  const normalizedTarget = targetAddress.toLowerCase();
+  for (let id = 0; id < CHILD_ID_RECOVERY_SCAN_LIMIT; id++) {
+    const wallet = deriveChildWallet(id);
+    if (wallet.address.toLowerCase() === normalizedTarget) {
+      return id;
+    }
+  }
+  return null;
+}
+
+function seedNextChildIdFromKnownKeys() {
+  let maxRecoveredId = 0;
+  for (const privateKey of childWalletKeys.values()) {
+    try {
+      const recoveredId = findDerivedChildIdByAddress(privateKeyToAccount(privateKey).address);
+      if (recoveredId !== null) {
+        maxRecoveredId = Math.max(maxRecoveredId, recoveredId);
+      }
+    } catch {}
+  }
+  if (maxRecoveredId > 0) {
+    bumpNextChildId(maxRecoveredId + 1);
+  }
+}
+
+async function seedNextChildIdFromActiveChildren(config: ChainConfig, children: any[]) {
+  let maxRecoveredId = 0;
+  for (const child of children) {
+    try {
+      const operator = await config.readClient.readContract({
+        address: child.childAddr as `0x${string}`,
+        abi: ChildGovernorABI,
+        functionName: "operator",
+      }) as `0x${string}`;
+      if (
+        !operator ||
+        operator === "0x0000000000000000000000000000000000000000" ||
+        operator.toLowerCase() === account.address.toLowerCase()
+      ) {
+        continue;
+      }
+      const recoveredId = findDerivedChildIdByAddress(operator);
+      if (recoveredId !== null) {
+        maxRecoveredId = Math.max(maxRecoveredId, recoveredId);
+      }
+    } catch {}
+  }
+  if (maxRecoveredId > 0) {
+    bumpNextChildId(maxRecoveredId + 1);
+  }
+}
+
+async function repairDuplicateChildOperators(config: ChainConfig, children: any[]) {
+  const childrenByOperator = new Map<string, Array<any & { operator: `0x${string}` }>>();
+
+  for (const child of children) {
+    if (isJudgeChildLabel(child.ensLabel)) continue;
+    try {
+      const operator = await config.readClient.readContract({
+        address: child.childAddr as `0x${string}`,
+        abi: ChildGovernorABI,
+        functionName: "operator",
+      }) as `0x${string}`;
+      if (!operator || operator === "0x0000000000000000000000000000000000000000") continue;
+      const key = operator.toLowerCase();
+      const siblings = childrenByOperator.get(key) || [];
+      siblings.push({ ...child, operator });
+      childrenByOperator.set(key, siblings);
+    } catch {}
+  }
+
+  for (const [, siblings] of childrenByOperator) {
+    if (siblings.length < 2) continue;
+    const [primary, ...duplicates] = siblings;
+    console.log(
+      `[Repair] Duplicate operator ${primary.operator} shared by ${siblings.map((child) => child.ensLabel).join(", ")}`
+    );
+
+    for (const child of duplicates) {
+      try {
+        const freshChildId = allocateChildId();
+        const freshWallet = deriveChildWallet(freshChildId);
+        await fundChildWallet(freshWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
+        await config.sendTx({
+          address: child.childAddr as `0x${string}`,
+          abi: ChildGovernorABI,
+          functionName: "setOperator",
+          args: [freshWallet.address],
+        });
+        saveChildKey(child.ensLabel, freshWallet.privateKey);
+        try {
+          await updateSubdomainAddress(child.ensLabel, freshWallet.address);
+        } catch {}
+        console.log(
+          `[Repair] ${child.ensLabel}: operator moved from ${primary.operator.slice(0, 10)}... to ${freshWallet.address.slice(0, 10)}...`
+        );
+      } catch (repairErr: any) {
+        console.log(`[Repair] ${child.ensLabel}: duplicate-operator repair failed (${repairErr?.message?.slice(0, 80)})`);
+      }
+    }
+  }
+}
+
 async function initChain(config: ChainConfig) {
   console.log(`\n── Initializing ${config.name} ──`);
 
@@ -677,7 +909,7 @@ async function initChain(config: ChainConfig) {
     console.log(`[${config.name}] No children — spawning fresh`);
   }
 
-  if (JUDGE_FLOW_PRIORITY_BOOT) {
+  if (shouldUseJudgePriorityBoot()) {
     console.log(`[Judge] Priority boot enabled — deferring normal child spawn and process reattachment`);
     return;
   }
@@ -701,20 +933,16 @@ async function initChain(config: ChainConfig) {
       const childName = `${gov.name}-${perspective.suffix}`;
     try {
       // Derive a unique wallet for this child
-      const childId = nextChildId++;
+      const childId = allocateChildId();
       const childWallet = deriveChildWallet(childId);
       console.log(`[${config.name}] Derived wallet for ${childName}: ${childWallet.address}`);
 
       // Fund the child wallet on the correct chain
       try {
-        const wc = walletClient;
-        const pc = publicClient;
-        const fundHash = await (wc as any).sendTransaction({
-          to: childWallet.address,
-          value: parseEther("0.001"),
-        });
-        await pc.waitForTransactionReceipt({ hash: fundHash });
-        console.log(`[${config.name}] Funded ${childName} wallet with 0.001 native token`);
+        const funded = await fundChildWallet(childWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
+        if (!funded) {
+          console.log(`[${config.name}] Wallet funding for ${childName}: skipped after retries`);
+        }
       } catch (fundErr: any) {
         console.log(`[${config.name}] Wallet funding for ${childName}: ${fundErr?.message?.slice(0, 50) || "skipped"}`);
       }
@@ -727,7 +955,7 @@ async function initChain(config: ChainConfig) {
         address: config.factory,
         abi: SpawnFactoryABI,
         functionName: "spawnChildWithOperator",
-        args: [childName, gov.addr, 0n, 200000n, childWallet.address],
+        args: [childName, gov.addr, 0n, DEFAULT_MAX_GAS_PER_VOTE, childWallet.address],
       });
       console.log(`[${config.name}] Spawned ${childName} (operator: ${childWallet.address})`);
 
@@ -747,7 +975,7 @@ async function initChain(config: ChainConfig) {
       // ERC-8004 identity — register and track agent ID for reputation/validation
       try {
         const regResult = await registerAgent(`spawn://${childName}.spawn.eth`, { agentType: "child", assignedDAO: gov.name, governanceContract: gov.addr, ensName: `${childName}.spawn.eth`, alignmentScore: 100, capabilities: ["vote", "reason", perspective.suffix], createdAt: Date.now() });
-        if (regResult.agentId > 0n) trackAgentId(childName, regResult.agentId);
+        if (regResult.agentId > 0n && regResult.txHash) trackAgentId(childName, regResult.agentId);
       } catch {}
 
       // MetaMask delegation — ERC-7715 scoped voting authority with onchain proof
@@ -792,6 +1020,9 @@ async function initChain(config: ChainConfig) {
     functionName: "getActiveChildren",
   })) as any[];
 
+  await seedNextChildIdFromActiveChildren(config, children);
+  await repairDuplicateChildOperators(config, children);
+
   console.log(`[${config.name}] Active children: ${children.length}`);
 
   for (const child of children) {
@@ -819,7 +1050,7 @@ async function initChain(config: ChainConfig) {
               console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
             } else {
               // Search derived wallets to find matching key (expanded to 1000)
-              for (let id = 0; id < 1000; id++) {
+              for (let id = 0; id < CHILD_ID_RECOVERY_SCAN_LIMIT; id++) {
                 const w = deriveChildWallet(id);
                 if (w.address.toLowerCase() === onchainOperator.toLowerCase()) {
                   childKey = w.privateKey;
@@ -838,7 +1069,6 @@ async function initChain(config: ChainConfig) {
       // its own transactions without racing on the shared parent wallet nonce.
       if (childKey) {
         try {
-          const { privateKeyToAccount } = await import("viem/accounts");
           const childAcct = privateKeyToAccount(childKey);
           if (!onchainOperator) {
             onchainOperator = await config.readClient.readContract({
@@ -858,21 +1088,17 @@ async function initChain(config: ChainConfig) {
               functionName: "setOperator",
               args: [childAcct.address],
             });
+            try { await updateSubdomainAddress(child.ensLabel, childAcct.address); } catch {}
             console.log(`  ${child.ensLabel}: operator reset to child wallet (was ${onchainOperator.slice(0, 10)}...)`);
           }
         } catch {}
       }
 
-      // Auto-fund if wallet is empty (prevents "exceeds balance" errors)
+      // Top up recovered operators before reattaching child processes.
       if (childKey) {
         try {
-          const { privateKeyToAccount } = await import("viem/accounts");
           const childAccount = privateKeyToAccount(childKey);
-          const balance = await config.readClient.getBalance({ address: childAccount.address });
-          if (balance === 0n) {
-            console.log(`  ${child.ensLabel}: wallet empty — auto-funding`);
-            await fundChildWallet(childAccount.address, "0.003", config.name);
-          }
+          await fundChildWallet(childAccount.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
         } catch {}
       }
 
@@ -882,7 +1108,6 @@ async function initChain(config: ChainConfig) {
       let recoveredDelegation: DelegationRecord | undefined;
       if (childKey) {
         try {
-          const { privateKeyToAccount } = await import("viem/accounts");
           const childAccount = privateKeyToAccount(childKey);
           recoveredDelegation = await createVotingDelegation(
             child.childAddr as `0x${string}`,  // scope to ChildGovernor clone, not MockGovernor
@@ -891,7 +1116,6 @@ async function initChain(config: ChainConfig) {
             child.ensLabel
           );
           storeDelegationForChild(child.ensLabel, recoveredDelegation);
-          // Keep child wallet as operator — do NOT set DeleGator as operator here.
           console.log(`  ${child.ensLabel}: delegation recreated (hash=${recoveredDelegation.delegationHash.slice(0, 18)}...)`);
         } catch (delErr: any) {
           console.log(`  ${child.ensLabel}: delegation recreation failed (${delErr?.message?.slice(0, 60)})`);
@@ -903,9 +1127,9 @@ async function initChain(config: ChainConfig) {
       // The parent EOA is always authorized via `msg.sender == parent` in onlyAuthorized.
       if (!childKey) {
         try {
-          const rekeyId = nextChildId++;
+          const rekeyId = allocateChildId();
           const rekeyWallet = deriveChildWallet(rekeyId);
-          await fundChildWallet(rekeyWallet.address, "0.003", config.name);
+          await fundChildWallet(rekeyWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
           await config.sendTx({
             address: child.childAddr as `0x${string}`,
             abi: ChildGovernorABI,
@@ -914,6 +1138,7 @@ async function initChain(config: ChainConfig) {
           });
           childKey = rekeyWallet.privateKey;
           saveChildKey(child.ensLabel, childKey);
+          try { await updateSubdomainAddress(child.ensLabel, rekeyWallet.address); } catch {}
           console.log(`  ${child.ensLabel}: re-keyed with new wallet ${rekeyWallet.address.slice(0, 10)}...`);
         } catch (rekeyErr: any) {
           console.log(`  ${child.ensLabel}: re-key failed (${rekeyErr?.message?.slice(0, 60)}) — spawning with shared wallet`);
@@ -1155,16 +1380,16 @@ async function createJudgeProposalOnChain(config: ChainConfig, runId: string, go
 async function spawnJudgeProofChild(config: ChainConfig, runId: string, governorName?: string) {
   const governor = getGovernorForJudgeRun(config, governorName);
   const proofChildLabel = buildJudgeProofLabel(runId);
-  const childId = nextChildId++;
+  const childId = allocateChildId();
   const childWallet = deriveChildWallet(childId);
-  await fundChildWallet(childWallet.address, "0.003", config.name);
+  await fundChildWallet(childWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
   saveChildKey(proofChildLabel, childWallet.privateKey);
 
   const receipt = await config.sendTx({
     address: config.factory,
     abi: SpawnFactoryABI,
     functionName: "spawnChildWithOperator",
-    args: [proofChildLabel, governor.addr, 0n, 200000n, childWallet.address],
+    args: [proofChildLabel, governor.addr, 0n, DEFAULT_MAX_GAS_PER_VOTE, childWallet.address],
   });
 
   const spawnedChild = await getChildFromReceipt(config, receipt, proofChildLabel);
@@ -1179,7 +1404,7 @@ async function spawnJudgeProofChild(config: ChainConfig, runId: string, governor
     createdAt: Date.now(),
   });
   const proofAgentId = proofAgent.agentId;
-  trackAgentId(proofChildLabel, proofAgentId);
+  if (proofAgent.txHash) trackAgentId(proofChildLabel, proofAgentId);
 
   logParentAction(
     "judge_child_spawned",
@@ -1233,12 +1458,9 @@ function launchJudgeProofChildProcess(
     config.name,
     undefined,
     undefined,
-    {
-      JUDGE_FLOW_RUN_ID: runId,
+    buildJudgeChildEnv(activeJudgeRun ?? readJudgeFlowState(), {
       JUDGE_PROPOSAL_ID: proposalId,
-      CHILD_START_DELAY_MS: "250",
-      CHILD_CYCLE_INTERVAL_MS: "1500",
-    }
+    })
   );
 }
 
@@ -1558,16 +1780,19 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
   }
 
   const respawnLabel = `${child.ensLabel}-v2`;
-  const respawnChildId = nextChildId++;
+  const respawnChildId = allocateChildId();
   const respawnWallet = deriveChildWallet(respawnChildId);
-  await fundChildWallet(respawnWallet.address, "0.003", config.name);
+  if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+    deleteChildKey(child.ensLabel);
+  }
+  await fundChildWallet(respawnWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
   saveChildKey(respawnLabel, respawnWallet.privateKey);
 
   const respawnReceipt = await config.sendTx({
     address: config.factory,
     abi: SpawnFactoryABI,
     functionName: "spawnChildWithOperator",
-    args: [respawnLabel, child.governance, 0n, 200000n, respawnWallet.address],
+    args: [respawnLabel, child.governance, 0n, DEFAULT_MAX_GAS_PER_VOTE, respawnWallet.address],
   });
 
   const respawned = await getChildFromReceipt(config, respawnReceipt, respawnLabel);
@@ -1582,7 +1807,7 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
     createdAt: Date.now(),
   });
   const respawnAgentId = respawnAgent.agentId;
-  trackAgentId(respawnLabel, respawnAgentId);
+  if (respawnAgent.txHash) trackAgentId(respawnLabel, respawnAgentId);
 
   spawnChildProcess(
     respawned.childAddr,
@@ -1593,12 +1818,9 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
     config.name,
     lineageContext,
     undefined,
-    {
-      JUDGE_FLOW_RUN_ID: runId,
+    buildJudgeChildEnv(activeJudgeRun ?? readJudgeFlowState(), {
       JUDGE_LINEAGE_SOURCE_CID: memoryCid,
-      CHILD_START_DELAY_MS: "250",
-      CHILD_CYCLE_INTERVAL_MS: "1500",
-    }
+    })
   );
   logParentAction(
     "judge_child_respawned",
@@ -1789,6 +2011,38 @@ function startJudgeFlowController(config: ChainConfig) {
         }
       )
     );
+  } else if (existing.status === "queued" && !isQueuedJudgeRunFresh(existing)) {
+    writeJudgeFlowState({
+      ...existing,
+      runId: null,
+      status: "idle",
+      requestedAt: undefined,
+      startedAt: undefined,
+      completedAt: undefined,
+      durationMs: undefined,
+      failureReason: undefined,
+      childCycleIntervalMs: undefined,
+      proofChildLabel: undefined,
+      proofChildAgentId: undefined,
+      respawnedChildLabel: undefined,
+      respawnedChildAgentId: undefined,
+      proposalId: undefined,
+      proposalDescription: undefined,
+      filecoinCid: undefined,
+      filecoinUrl: undefined,
+      validationRequestId: undefined,
+      validationTxHash: undefined,
+      validationResponseTxHash: undefined,
+      reputationTxHash: undefined,
+      alignmentTxHash: undefined,
+      terminationTxHash: undefined,
+      proposalTxHash: undefined,
+      respawnTxHash: undefined,
+      voteTxHash: undefined,
+      lineageSourceCid: undefined,
+      proofStatus: undefined,
+      events: [],
+    });
   } else if (!existing.runId) {
     writeJudgeFlowState(existing);
   }
@@ -1837,7 +2091,7 @@ async function evaluateChainChildren(config: ChainConfig) {
         const balance = await config.readClient.getBalance({ address: operator });
         if (balance === 0n) {
           console.log(`  [Health] ${child.ensLabel} wallet empty — auto-funding`);
-          await fundChildWallet(operator, "0.003", config.name);
+          await fundChildWallet(operator, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
         }
         // Auto-create delegation if missing
         try {
@@ -2042,7 +2296,7 @@ async function evaluateChainChildren(config: ChainConfig) {
 
           // Step 2: Respawn with new label + unique wallet
           const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
-          const newChildId = nextChildId++;
+          const newChildId = allocateChildId();
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
 
@@ -2061,7 +2315,10 @@ async function evaluateChainChildren(config: ChainConfig) {
             }
           } catch {}
 
-          await fundChildWallet(newChildWallet.address, "0.003", config.name);
+          if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+            deleteChildKey(child.ensLabel);
+          }
+          await fundChildWallet(newChildWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
 
           saveChildKey(newLabel, newChildWallet.privateKey);
 
@@ -2069,7 +2326,7 @@ async function evaluateChainChildren(config: ChainConfig) {
             await config.sendTx({
               address: config.factory, abi: SpawnFactoryABI,
               functionName: "spawnChildWithOperator",
-              args: [newLabel, child.governance, 0n, 200000n, newChildWallet.address],
+              args: [newLabel, child.governance, 0n, DEFAULT_MAX_GAS_PER_VOTE, newChildWallet.address],
             });
             try { await registerSubdomain(newLabel, newChildWallet.address); } catch {}
             const newChildren = (await config.readClient.readContract({
@@ -2089,7 +2346,7 @@ async function evaluateChainChildren(config: ChainConfig) {
                   capabilities: ["vote", "reason", "respawned"],
                   createdAt: Date.now(),
                 });
-                if (regResult.agentId > 0n) {
+                if (regResult.agentId > 0n && regResult.txHash) {
                   respawnedAgentId = regResult.agentId;
                   trackAgentId(newLabel, regResult.agentId);
                 }
@@ -2212,7 +2469,7 @@ async function evaluateChainChildren(config: ChainConfig) {
 
           // Step 2: Respawn with new label + unique wallet
           const newLabel = child.ensLabel.includes("-v") ? child.ensLabel.replace(/-v\d+$/, `-v${parseInt((child.ensLabel.match(/-v(\d+)$/)?.[1]) || "1") + 1}`) : `${child.ensLabel}-v2`;
-          const newChildId = nextChildId++;
+          const newChildId = allocateChildId();
           const newChildWallet = deriveChildWallet(newChildId);
           console.log(`  Respawning as ${newLabel} with wallet ${newChildWallet.address}`);
 
@@ -2231,14 +2488,17 @@ async function evaluateChainChildren(config: ChainConfig) {
             }
           } catch {}
 
-          await fundChildWallet(newChildWallet.address, "0.003", config.name);
+          if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
+            deleteChildKey(child.ensLabel);
+          }
+          await fundChildWallet(newChildWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
           saveChildKey(newLabel, newChildWallet.privateKey);
 
           try {
             await config.sendTx({
               address: config.factory, abi: SpawnFactoryABI,
               functionName: "spawnChildWithOperator",
-              args: [newLabel, child.governance, 0n, 200000n, newChildWallet.address],
+              args: [newLabel, child.governance, 0n, DEFAULT_MAX_GAS_PER_VOTE, newChildWallet.address],
             });
             try { await registerSubdomain(newLabel, newChildWallet.address); } catch {}
             // Fetch and launch process
@@ -2259,7 +2519,7 @@ async function evaluateChainChildren(config: ChainConfig) {
                   capabilities: ["vote", "reason", "respawned"],
                   createdAt: Date.now(),
                 });
-                if (regResult.agentId > 0n) {
+                if (regResult.agentId > 0n && regResult.txHash) {
                   respawnedAgentId = regResult.agentId;
                   trackAgentId(newLabel, regResult.agentId);
                 }
@@ -2365,17 +2625,17 @@ async function dynamicScaling(config: ChainConfig) {
       if (alreadyExists) continue;
 
       try {
-        const childId = nextChildId++;
+        const childId = allocateChildId();
         const childWallet = deriveChildWallet(childId);
 
-        await fundChildWallet(childWallet.address, "0.003", config.name);
+        await fundChildWallet(childWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
 
         saveChildKey(childName, childWallet.privateKey);
 
         await config.sendTx({
           address: config.factory, abi: SpawnFactoryABI,
           functionName: "spawnChildWithOperator",
-          args: [childName, gov.addr, 0n, 200000n, childWallet.address],
+          args: [childName, gov.addr, 0n, DEFAULT_MAX_GAS_PER_VOTE, childWallet.address],
         });
 
         try { await registerSubdomain(childName, childWallet.address); } catch {}
@@ -2458,12 +2718,13 @@ async function dynamicScaling(config: ChainConfig) {
                 functionName: "recallChild", args: [child.id],
               });
               try { await deregisterSubdomain(child.ensLabel); } catch {}
+              const swept = await sweepChildWallet(child.ensLabel, config, child.childAddr);
 
-              try { logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, {}); } catch {}
+              try { logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, { walletSwept: swept }); } catch {}
               idleCycleCount.delete(key);
               idleCycleCount.delete(`${key}:votes`);
               strikes.delete(key);
-              deleteChildKey(child.ensLabel);
+              if (swept) deleteChildKey(child.ensLabel);
             } catch (err: any) {
               console.log(`[Scaling] Recall failed: ${err?.message?.slice(0, 40)}`);
             }
@@ -2483,7 +2744,9 @@ async function dynamicScaling(config: ChainConfig) {
 
 // ── Main ──
 async function main() {
+  loadPersistedChildIdCounter();
   loadPersistedChildKeys();
+  seedNextChildIdFromKnownKeys();
   startControlServer();
   console.log("╔══════════════════════════════════════════════════════╗");
   console.log("║  SPAWN PROTOCOL — AUTONOMOUS GOVERNANCE SWARM       ║");
@@ -2539,7 +2802,7 @@ async function main() {
     console.log(`[Judge] Controller active — polling every ${Math.floor(JUDGE_FLOW_POLL_MS / 1000)}s`);
   }
 
-  if (JUDGE_FLOW_PRIORITY_BOOT) {
+  if (shouldUseJudgePriorityBoot()) {
     console.log("[Judge] Priority boot enabled — discovery feed, proposal seeding, and parent loop deferred");
     console.log("\n══ Judge-mode swarm is LIVE ══");
     console.log("Queue a canonical judge run to exercise the proof path.");

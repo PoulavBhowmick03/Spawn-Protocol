@@ -72,6 +72,12 @@ export const celoWalletClient = createWalletClient({
 // Tx receipt timeout — prevents indefinite hangs
 const TX_RECEIPT_TIMEOUT = 120_000; // 2 minutes
 
+function assertSuccessfulReceipt(receipt: any, label: string) {
+  if (receipt?.status === "reverted" || receipt?.status === 0 || receipt?.status === 0n) {
+    throw new Error(`${label} reverted onchain (${receipt?.transactionHash || "unknown tx"})`);
+  }
+}
+
 /**
  * Send a contract write tx with retry on transient errors.
  * Retries on: nonce issues, underpriced, rate limits, timeouts, connection errors.
@@ -85,6 +91,7 @@ export async function sendTxAndWait(params: any, retries = 5) {
         hash,
         timeout: TX_RECEIPT_TIMEOUT,
       });
+      assertSuccessfulReceipt(receipt, params?.functionName || "transaction");
       return receipt;
     } catch (err: any) {
       const msg = err?.details || err?.message || "";
@@ -120,6 +127,7 @@ export async function sendTxAndWaitCelo(params: any, retries = 5) {
         hash,
         timeout: TX_RECEIPT_TIMEOUT,
       });
+      assertSuccessfulReceipt(receipt, params?.functionName || "celo transaction");
       return receipt;
     } catch (err: any) {
       const msg = err?.details || err?.message || "";

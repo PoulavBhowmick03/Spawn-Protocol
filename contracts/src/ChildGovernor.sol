@@ -3,6 +3,10 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
+interface IGovernorVoteTarget {
+    function castVote(uint256 proposalId, uint8 support) external;
+}
+
 /// @title ChildGovernor — Implementation contract for cloned child agents
 /// @notice Each child agent gets a minimal proxy clone of this contract
 contract ChildGovernor is Initializable {
@@ -69,6 +73,10 @@ contract ChildGovernor is Initializable {
         require(proposalToVoteIndex[proposalId] == 0, "already voted");
         require(support <= 2, "invalid support");
         // maxGasPerVote enforced off-chain by agent (sets tx gas limit)
+
+        // Forward the vote to the configured governance contract so the child
+        // produces a real onchain vote rather than only a local receipt.
+        IGovernorVoteTarget(governance).castVote(proposalId, support);
 
         voteHistory.push(VoteRecord({
             proposalId: proposalId,

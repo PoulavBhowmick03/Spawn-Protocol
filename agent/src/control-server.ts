@@ -5,6 +5,7 @@ import { JUDGE_FLOW_CONTROL_PATH } from "./judge-flow.js";
 
 const BUDGET_STATE_PATH = join(process.cwd(), "..", "runtime_budget_state.json");
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
+const JUDGE_FAST_CHILD_INTERVAL_MS = Number(process.env.JUDGE_FAST_CHILD_INTERVAL_MS || 1500);
 
 type JudgeEvent = {
   action: string;
@@ -24,6 +25,7 @@ type JudgeFlowState = {
   runId: string | null;
   status: "idle" | "queued" | "running" | "failed" | "completed";
   governor: string;
+  childCycleIntervalMs?: number;
   proofChildLabel?: string;
   proofChildAgentId?: string;
   respawnedChildLabel?: string;
@@ -46,6 +48,7 @@ type JudgeFlowState = {
   respawnTxHash?: string;
   voteTxHash?: string;
   lineageSourceCid?: string;
+  requestedAt?: string;
   events: JudgeEvent[];
 };
 
@@ -164,6 +167,13 @@ function readBody(req: IncomingMessage): Promise<any> {
     });
     req.on("error", () => resolve({}));
   });
+}
+
+function normalizeJudgeChildCycleInterval(body: Record<string, unknown>): number | undefined {
+  const explicit = Number(body.childCycleIntervalMs);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  if (body.fastMode === true) return JUDGE_FAST_CHILD_INTERVAL_MS;
+  return undefined;
 }
 
 function extractDetailValue(details: string | undefined, key: string): string | undefined {
@@ -363,6 +373,7 @@ export function startControlServer() {
         runId,
         status: "queued",
         governor: body.governor || "uniswap",
+        childCycleIntervalMs: normalizeJudgeChildCycleInterval(body),
         forcedScore: Number(body.forcedScore || 15),
         requestedAt: new Date().toISOString(),
         startedAt: undefined,

@@ -46,8 +46,8 @@ const ADDRESSES = {
   mockGovernorLido:    "0x40BaE6F7d75C2600D724b4CC194e20E66F6386aC" as const,
   mockGovernorENS:     "0xb4e46E107fBD9B616b145aDB91A5FFe0f5a2c42C" as const,
   parentTreasury:      "0x9428B93993F06d3c5d647141d39e5ba54fb97a7b" as const,
-  spawnFactory:        "0xfEb8D54149b1a303Ab88135834220b85091D93A1" as const,
-  childImpl:           "0x9Cc050508B7d7DEEa1D2cD81CEA484EB3550Fcf6" as const,
+  spawnFactory:        "0x8Ccd24213E765d636605a1F820336cd9E1c8A9C8" as const,
+  childImpl:           "0xc82228e6C72b62a38b1946E29F981ad5D4641703" as const,
   timeLock:            "0xb91f936aCd6c9fcdd71C64b57e4e92bb6db7DD23" as const,
   ensRegistry:         "0x29170A43352D65329c462e6cDacc1c002419331D" as const,
 };
@@ -165,14 +165,14 @@ async function main() {
     { label: "ens-dao-conservative",     governor: ADDRESSES.mockGovernorENS,     dao: "ENS" },
   ];
 
-  const spawnedChildren: Array<{ id: bigint; childAddr: `0x${string}`; ensLabel: string; governor: `0x${string}`; dao: string; delegationRecord?: DelegationRecord }> = [];
+  const spawnedChildren: Array<{ id: bigint; childAddr: `0x${string}`; ensLabel: string; governor: `0x${string}`; dao: string; maxGasPerVote: bigint; delegationRecord?: DelegationRecord }> = [];
 
   for (const config of childConfigs) {
     const receipt = await sendTxAndWait({
       address: ADDRESSES.spawnFactory,
       abi: SpawnFactoryABI,
       functionName: "spawnChildWithOperator",
-      args: [config.label, config.governor, 0n, 300000n, account.address],
+      args: [config.label, config.governor, 0n, 2000000n, account.address],
     });
 
     const children = await publicClient.readContract({
@@ -185,7 +185,7 @@ async function main() {
     if (!child) continue;
 
     let delegationRecord: DelegationRecord | undefined;
-    spawnedChildren.push({ id: child.id, childAddr: child.childAddr, ensLabel: config.label, governor: config.governor, dao: config.dao, delegationRecord: undefined });
+    spawnedChildren.push({ id: child.id, childAddr: child.childAddr, ensLabel: config.label, governor: config.governor, dao: config.dao, maxGasPerVote: 2000000n, delegationRecord: undefined });
     console.log(`  ⊕ Spawned ${config.label}.spawn.eth`);
     console.log(`    Clone address: ${child.childAddr}`);
     console.log(`    Tx: ${tx(receipt.transactionHash)}`);
@@ -353,11 +353,11 @@ async function main() {
           viaLabel = " [via DelegationManager]";
         } catch (delegErr: any) {
           console.log(`    Delegation redemption failed (${delegErr?.message?.slice(0, 60)}) — falling back to direct castVote`);
-          const fallbackReceipt = await sendTxAndWait({ address: child.childAddr, abi: ChildGovernorABI, functionName: "castVote", args: [proposal.id, support, encryptedRationaleBytes] });
+          const fallbackReceipt = await sendTxAndWait({ address: child.childAddr, abi: ChildGovernorABI, functionName: "castVote", args: [proposal.id, support, encryptedRationaleBytes], gas: child.maxGasPerVote });
           voteHash = fallbackReceipt.transactionHash;
         }
       } else {
-        const fallbackReceipt = await sendTxAndWait({ address: child.childAddr, abi: ChildGovernorABI, functionName: "castVote", args: [proposal.id, support, encryptedRationaleBytes] });
+        const fallbackReceipt = await sendTxAndWait({ address: child.childAddr, abi: ChildGovernorABI, functionName: "castVote", args: [proposal.id, support, encryptedRationaleBytes], gas: child.maxGasPerVote });
         voteHash = fallbackReceipt.transactionHash;
       }
 
