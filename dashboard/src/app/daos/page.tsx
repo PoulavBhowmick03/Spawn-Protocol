@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { RegisterDAO } from "@/components/RegisterDAO";
 import { CurlSnippet } from "@/components/CurlSnippet";
+import { ProductIdeasPanel } from "@/components/ProductIdeasPanel";
 
 type RegisteredDAO = {
   id: string;
@@ -17,10 +18,17 @@ type RegisteredDAO = {
   status: "active" | "pending";
 };
 
+const PHILOSOPHY_CONFIG: Record<string, { label: string; color: string; border: string }> = {
+  conservative: { label: "CONSERVATIVE", color: "text-[#f5a623]", border: "border-[#f5a623]/30" },
+  progressive:  { label: "PROGRESSIVE",  color: "text-blue-400",  border: "border-blue-400/30" },
+  neutral:      { label: "NEUTRAL",       color: "text-[#4a4f5e]", border: "border-white/[0.08]" },
+};
+
 export default function DAOsPage() {
   const [daos, setDaos] = useState<RegisteredDAO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCurl, setShowCurl] = useState(false);
 
   async function load() {
     try {
@@ -38,111 +46,188 @@ export default function DAOsPage() {
 
   useEffect(() => { load(); }, []);
 
+  const activeCount  = daos.filter((d) => d.status === "active").length;
+  const pendingCount = daos.filter((d) => d.status === "pending").length;
+
   return (
-    <div className="p-4 md:p-8">
-      <div className="mb-8">
-        <div className="mb-2 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-mono font-bold tracking-tight text-cyan-400">
-              Connected DAOs
-            </h1>
-            <p className="mt-1 text-sm text-gray-500">
-              External DAOs mirrored into the Spawn simulation layer — agents vote in advisory mode
+    <div className="min-h-screen">
+      {/* Header */}
+      <div className="border-b border-white/[0.08] px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          <h1 className="font-mono text-sm font-bold text-[#f5f5f0] uppercase tracking-widest">
+            CONNECTED_DAOS
+          </h1>
+          <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">
+            ADVISORY_MODE — SPAWN MIRRORS PROPOSALS, DOES NOT CONTROL GOVERNANCE
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse" />
+          <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">LIVE</span>
+        </div>
+      </div>
+
+      {/* Stat strip */}
+      <div className="border-b border-white/[0.08] grid grid-cols-3">
+        <div className="border-r border-white/[0.08] px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">
+            TOTAL_DAOS
+          </div>
+          <div className="font-mono text-3xl font-bold text-[#f5f5f0] leading-none">
+            {loading ? "—" : daos.length}
+          </div>
+        </div>
+        <div className="border-r border-white/[0.08] px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">
+            ACTIVE
+          </div>
+          <div className="font-mono text-3xl font-bold text-[#00ff88] leading-none">
+            {loading ? "—" : activeCount}
+          </div>
+        </div>
+        <div className="px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">
+            PENDING
+          </div>
+          <div className="font-mono text-3xl font-bold text-[#f5a623] leading-none">
+            {loading ? "—" : pendingCount}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* Register form */}
+        <RegisterDAO onSuccess={load} />
+
+        {/* API curl snippet — collapsible */}
+        <div className="border border-white/[0.08] bg-[#0d0d14]">
+          <button
+            onClick={() => setShowCurl((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-white/[0.02] transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className="w-1.5 h-1.5 bg-[#4a4f5e]" />
+              <span className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                API_INTEGRATION — CURL_EXAMPLES
+              </span>
+            </div>
+            <span className="font-mono text-[10px] text-[#4a4f5e]">
+              {showCurl ? "▲ HIDE" : "▼ SHOW"}
+            </span>
+          </button>
+          {showCurl && (
+            <div className="border-t border-white/[0.08]">
+              <CurlSnippet />
+            </div>
+          )}
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="border border-[#ff3b3b]/30 bg-[#ff3b3b]/5 px-4 py-3">
+            <p className="text-[11px] font-mono text-[#ff3b3b] uppercase">ERROR: {error}</p>
+          </div>
+        )}
+
+        {/* Loading skeletons */}
+        {loading && (
+          <div className="space-y-2">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="border border-white/[0.08] bg-[#0d0d14] h-16 animate-pulse" />
+            ))}
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && !error && daos.length === 0 && (
+          <div className="border border-white/[0.08] bg-[#0d0d14] p-12 text-center">
+            <div className="mb-4 text-4xl text-[#4a4f5e]">◈</div>
+            <h2 className="font-mono text-sm text-[#4a4f5e] uppercase tracking-widest mb-2">
+              NO DAOS CONNECTED
+            </h2>
+            <p className="text-[11px] font-mono text-[#4a4f5e]/60">
+              USE THE FORM ABOVE TO CONNECT A TALLY OR SNAPSHOT DAO
             </p>
           </div>
-          <div className="text-2xl font-mono font-bold text-cyan-400">
-            {loading ? "…" : daos.length}
-          </div>
-        </div>
-      </div>
+        )}
 
-      <div className="mb-4">
-        <RegisterDAO />
-      </div>
-
-      <CurlSnippet />
-
-
-      {error && (
-        <div className="mb-6 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
-          <p className="text-sm font-mono text-red-400">{error}</p>
-        </div>
-      )}
-
-      {loading && (
-        <div className="space-y-3">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="rounded-lg border border-gray-800 bg-[#0d0d14] p-4 animate-pulse">
-              <div className="mb-2 h-4 w-1/4 rounded bg-gray-800" />
-              <div className="h-3 w-1/2 rounded bg-gray-800" />
+        {/* DAO table */}
+        {!loading && daos.length > 0 && (
+          <div className="border border-white/[0.08]">
+            {/* Table header */}
+            <div className="border-b border-white/[0.08] bg-[#0d0d14] grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-4 px-4 py-2">
+              {["DAO_NAME", "SOURCE", "PHILOSOPHY", "STATUS", "REGISTERED", ""].map((h) => (
+                <span key={h} className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                  {h}
+                </span>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
 
-      {!loading && !error && daos.length === 0 && (
-        <div className="rounded-lg border border-gray-800 bg-[#0d0d14] p-10 text-center">
-          <div className="mb-3 text-3xl">◈</div>
-          <h2 className="font-mono text-lg text-gray-400">No DAOs connected yet</h2>
-          <p className="mt-2 text-sm text-gray-600">
-            Use the form above to connect a Tally or Snapshot DAO.
-            Spawn will mirror their proposals and vote in advisory mode.
-          </p>
-        </div>
-      )}
+            {/* DAO rows */}
+            {daos.map((dao, i) => {
+              const phil = PHILOSOPHY_CONFIG[dao.philosophy] ?? PHILOSOPHY_CONFIG.neutral;
+              const isActive = dao.status === "active";
 
-      {!loading && daos.length > 0 && (
-        <div className="space-y-3">
-          {daos.map((dao) => (
-            <Link
-              key={dao.id}
-              href={`/dao/${dao.slug}`}
-              className="block rounded-lg border border-gray-800 bg-[#0d0d14] p-4 transition-colors hover:border-cyan-400/30 hover:bg-cyan-400/5"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="mb-1 flex flex-wrap items-center gap-2">
-                    <span className="font-mono font-semibold text-cyan-300">{dao.name}</span>
-                    <span className="rounded border border-gray-700 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                      {dao.source}
-                    </span>
-                    {dao.philosophy && dao.philosophy !== "neutral" && (
-                      <span
-                        className={`rounded border px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider ${
-                          dao.philosophy === "conservative"
-                            ? "border-amber-400/30 text-amber-400/80"
-                            : "border-purple-400/30 text-purple-400/80"
-                        }`}
-                      >
-                        {dao.philosophy}
-                      </span>
-                    )}
-                    <span
-                      className={`rounded border px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider ${
-                        dao.status === "active"
-                          ? "border-emerald-400/30 text-emerald-400/70"
-                          : "border-gray-700 text-gray-600"
-                      }`}
-                    >
-                      {dao.status}
-                    </span>
+              return (
+                <Link
+                  key={dao.id}
+                  href={`/dao/${dao.slug}`}
+                  className={`grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-4 items-center px-4 py-3 border-b border-white/[0.06] last:border-0 transition-colors hover:bg-white/[0.02] group ${
+                    i % 2 === 0 ? "bg-[#0a0a0f]" : "bg-[#0d0d14]"
+                  }`}
+                >
+                  {/* Name + ref */}
+                  <div className="min-w-0">
+                    <div className="font-mono text-[12px] font-semibold text-[#f5f5f0] group-hover:text-[#00ff88] transition-colors truncate">
+                      {dao.name}
+                    </div>
+                    <div className="font-mono text-[10px] text-[#4a4f5e] truncate mt-0.5">
+                      {dao.sourceRef}
+                    </div>
                   </div>
-                  <p className="truncate text-xs font-mono text-gray-500">
-                    {dao.source === "tally" ? "Tally org " : "Snapshot space "}
-                    <span className="text-gray-400">{dao.sourceRef}</span>
-                  </p>
-                </div>
-                <div className="shrink-0 text-right">
-                  <p className="text-[10px] font-mono text-gray-600">
-                    {new Date(dao.createdAt).toLocaleDateString()}
-                  </p>
-                  <p className="mt-0.5 text-xs font-mono text-cyan-500">View →</p>
-                </div>
-              </div>
-            </Link>
-          ))}
-        </div>
-      )}
+
+                  {/* Source */}
+                  <span className="font-mono text-[10px] uppercase border border-white/[0.08] text-[#4a4f5e] px-2 py-0.5 flex-shrink-0">
+                    {dao.source.toUpperCase()}
+                  </span>
+
+                  {/* Philosophy */}
+                  <span className={`font-mono text-[10px] uppercase border px-2 py-0.5 flex-shrink-0 ${phil.color} ${phil.border}`}>
+                    {phil.label}
+                  </span>
+
+                  {/* Status */}
+                  <span
+                    className={`font-mono text-[10px] uppercase border px-2 py-0.5 flex-shrink-0 ${
+                      isActive
+                        ? "text-[#00ff88] border-[#00ff88]/30 bg-[#00ff88]/5"
+                        : "text-[#f5a623] border-[#f5a623]/30 bg-[#f5a623]/5"
+                    }`}
+                  >
+                    {isActive ? "ACTIVE" : "PENDING"}
+                  </span>
+
+                  {/* Date */}
+                  <span className="font-mono text-[10px] text-[#4a4f5e] flex-shrink-0 tabular-nums">
+                    {new Date(dao.createdAt).toLocaleDateString("en-US", {
+                      month: "short",
+                      day: "2-digit",
+                      year: "numeric",
+                    }).toUpperCase()}
+                  </span>
+
+                  {/* Arrow */}
+                  <span className="font-mono text-[10px] text-[#4a4f5e] group-hover:text-[#00ff88] transition-colors flex-shrink-0">
+                    VIEW →
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
+        <ProductIdeasPanel />
+      </div>
     </div>
   );
 }

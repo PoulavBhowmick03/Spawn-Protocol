@@ -8,29 +8,29 @@ interface AlignmentBadgeProps {
 export function AlignmentBadge({ score, size = "md" }: AlignmentBadgeProps) {
   const value = Number(score);
 
-  const color =
+  const bgColor =
     value >= 70
-      ? "text-green-400 border-green-400 bg-green-400/10"
+      ? "bg-[#00ff88] text-black"
       : value >= 40
-      ? "text-yellow-400 border-yellow-400 bg-yellow-400/10"
-      : "text-red-400 border-red-400 bg-red-400/10";
+      ? "bg-[#f5a623] text-black"
+      : "bg-[#ff3b3b] text-white";
 
   const sizeClass =
     size === "sm"
-      ? "text-xs px-1.5 py-0.5"
+      ? "text-[10px] px-1.5 py-0.5"
       : size === "lg"
-      ? "text-lg px-3 py-1"
-      : "text-sm px-2 py-0.5";
+      ? "text-sm px-3 py-1"
+      : "text-[11px] px-2 py-0.5";
 
   const label =
-    value >= 70 ? "Aligned" : value >= 40 ? "Drifting" : "Misaligned";
+    value >= 70 ? "ALIGNED" : value >= 40 ? "DRIFTING" : "MISALIGNED";
 
   return (
     <span
-      className={`inline-flex items-center gap-1 border rounded font-mono font-bold ${color} ${sizeClass}`}
+      className={`inline-flex items-center gap-1.5 font-mono font-bold ${bgColor} ${sizeClass} uppercase tracking-wider`}
     >
       <span>{value}</span>
-      <span className="opacity-70 font-normal text-xs">{label}</span>
+      <span className="opacity-70 font-normal">{label}</span>
     </span>
   );
 }

@@ -39,7 +39,7 @@ export default function RootLayout({
       >
         <ChainProvider>
           <Navbar />
-          <main className="md:ml-56 pt-14 md:pt-0 min-h-screen grid-bg">{children}</main>
+          <main className="md:ml-[200px] pt-12 md:pt-0 min-h-screen grid-bg">{children}</main>
         </ChainProvider>
         <Analytics />
         <SpeedInsights />

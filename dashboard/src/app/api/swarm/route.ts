@@ -276,6 +276,18 @@ function summarizeVotingHistory(history: Array<{ support: number; timestamp: big
   };
 }
 
+function parseRegisteredDaoSlug(label: string): string | null {
+  const normalized = label.toLowerCase().replace(/-v\d+$/, "");
+  const match = normalized.match(/^ext-(.+)-(defi|publicgoods|conservative|data|contrarian|geopolitical|crypto|skeptic)$/);
+  return match?.[1] || null;
+}
+
+function getChildKind(label: string): "judge" | "registered-dao" | "shared" {
+  if (label.toLowerCase().startsWith("judge-")) return "judge";
+  if (label.toLowerCase().startsWith("ext-")) return "registered-dao";
+  return "shared";
+}
+
 async function enrichActiveChild(
   child: any,
   voteSummaries: ReturnType<typeof buildVoteSummaries>["byChild"],
@@ -334,6 +346,8 @@ async function enrichActiveChild(
     budget: child.budget.toString(),
     maxGasPerVote: child.maxGasPerVote.toString(),
     ensLabel: child.ensLabel,
+    kind: getChildKind(child.ensLabel),
+    targetDaoSlug: parseRegisteredDaoSlug(child.ensLabel),
     active: true,
     alignmentScore: String(alignmentScore),
     voteCount: String(voteCount),
@@ -359,6 +373,8 @@ function enrichTerminatedChild(
     budget: child.budget.toString(),
     maxGasPerVote: child.maxGasPerVote.toString(),
     ensLabel: child.ensLabel,
+    kind: getChildKind(child.ensLabel),
+    targetDaoSlug: parseRegisteredDaoSlug(child.ensLabel),
     active: child.active,
     alignmentScore: String(alignment?.score ?? 0),
     voteCount: String(voteStats.voteCount),

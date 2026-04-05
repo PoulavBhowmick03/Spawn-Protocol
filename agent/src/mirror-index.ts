@@ -41,6 +41,22 @@ function writeJsonFile(path: string, value: unknown) {
   writeFileSync(path, JSON.stringify(value, null, 2));
 }
 
+function mergeMirroredProposalRecord(
+  existing: MirroredProposalRecord,
+  incoming: MirroredProposalRecord
+): MirroredProposalRecord {
+  return {
+    ...existing,
+    ...incoming,
+    sourceDaoId: incoming.sourceDaoId ?? existing.sourceDaoId,
+    sourceDaoSlug: incoming.sourceDaoSlug ?? existing.sourceDaoSlug,
+    sourceDaoName: incoming.sourceDaoName ?? existing.sourceDaoName,
+    sourceRef: incoming.sourceRef ?? existing.sourceRef,
+    mirroredAt: existing.mirroredAt || incoming.mirroredAt,
+    transactionHash: incoming.transactionHash ?? existing.transactionHash,
+  };
+}
+
 export function readMirrorIndex(): MirrorIndexFile {
   const data = readJsonFile<MirrorIndexFile>(MIRRORED_PROPOSALS_PATH, EMPTY_MIRROR_INDEX);
   return {
@@ -85,18 +101,72 @@ export function hasMirroredProposal(externalProposalKey: string): boolean {
 
 export function recordMirroredProposal(record: MirroredProposalRecord): MirroredProposalRecord {
   const index = readMirrorIndex();
-  const existing = index.proposals.find(
+  const existingIndex = index.proposals.findIndex(
     (proposal) =>
       proposal.externalProposalKey === record.externalProposalKey ||
       (proposal.governorAddress.toLowerCase() === record.governorAddress.toLowerCase() &&
         proposal.proposalId === record.proposalId)
   );
 
-  if (existing) {
-    return existing;
+  if (existingIndex !== -1) {
+    const merged = mergeMirroredProposalRecord(index.proposals[existingIndex], record);
+    index.proposals[existingIndex] = merged;
+    writeMirrorIndex(index);
+    return merged;
   }
 
   index.proposals.push(record);
   writeMirrorIndex(index);
   return record;
+}
+
+export function syncMirroredProposalsForRegisteredDaos(
+  daos: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    source: "tally" | "snapshot";
+    sourceRef: string;
+  }>
+): number {
+  if (daos.length === 0) return 0;
+
+  const daosBySourceRef = new Map(
+    daos.map((dao) => [`${dao.source}:${dao.sourceRef}`, dao] as const)
+  );
+  const index = readMirrorIndex();
+  let changed = 0;
+
+  index.proposals = index.proposals.map((proposal) => {
+    if ((proposal.source !== "tally" && proposal.source !== "snapshot") || !proposal.sourceRef) {
+      return proposal;
+    }
+
+    const dao = daosBySourceRef.get(`${proposal.source}:${proposal.sourceRef}`);
+    if (!dao) return proposal;
+
+    const next = mergeMirroredProposalRecord(proposal, {
+      ...proposal,
+      sourceDaoId: dao.id,
+      sourceDaoSlug: dao.slug,
+      sourceDaoName: dao.name,
+    });
+
+    if (
+      next.sourceDaoId !== proposal.sourceDaoId ||
+      next.sourceDaoSlug !== proposal.sourceDaoSlug ||
+      next.sourceDaoName !== proposal.sourceDaoName
+    ) {
+      changed++;
+      return next;
+    }
+
+    return proposal;
+  });
+
+  if (changed > 0) {
+    writeMirrorIndex(index);
+  }
+
+  return changed;
 }

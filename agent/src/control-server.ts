@@ -13,6 +13,7 @@ import {
   normalizeSlug,
   type RegisteredDAO,
 } from "./dao-registry.js";
+import { syncMirroredProposalsForRegisteredDaos } from "./mirror-index.js";
 
 const BUDGET_STATE_PATH = join(process.cwd(), "..", "runtime_budget_state.json");
 const LOG_PATH = join(process.cwd(), "..", "agent_log.json");
@@ -530,6 +531,10 @@ export function startControlServer() {
         let created: RegisteredDAO;
         try {
           created = appendRegisteredDAO(dao);
+          const backfilled = syncMirroredProposalsForRegisteredDaos([created]);
+          console.log(
+            `[DAO] Registered ${created.slug} (${created.source}:${created.sourceRef}) | backfilled=${backfilled}`
+          );
         } catch (err: any) {
           return json(res, 409, { error: err?.message || "DAO registration conflict" });
         }

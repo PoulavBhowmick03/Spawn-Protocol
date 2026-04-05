@@ -54,40 +54,48 @@ interface AgentLog {
   };
 }
 
-const PHASE_COLORS: Record<string, string> = {
-  initialization: "text-purple-400 border-purple-400/30 bg-purple-400/5",
-  spawn:          "text-green-400 border-green-400/30 bg-green-400/5",
-  governance:     "text-blue-400 border-blue-400/30 bg-blue-400/5",
-  voting:         "text-cyan-400 border-cyan-400/30 bg-cyan-400/5",
-  alignment:      "text-yellow-400 border-yellow-400/30 bg-yellow-400/5",
-  termination:    "text-red-400 border-red-500/50 bg-red-400/5",
-  deployment:     "text-orange-400 border-orange-400/30 bg-orange-400/5",
-  judge:          "text-amber-300 border-amber-400/30 bg-amber-400/5",
+const PHASE_CONFIG: Record<string, { color: string; border: string; bg: string }> = {
+  initialization: { color: "text-blue-400",    border: "border-blue-400/30",    bg: "bg-blue-400/5" },
+  spawn:          { color: "text-[#00ff88]",   border: "border-[#00ff88]/30",   bg: "bg-[#00ff88]/5" },
+  governance:     { color: "text-[#f5f5f0]/70",border: "border-white/[0.15]",   bg: "bg-white/[0.03]" },
+  voting:         { color: "text-[#00ff88]",   border: "border-[#00ff88]/25",   bg: "bg-[#00ff88]/[0.03]" },
+  alignment:      { color: "text-[#f5a623]",   border: "border-[#f5a623]/30",   bg: "bg-[#f5a623]/5" },
+  termination:    { color: "text-[#ff3b3b]",   border: "border-[#ff3b3b]/30",   bg: "bg-[#ff3b3b]/5" },
+  deployment:     { color: "text-[#f5a623]",   border: "border-[#f5a623]/25",   bg: "bg-[#f5a623]/[0.03]" },
+  judge:          { color: "text-blue-300",     border: "border-blue-300/30",    bg: "bg-blue-300/5" },
 };
 
 const PHASE_ICONS: Record<string, string> = {
-  initialization: "◈",
-  spawn:          "⊕",
-  governance:     "◎",
-  voting:         "◉",
-  alignment:      "◐",
-  termination:    "⊗",
-  deployment:     "◆",
-  judge:          "◇",
+  initialization: "◈", spawn: "⊕", governance: "◎", voting: "◉",
+  alignment: "◐", termination: "⊗", deployment: "◆", judge: "◇",
 };
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 30;
 
 function formatTime(ts: string) {
-  return new Date(ts).toLocaleString(undefined, {
-    year: "numeric", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: true,
-  });
+  const d = new Date(ts);
+  const h = d.getHours().toString().padStart(2, "0");
+  const m = d.getMinutes().toString().padStart(2, "0");
+  const s = d.getSeconds().toString().padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+function formatDate(ts: string) {
+  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "2-digit" });
 }
 
 function shortHash(hash: string) {
-  return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
+  return `${hash.slice(0, 8)}…${hash.slice(-4)}`;
+}
+
+function PhaseChip({ phase }: { phase: string }) {
+  const cfg = PHASE_CONFIG[phase] ?? { color: "text-[#4a4f5e]", border: "border-white/[0.08]", bg: "bg-transparent" };
+  const icon = PHASE_ICONS[phase] ?? "◦";
+  return (
+    <span className={`font-mono text-[9px] uppercase border px-1.5 py-0.5 leading-none flex-shrink-0 ${cfg.color} ${cfg.border} ${cfg.bg}`}>
+      {icon} {phase}
+    </span>
+  );
 }
 
 export default function LogsPage() {
@@ -97,13 +105,13 @@ export default function LogsPage() {
   const [phase, setPhase] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<number | null>(null);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search).get("search");
     if (query) setSearch(query);
   }, []);
 
-  // Fetch log from server-side API route (handles IPFS + GitHub fallback)
   useEffect(() => {
     async function fetchLog() {
       try {
@@ -112,7 +120,6 @@ export default function LogsPage() {
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         setLog(data);
-        setError(null);
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -128,7 +135,6 @@ export default function LogsPage() {
 
   const filtered = useMemo(() => {
     let entries = log?.executionLogs ?? [];
-    // Sort latest first
     entries = [...entries].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
     if (phase !== "all") entries = entries.filter((e) => e.phase === phase);
     if (search.trim()) {
@@ -138,7 +144,6 @@ export default function LogsPage() {
           e.action.toLowerCase().includes(q) ||
           e.details.toLowerCase().includes(q) ||
           (e.ensLabel ?? "").toLowerCase().includes(q) ||
-          (e.chain ?? "").toLowerCase().includes(q) ||
           (e.judgeRunId ?? "").toLowerCase().includes(q)
       );
     }
@@ -148,295 +153,292 @@ export default function LogsPage() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  // Reset to page 1 on filter/search change
-  useEffect(() => { setPage(1); }, [phase, search]);
+  useEffect(() => { setPage(1); setExpanded(null); }, [phase, search]);
+
+  const ipfsCid = (log?.metrics as any)?.latestIPFSCid as string | undefined;
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="min-h-screen">
       {/* Header */}
-      <div className="mb-8 flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-mono font-bold text-orange-400 tracking-tight">
-            Execution Log
+      <div className="border-b border-white/[0.08] px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          <h1 className="font-mono text-sm font-bold text-[#f5f5f0] uppercase tracking-widest">
+            EXEC_LOG
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Autonomous execution evidence — Protocol Labs &quot;Agents With Receipts&quot; + &quot;Let the Agent Cook&quot;
-          </p>
+          {log && (
+            <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">
+              {log.agentName} V{log.version} — {log.executionLogs.length} ENTRIES
+            </span>
+          )}
         </div>
-        {log && (
-          <div className="sm:text-right text-xs font-mono text-gray-600">
-            <div className="text-gray-400">{log.agentName} v{log.version}</div>
-            <div className="mt-0.5">{log.executionLogs.length} total entries</div>
-          </div>
+        {ipfsCid && (
+          <a
+            href={`https://ipfs.filebase.io/ipfs/${ipfsCid}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 border border-[#4a4f5e]/40 px-3 py-1 hover:border-[#f5f5f0]/30 transition-colors"
+          >
+            <span className="w-1.5 h-1.5 bg-blue-400" />
+            <span className="font-mono text-[10px] text-[#4a4f5e] uppercase hover:text-[#f5f5f0] transition-colors">
+              IPFS: {ipfsCid.slice(0, 12)}… ↗
+            </span>
+          </a>
         )}
       </div>
 
-      {/* IPFS Verification Banner */}
-      {log && (log.metrics as any).latestIPFSCid && (
-        <div className="mb-4 flex flex-wrap gap-3">
-          <a
-            href={`https://ipfs.filebase.io/ipfs/${(log.metrics as any).latestIPFSCid}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 border border-purple-400/30 bg-purple-400/5 rounded-lg px-4 py-2.5 hover:bg-purple-400/10 transition-all"
-          >
-            <span className="text-purple-400 font-bold text-sm">IPFS</span>
-            <span className="text-xs font-mono text-purple-300">Execution log pinned to decentralized storage</span>
-            <span className="text-[10px] font-mono text-purple-400/60 bg-purple-400/10 px-2 py-0.5 rounded">{((log.metrics as any).latestIPFSCid as string).slice(0, 16)}...</span>
-            <span className="text-purple-400">↗</span>
-          </a>
-          <div className="flex items-center gap-2 border border-green-400/30 bg-green-400/5 rounded-lg px-4 py-2.5">
-            <span className="text-green-400 text-sm">Onchain</span>
-            <span className="text-xs font-mono text-green-300">CID stored as ENS text record — parent.spawn.eth</span>
-          </div>
-        </div>
-      )}
-
-      {/* Primary metrics */}
+      {/* Metric strip */}
       {log && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+        <div className="border-b border-white/[0.08] grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8">
           {[
-            { label: "Onchain Txs",        value: log.metrics.totalOnchainTransactions, color: "text-green-400" },
-            { label: "Votes Cast",          value: log.metrics.votesCast,                color: "text-cyan-400" },
-            { label: "Venice Calls",        value: log.metrics.reasoningCalls,           color: "text-yellow-400" },
-            { label: "Agents Registered",   value: log.metrics.agentsRegistered,         color: "text-purple-400" },
-          ].map((m) => (
-            <div key={m.label} className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14]">
-              <div className={`text-3xl font-mono font-bold ${m.color}`}>{m.value}</div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider mt-1">{m.label}</div>
+            { label: "ONCHAIN_TXS",    value: log.metrics.totalOnchainTransactions, color: "text-[#00ff88]" },
+            { label: "VOTES_CAST",     value: log.metrics.votesCast,                color: "text-[#00ff88]" },
+            { label: "VENICE_CALLS",   value: log.metrics.reasoningCalls,           color: "text-[#f5a623]" },
+            { label: "AGENTS_REG",     value: log.metrics.agentsRegistered,         color: "text-[#f5f5f0]" },
+            { label: "SPAWNED",        value: log.metrics.childrenSpawned,          color: "text-[#f5f5f0]" },
+            { label: "TERMINATED",     value: log.metrics.childrenTerminated,       color: "text-[#ff3b3b]" },
+            { label: "ALIGN_EVALS",    value: log.metrics.alignmentEvaluations,     color: "text-[#f5a623]" },
+            { label: "CONTRACTS",      value: log.metrics.contractsDeployed,        color: "text-[#4a4f5e]" },
+          ].map((m, i) => (
+            <div key={m.label} className={`px-4 py-3 ${i < 7 ? "border-r border-white/[0.08]" : ""}`}>
+              <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-0.5">
+                {m.label}
+              </div>
+              <div className={`font-mono text-xl font-bold leading-none ${m.color}`}>
+                {m.value}
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Secondary metrics */}
-      {log && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
-          {[
-            { label: "Chains",          value: log.metrics.chainsDeployed.join(", ") },
-            { label: "Contracts",       value: log.metrics.contractsDeployed },
-            { label: "Proposals",       value: log.metrics.proposalsCreated },
-            { label: "Spawned",         value: log.metrics.childrenSpawned },
-            { label: "Terminated",      value: log.metrics.childrenTerminated },
-            { label: "Align Evals",     value: log.metrics.alignmentEvaluations },
-            { label: "Reasoning",       value: `${log.metrics.reasoningProvider} / ${log.metrics.reasoningModel}` },
-          ].map((m) => (
-            <div key={m.label} className="border border-gray-800 rounded p-3 bg-[#0d0d14]">
-              <div className="text-xs text-gray-300 font-mono truncate">{String(m.value)}</div>
-              <div className="text-[10px] text-gray-600 uppercase tracking-wider mt-0.5">{m.label}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Note */}
+      {/* Note banner */}
       {log?.note && (
-        <div className="mb-6 border border-orange-500/20 bg-orange-500/5 rounded-lg px-4 py-3">
-          <p className="text-xs text-orange-300/70 font-mono">{log.note}</p>
+        <div className="border-b border-white/[0.08] px-4 py-2 bg-[#f5a623]/[0.03]">
+          <p className="font-mono text-[10px] text-[#f5a623]/70">{log.note}</p>
         </div>
       )}
 
-      {/* Filters + Search */}
+      {/* Filters + search */}
       {!loading && (
-        <div className="flex flex-col sm:flex-row gap-3 mb-6">
-          {/* Phase tabs */}
-          <div className="flex gap-2 flex-wrap">
+        <div className="border-b border-white/[0.08] px-4 py-2 flex flex-wrap items-center gap-3">
+          <div className="flex gap-0 flex-wrap">
             {phases.map((p) => (
               <button
                 key={p}
                 onClick={() => setPhase(p)}
-                className={`text-xs font-mono border rounded px-3 py-1 transition-all ${
+                className={`px-3 py-1 font-mono text-[10px] uppercase tracking-widest border-b-2 transition-colors ${
                   phase === p
-                    ? "border-orange-400/60 text-orange-300 bg-orange-400/10"
-                    : "border-gray-700 text-gray-500 hover:border-gray-600 hover:text-gray-400"
+                    ? "text-[#00ff88] border-[#00ff88]"
+                    : "text-[#4a4f5e] border-transparent hover:text-[#f5f5f0]"
                 }`}
               >
-                {p === "all" ? `All (${log?.executionLogs.length ?? 0})` : `${PHASE_ICONS[p] ?? "◦"} ${p}`}
+                {p === "all"
+                  ? `ALL (${log?.executionLogs.length ?? 0})`
+                  : `${PHASE_ICONS[p] ?? "◦"} ${p.toUpperCase()}`}
               </button>
             ))}
           </div>
-
-          {/* Search */}
-          <div className="relative sm:ml-auto">
-            <input
-              type="text"
-              placeholder="Search entries…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full sm:w-56 bg-[#0d0d14] border border-gray-700 rounded px-3 py-1 text-xs font-mono text-gray-300 placeholder-gray-600 focus:outline-none focus:border-orange-400/50"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 text-xs"
-              >✕</button>
+          <div className="ml-auto flex items-center gap-2">
+            {(search || phase !== "all") && (
+              <span className="font-mono text-[10px] text-[#4a4f5e]">
+                {filtered.length} RESULTS
+              </span>
             )}
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="SEARCH…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-48 border border-white/[0.08] bg-[#0a0a0f] px-3 py-1.5 text-[10px] font-mono text-[#f5f5f0] placeholder-[#4a4f5e] focus:border-[#00ff88]/40 focus:outline-none uppercase"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-[#4a4f5e] hover:text-[#f5f5f0]"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Result count */}
-      {!loading && (search || phase !== "all") && (
-        <div className="mb-3 text-xs font-mono text-gray-600">
-          {filtered.length} result{filtered.length !== 1 ? "s" : ""}
-          {phase !== "all" ? ` in phase "${phase}"` : ""}
-          {search ? ` matching "${search}"` : ""}
-        </div>
-      )}
-
+      {/* Error */}
       {error && (
-        <div className="mb-6 border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
-          <p className="text-red-400 text-sm font-mono">Failed to fetch log: {error}</p>
-          <p className="text-gray-500 text-xs mt-1">
-            Raw:{" "}
-            <a href="https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json"
-              className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer">
-              agent_log.json on GitHub
-            </a>
-          </p>
+        <div className="m-4 border border-[#ff3b3b]/30 bg-[#ff3b3b]/5 px-4 py-3">
+          <p className="font-mono text-[11px] text-[#ff3b3b] uppercase">ERROR: {error}</p>
+          <a
+            href="https://raw.githubusercontent.com/PoulavBhowmick03/Spawn-Protocol/main/agent_log.json"
+            className="font-mono text-[10px] text-[#4a4f5e] hover:text-[#f5f5f0] uppercase mt-1 block"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            RAW: AGENT_LOG.JSON ON GITHUB ↗
+          </a>
         </div>
       )}
 
-      {loading && (
-        <div className="space-y-3">
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14] animate-pulse">
-              <div className="h-3 bg-gray-800 rounded mb-2 w-1/4" />
-              <div className="h-4 bg-gray-800 rounded mb-2 w-3/4" />
-              <div className="h-3 bg-gray-800 rounded w-1/2" />
-            </div>
+      {/* Table */}
+      {loading ? (
+        <div className="p-4 space-y-1">
+          {[...Array(8)].map((_, i) => (
+            <div key={i} className="h-9 bg-white/[0.04] animate-pulse border border-white/[0.04]" />
           ))}
         </div>
-      )}
-
-      {/* Log entries */}
-      {!loading && paginated.length > 0 && (
+      ) : paginated.length === 0 ? (
+        <div className="m-4 border border-white/[0.08] p-12 text-center">
+          <div className="mb-3 text-3xl text-[#4a4f5e]">◉</div>
+          <h2 className="font-mono text-sm text-[#4a4f5e] uppercase tracking-widest">NO MATCHING ENTRIES</h2>
+          {(search || phase !== "all") && (
+            <button
+              onClick={() => { setSearch(""); setPhase("all"); }}
+              className="mt-4 font-mono text-[10px] text-[#00ff88] uppercase border border-[#00ff88]/30 px-4 py-1.5 hover:bg-[#00ff88]/10 transition-colors"
+            >
+              CLEAR_FILTERS
+            </button>
+          )}
+        </div>
+      ) : (
         <>
-          <div className="space-y-2">
+          {/* Column headers */}
+          <div className="border-b border-white/[0.08] bg-[#0a0a0f] grid grid-cols-[100px_80px_130px_1fr_80px_60px] gap-x-3 px-4 py-1.5">
+            {["TIMESTAMP", "PHASE", "ACTION", "DETAILS", "STATUS", "TX"].map((h) => (
+              <span key={h} className="font-mono text-[9px] text-[#4a4f5e] uppercase tracking-widest">
+                {h}
+              </span>
+            ))}
+          </div>
+
+          <div>
             {paginated.map((entry, i) => {
-              const phaseClass = PHASE_COLORS[entry.phase] ?? "text-gray-400 border-gray-700 bg-gray-900";
-              const icon = PHASE_ICONS[entry.phase] ?? "◦";
+              const isExpanded = expanded === i;
               const isTermination = entry.phase === "termination";
               const allHashes = [
                 ...(entry.txHash ? [entry.txHash] : []),
                 ...(entry.txHashes ?? []),
               ];
+              const rowBg = i % 2 === 0 ? "bg-[#0a0a0f]" : "bg-[#0d0d14]";
 
               return (
                 <div
                   key={i}
-                  className={`border rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all ${
-                    isTermination
-                      ? "border-red-500/40 border-l-4 border-l-red-500"
-                      : "border-gray-800"
-                  }`}
+                  className={`border-b border-white/[0.05] ${rowBg} ${isTermination ? "border-l-2 border-l-[#ff3b3b]" : ""}`}
                 >
-                  <div className="flex items-start gap-3">
-                    {/* Phase badge */}
-                    <span className={`text-xs border rounded px-1.5 py-0.5 font-mono shrink-0 mt-0.5 ${phaseClass}`}>
-                      {icon} {entry.phase}
+                  {/* Main row */}
+                  <div
+                    className="grid grid-cols-[100px_80px_130px_1fr_80px_60px] gap-x-3 px-4 py-2 items-center hover:bg-white/[0.02] cursor-pointer transition-colors"
+                    onClick={() => setExpanded(isExpanded ? null : i)}
+                  >
+                    {/* Timestamp */}
+                    <div className="min-w-0">
+                      <div className="font-mono text-[10px] text-[#f5f5f0]/50 tabular-nums">
+                        {formatTime(entry.timestamp)}
+                      </div>
+                      <div className="font-mono text-[9px] text-[#4a4f5e]">
+                        {formatDate(entry.timestamp)}
+                      </div>
+                    </div>
+
+                    {/* Phase chip */}
+                    <PhaseChip phase={entry.phase} />
+
+                    {/* Action */}
+                    <span className={`font-mono text-[10px] font-semibold truncate ${isTermination ? "text-[#ff3b3b]" : "text-[#f5f5f0]/80"}`}>
+                      {entry.action}
                     </span>
 
-                    <div className="flex-1 min-w-0">
-                      {/* Action + status + chain */}
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span className={`font-mono text-sm font-semibold ${isTermination ? "text-red-300" : "text-gray-200"}`}>
-                          {entry.action}
-                        </span>
-                        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                          entry.status === "success"
-                            ? "text-green-400 bg-green-400/10 border border-green-400/20"
-                            : "text-red-400 bg-red-400/10 border border-red-400/20"
-                        }`}>
-                          {entry.status}
-                        </span>
-                        {entry.chain && (
-                          <span className="text-[10px] font-mono text-gray-600 border border-gray-700 rounded px-1.5 py-0.5">
-                            {entry.chain}
-                          </span>
-                        )}
-                      </div>
+                    {/* Details */}
+                    <span className="font-mono text-[10px] text-[#4a4f5e] truncate">
+                      {entry.details}
+                    </span>
 
-                      {/* Details */}
-                      <p className="text-xs text-gray-400 leading-relaxed mb-2">
+                    {/* Status */}
+                    <span className={`font-mono text-[9px] uppercase border px-1.5 py-0.5 leading-none ${
+                      entry.status === "success"
+                        ? "text-[#00ff88] border-[#00ff88]/30"
+                        : "text-[#ff3b3b] border-[#ff3b3b]/30"
+                    }`}>
+                      {entry.status}
+                    </span>
+
+                    {/* TX indicator */}
+                    <span className="font-mono text-[9px] text-[#4a4f5e]">
+                      {allHashes.length > 0 ? `${allHashes.length} TX` : "—"}
+                    </span>
+                  </div>
+
+                  {/* Expanded detail */}
+                  {isExpanded && (
+                    <div className="px-4 pb-3 pt-1 border-t border-white/[0.05] bg-[#070710]">
+                      <p className="font-mono text-[10px] text-[#f5f5f0]/60 mb-2 leading-relaxed">
                         {entry.details}
                       </p>
 
                       {/* Tags */}
-                      <div className="flex flex-wrap gap-1.5 mb-1">
-                        {entry.reasoningProvider && (
-                          <span className="text-[10px] font-mono border border-yellow-400/30 text-yellow-400 bg-yellow-400/5 rounded px-1.5 py-0.5">
-                            Venice {entry.reasoningModel}
-                          </span>
-                        )}
-                        {entry.rationaleEncrypted && (
-                          <span className="text-[10px] font-mono border border-cyan-400/30 text-cyan-400 bg-cyan-400/5 rounded px-1.5 py-0.5">
-                            Lit encrypted
-                          </span>
-                        )}
+                      <div className="flex flex-wrap gap-1.5 mb-2">
                         {entry.decision && (
-                          <span className={`text-[10px] font-mono border rounded px-1.5 py-0.5 ${
-                            entry.decision === "FOR"
-                              ? "border-green-400/30 text-green-400 bg-green-400/5"
-                              : entry.decision === "AGAINST"
-                              ? "border-red-400/30 text-red-400 bg-red-400/5"
-                              : "border-yellow-400/30 text-yellow-400 bg-yellow-400/5"
+                          <span className={`font-mono text-[9px] uppercase border px-1.5 py-0.5 ${
+                            entry.decision === "FOR"     ? "text-[#00ff88] border-[#00ff88]/30" :
+                            entry.decision === "AGAINST" ? "text-[#ff3b3b] border-[#ff3b3b]/30" :
+                                                           "text-[#f5a623] border-[#f5a623]/30"
                           }`}>
                             {entry.decision}
                           </span>
                         )}
+                        {entry.ensLabel && (
+                          <span className="font-mono text-[9px] border border-white/[0.08] text-[#4a4f5e] px-1.5 py-0.5">
+                            {entry.ensLabel}.spawn.eth
+                          </span>
+                        )}
+                        {entry.reasoningModel && (
+                          <span className="font-mono text-[9px] border border-[#f5a623]/30 text-[#f5a623] px-1.5 py-0.5">
+                            VENICE {entry.reasoningModel}
+                          </span>
+                        )}
+                        {entry.rationaleEncrypted && (
+                          <span className="font-mono text-[9px] border border-blue-400/30 text-blue-400 px-1.5 py-0.5">
+                            LIT_ENCRYPTED
+                          </span>
+                        )}
                         {entry.erc8004AgentId !== undefined && (
-                          <span className="text-[10px] font-mono border border-purple-400/30 text-purple-400 bg-purple-400/5 rounded px-1.5 py-0.5">
+                          <span className="font-mono text-[9px] border border-white/[0.08] text-[#4a4f5e] px-1.5 py-0.5">
                             ERC-8004 #{entry.erc8004AgentId}
                           </span>
                         )}
                         {entry.judgeRunId && (
-                          <span className="text-[10px] font-mono border border-amber-400/30 text-amber-300 bg-amber-400/5 rounded px-1.5 py-0.5">
+                          <span className="font-mono text-[9px] border border-[#f5a623]/30 text-[#f5a623] px-1.5 py-0.5">
                             {entry.judgeRunId}
                           </span>
                         )}
-                        {entry.proofChild && (
-                          <span className="text-[10px] font-mono border border-amber-400/30 text-amber-300 bg-amber-400/5 rounded px-1.5 py-0.5">
-                            Proof child
-                          </span>
-                        )}
-                        {entry.proofStatus && (
-                          <span className="text-[10px] font-mono border border-gray-700 text-gray-300 bg-gray-800/30 rounded px-1.5 py-0.5">
-                            {entry.proofStatus}
-                          </span>
-                        )}
-                        {entry.ensLabel && (
-                          <span className="text-[10px] font-mono border border-blue-400/30 text-blue-400 bg-blue-400/5 rounded px-1.5 py-0.5">
-                            {entry.ensLabel}.spawn.eth
+                        {entry.chain && (
+                          <span className="font-mono text-[9px] border border-white/[0.08] text-[#4a4f5e] px-1.5 py-0.5">
+                            {entry.chain}
                           </span>
                         )}
                         {entry.validationRequestId && (
-                          <span className="text-[10px] font-mono border border-cyan-400/30 text-cyan-300 bg-cyan-400/5 rounded px-1.5 py-0.5">
-                            validation #{entry.validationRequestId}
+                          <span className="font-mono text-[9px] border border-white/[0.08] text-[#4a4f5e] px-1.5 py-0.5">
+                            VALIDATION #{entry.validationRequestId}
                           </span>
                         )}
                         {entry.respawnedChild && (
-                          <span className="text-[10px] font-mono border border-green-400/30 text-green-300 bg-green-400/5 rounded px-1.5 py-0.5">
-                            respawn {entry.respawnedChild}
-                          </span>
-                        )}
-                        {entry.lineageSourceCid && (
-                          <span className="text-[10px] font-mono border border-green-400/30 text-green-300 bg-green-400/5 rounded px-1.5 py-0.5">
-                            lineage {entry.lineageSourceCid.slice(0, 12)}…
+                          <span className="font-mono text-[9px] border border-[#00ff88]/30 text-[#00ff88] px-1.5 py-0.5">
+                            RESPAWN: {entry.respawnedChild}
                           </span>
                         )}
                       </div>
 
-                      {/* Tx hashes */}
+                      {/* TX hashes */}
                       {allHashes.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2">
                           {allHashes.map((hash) => (
                             <a
                               key={hash}
                               href={explorerTx(hash)}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-[10px] font-mono text-blue-400 hover:text-blue-300 transition-colors bg-blue-400/5 border border-blue-400/20 rounded px-1.5 py-0.5"
+                              className="font-mono text-[10px] text-[#4a4f5e] border border-white/[0.08] px-2 py-0.5 hover:text-[#f5f5f0] hover:border-white/20 transition-colors"
                             >
                               {shortHash(hash)} ↗
                             </a>
@@ -444,33 +446,20 @@ export default function LogsPage() {
                         </div>
                       )}
                       {entry.filecoinCid && (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <a
-                            href={storageViewerPath(entry.filecoinCid)}
-                            className="text-[10px] font-mono text-green-300 hover:text-green-200 transition-colors bg-green-400/5 border border-green-400/20 rounded px-1.5 py-0.5"
-                          >
-                            FIL {entry.filecoinCid.slice(0, 14)}… ↗
-                          </a>
-                        </div>
+                        <a
+                          href={storageViewerPath(entry.filecoinCid)}
+                          className="mt-1 inline-block font-mono text-[10px] text-[#4a4f5e] border border-white/[0.08] px-2 py-0.5 hover:text-[#f5f5f0] hover:border-white/20 transition-colors"
+                        >
+                          FIL: {entry.filecoinCid.slice(0, 20)}… ↗
+                        </a>
                       )}
-
                       {entry.verifyIn && (
-                        <p className="text-[10px] text-gray-600 font-mono mt-1.5">
-                          Verify: {entry.verifyIn}
+                        <p className="font-mono text-[9px] text-[#4a4f5e] mt-1.5">
+                          VERIFY: {entry.verifyIn}
                         </p>
                       )}
-
-                      {/* Mobile timestamp */}
-                      <span className="text-[10px] text-gray-600 font-mono sm:hidden block mt-2">
-                        {formatTime(entry.timestamp)}
-                      </span>
                     </div>
-
-                    {/* Timestamp */}
-                    <span className="text-[10px] text-gray-600 font-mono shrink-0 hidden sm:block whitespace-nowrap">
-                      {formatTime(entry.timestamp)}
-                    </span>
-                  </div>
+                  )}
                 </div>
               );
             })}
@@ -478,65 +467,30 @@ export default function LogsPage() {
 
           {/* Pagination */}
           {totalPages > 1 && (
-            <div className="mt-8 flex items-center justify-center gap-2 font-mono text-sm">
+            <div className="border-t border-white/[0.08] px-4 py-3 flex items-center gap-3">
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page === 1}
-                className="px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:border-orange-500 hover:text-orange-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="font-mono text-[10px] text-[#4a4f5e] uppercase border border-white/[0.08] px-3 py-1.5 hover:text-[#f5f5f0] hover:border-white/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                ← Prev
+                ← PREV
               </button>
-
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => {
-                const isNear = Math.abs(p - page) <= 2 || p === 1 || p === totalPages;
-                const ellipsisBefore = p === page - 3 && p > 2;
-                const ellipsisAfter  = p === page + 3 && p < totalPages - 1;
-                if (ellipsisBefore || ellipsisAfter) return <span key={p} className="text-gray-600 px-1">…</span>;
-                if (!isNear) return null;
-                return (
-                  <button
-                    key={p}
-                    onClick={() => setPage(p)}
-                    className={`w-8 h-8 rounded border transition-colors ${
-                      p === page
-                        ? "border-orange-500 bg-orange-500/10 text-orange-400"
-                        : "border-gray-700 text-gray-500 hover:border-orange-500/50 hover:text-orange-400"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                );
-              })}
-
+              <span className="font-mono text-[10px] text-[#4a4f5e]">
+                {page} / {totalPages}
+              </span>
               <button
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={page === totalPages}
-                className="px-3 py-1.5 rounded border border-gray-700 text-gray-400 hover:border-orange-500 hover:text-orange-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="font-mono text-[10px] text-[#4a4f5e] uppercase border border-white/[0.08] px-3 py-1.5 hover:text-[#f5f5f0] hover:border-white/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                Next →
+                NEXT →
               </button>
-
-              <span className="ml-4 text-gray-600 text-xs">
-                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+              <span className="ml-auto font-mono text-[10px] text-[#4a4f5e]">
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} OF {filtered.length}
               </span>
             </div>
           )}
         </>
-      )}
-
-      {!loading && !error && filtered.length === 0 && (
-        <div className="border border-gray-800 rounded-lg p-12 text-center">
-          <div className="text-4xl mb-4">◉</div>
-          <h2 className="font-mono text-lg text-gray-400">No matching entries</h2>
-          {(search || phase !== "all") && (
-            <button
-              onClick={() => { setSearch(""); setPhase("all"); }}
-              className="mt-4 text-xs font-mono text-orange-400 hover:text-orange-300 border border-orange-400/30 rounded px-3 py-1"
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
       )}
     </div>
   );

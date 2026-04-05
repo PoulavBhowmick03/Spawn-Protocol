@@ -13,7 +13,16 @@ interface RegistrationResult {
   status: string;
 }
 
-export function RegisterDAO() {
+interface RegisterDAOProps {
+  onSuccess?: () => void;
+}
+
+const inputClass =
+  "w-full border border-white/[0.08] bg-[#0a0a0f] px-3 py-2 text-[11px] font-mono text-[#f5f5f0] placeholder-[#4a4f5e] focus:border-[#00ff88]/40 focus:outline-none transition-colors";
+
+const labelClass = "block font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1.5";
+
+export function RegisterDAO({ onSuccess }: RegisterDAOProps) {
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState<Source>("snapshot");
   const [name, setName] = useState("");
@@ -67,6 +76,7 @@ export function RegisterDAO() {
       setDisplaySlug("");
       setPhilosophy("neutral");
       setContact("");
+      onSuccess?.();
     } catch (err: any) {
       setError(err?.message || "Network error");
     } finally {
@@ -75,86 +85,90 @@ export function RegisterDAO() {
   }
 
   return (
-    <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/5">
+    <div className="border border-white/[0.08] bg-[#0d0d14]">
+      {/* Toggle header */}
       <button
         onClick={() => { setOpen((v) => !v); setResult(null); setError(null); }}
-        className="flex w-full items-center justify-between px-4 py-3 text-left"
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.02] transition-colors"
       >
         <div className="flex items-center gap-3">
-          <span className="text-cyan-400">⊕</span>
-          <span className="text-sm font-mono font-semibold text-cyan-300">Connect a DAO</span>
-          <span className="text-xs font-mono text-gray-500">
-            Mirror external proposals into the Spawn simulation layer
+          <span className="w-1.5 h-1.5 bg-[#00ff88]" />
+          <span className="font-mono text-[11px] font-bold text-[#00ff88] uppercase tracking-widest">
+            CONNECT_DAO
+          </span>
+          <span className="font-mono text-[10px] text-[#4a4f5e]">
+            MIRROR EXTERNAL PROPOSALS INTO SPAWN SIMULATION LAYER
           </span>
         </div>
-        <span className="font-mono text-xs text-gray-600">{open ? "▲" : "▼"}</span>
+        <span className="font-mono text-[10px] text-[#4a4f5e]">{open ? "▲ COLLAPSE" : "▼ EXPAND"}</span>
       </button>
 
       {open && (
-        <div className="border-t border-cyan-400/10 px-4 pb-4 pt-3">
+        <div className="border-t border-white/[0.08] px-4 pb-4 pt-4">
+          {/* Success banner */}
           {result && (
-            <div className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-400/5 p-3">
-              <p className="text-sm font-mono text-emerald-300">
-                {result.status === "existing" ? "Already registered:" : "Registered:"}{" "}
+            <div className="mb-4 border border-[#00ff88]/30 bg-[#00ff88]/5 px-4 py-3">
+              <p className="font-mono text-[11px] text-[#00ff88] uppercase">
+                {result.status === "existing" ? "ALREADY_REGISTERED:" : "REGISTERED:"}{" "}
                 <span className="font-bold">{result.resolvedName}</span>
               </p>
               <Link
                 href={result.dashboardUrl}
-                className="mt-1 inline-block text-xs font-mono text-emerald-400 underline hover:text-emerald-300"
+                className="mt-1 inline-block font-mono text-[10px] text-[#00ff88]/70 hover:text-[#00ff88] uppercase tracking-wider transition-colors"
               >
-                View DAO dashboard →
+                VIEW_DAO_DASHBOARD →
               </Link>
             </div>
           )}
 
+          {/* Error banner */}
           {error && !result && (
-            <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3">
-              <p className="text-sm font-mono text-red-400">{error}</p>
+            <div className="mb-4 border border-[#ff3b3b]/30 bg-[#ff3b3b]/5 px-4 py-3">
+              <p className="font-mono text-[11px] text-[#ff3b3b] uppercase">ERROR: {error}</p>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {/* DAO Name */}
               <div>
-                <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                  DAO Name
-                </label>
+                <label className={labelClass}>DAO_NAME</label>
                 <input
                   type="text"
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. Uniswap"
-                  className="w-full rounded border border-gray-700 bg-[#0d0d14] px-3 py-1.5 text-sm font-mono text-gray-200 placeholder-gray-600 focus:border-cyan-400/50 focus:outline-none"
+                  className={inputClass}
                 />
               </div>
 
+              {/* Source toggle */}
               <div>
-                <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                  Source
-                </label>
-                <div className="flex gap-2">
+                <label className={labelClass}>SOURCE_TYPE</label>
+                <div className="flex gap-0">
                   {(["snapshot", "tally"] as Source[]).map((s) => (
                     <button
                       key={s}
                       type="button"
                       onClick={() => { setSource(s); setSourceRef(""); }}
-                      className={`flex-1 rounded border px-3 py-1.5 text-xs font-mono transition-colors ${
+                      className={`flex-1 border py-2 text-[10px] font-mono uppercase tracking-widest transition-colors ${
                         source === s
-                          ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-300"
-                          : "border-gray-700 bg-[#0d0d14] text-gray-500 hover:border-gray-600"
-                      }`}
+                          ? "border-[#00ff88]/50 bg-[#00ff88]/10 text-[#00ff88]"
+                          : "border-white/[0.08] bg-[#0a0a0f] text-[#4a4f5e] hover:text-[#f5f5f0]"
+                      } first:border-r-0`}
                     >
-                      {s === "tally" ? "Tally" : "Snapshot"}
+                      {s === "tally" ? "TALLY" : "SNAPSHOT"}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
 
+            {/* Source ref */}
             <div>
-              <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                {source === "tally" ? "Tally URL or Slug" : "Snapshot Space"}
+              <label className={labelClass}>
+                {source === "tally" ? "TALLY_URL_OR_SLUG" : "SNAPSHOT_SPACE"}
               </label>
               <input
                 type="text"
@@ -162,63 +176,60 @@ export function RegisterDAO() {
                 value={sourceRef}
                 onChange={(e) => setSourceRef(e.target.value)}
                 placeholder={placeholder}
-                className="w-full rounded border border-gray-700 bg-[#0d0d14] px-3 py-1.5 text-sm font-mono text-gray-200 placeholder-gray-600 focus:border-cyan-400/50 focus:outline-none"
+                className={inputClass}
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {/* Philosophy */}
               <div>
-                <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                  Philosophy
-                </label>
+                <label className={labelClass}>PHILOSOPHY</label>
                 <select
                   value={philosophy}
                   onChange={(e) => setPhilosophy(e.target.value as Philosophy)}
-                  className="w-full rounded border border-gray-700 bg-[#0d0d14] px-3 py-1.5 text-sm font-mono text-gray-200 focus:border-cyan-400/50 focus:outline-none"
+                  className={inputClass}
                 >
-                  <option value="neutral">Neutral</option>
-                  <option value="conservative">Conservative</option>
-                  <option value="progressive">Progressive</option>
+                  <option value="neutral">NEUTRAL</option>
+                  <option value="conservative">CONSERVATIVE</option>
+                  <option value="progressive">PROGRESSIVE</option>
                 </select>
               </div>
 
+              {/* Display slug */}
               <div>
-                <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                  Display Slug (optional)
-                </label>
+                <label className={labelClass}>DISPLAY_SLUG (OPTIONAL)</label>
                 <input
                   type="text"
                   value={displaySlug}
                   onChange={(e) => setDisplaySlug(e.target.value)}
                   placeholder="auto-generated"
-                  className="w-full rounded border border-gray-700 bg-[#0d0d14] px-3 py-1.5 text-sm font-mono text-gray-200 placeholder-gray-600 focus:border-cyan-400/50 focus:outline-none"
+                  className={inputClass}
                 />
               </div>
 
+              {/* Contact */}
               <div>
-                <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-gray-500">
-                  Contact (optional)
-                </label>
+                <label className={labelClass}>CONTACT (OPTIONAL)</label>
                 <input
                   type="email"
                   value={contact}
                   onChange={(e) => setContact(e.target.value)}
                   placeholder="team@dao.xyz"
-                  className="w-full rounded border border-gray-700 bg-[#0d0d14] px-3 py-1.5 text-sm font-mono text-gray-200 placeholder-gray-600 focus:border-cyan-400/50 focus:outline-none"
+                  className={inputClass}
                 />
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-1">
-              <p className="text-[10px] font-mono text-gray-600">
-                Advisory mode only — Spawn mirrors proposals and agent votes; it does not control your DAO
+            <div className="flex items-center justify-between pt-1 border-t border-white/[0.06]">
+              <p className="font-mono text-[10px] text-[#4a4f5e]">
+                ADVISORY_MODE — SPAWN MIRRORS PROPOSALS AND AGENT VOTES; IT DOES NOT CONTROL YOUR DAO
               </p>
               <button
                 type="submit"
                 disabled={submitting}
-                className="rounded border border-cyan-400/40 bg-cyan-400/10 px-4 py-1.5 text-sm font-mono text-cyan-300 transition-colors hover:bg-cyan-400/20 disabled:opacity-40"
+                className="border border-[#00ff88]/40 bg-[#00ff88]/10 px-6 py-2 font-mono text-[10px] text-[#00ff88] uppercase tracking-widest hover:bg-[#00ff88]/20 hover:border-[#00ff88]/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ml-4"
               >
-                {submitting ? "Registering…" : "Register"}
+                {submitting ? "REGISTERING…" : "REGISTER_DAO →"}
               </button>
             </div>
           </form>

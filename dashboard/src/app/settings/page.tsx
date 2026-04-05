@@ -47,212 +47,226 @@ export default function SettingsPage() {
   }, []);
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-mono font-bold text-yellow-400 tracking-tight">
-          Owner Panel
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          ParentTreasury configuration and governance values
-        </p>
+    <div className="min-h-screen">
+      {/* Header */}
+      <div className="border-b border-white/[0.08] px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <h1 className="font-mono text-sm font-bold text-[#f5f5f0] uppercase tracking-widest">SYSTEM_OS</h1>
+          <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">
+            CONFIGURATION_LAYER_01 // READ_ONLY
+          </span>
+        </div>
+        {emergencyPause && (
+          <span className="font-mono text-[10px] text-[#ff3b3b] uppercase tracking-wider border border-[#ff3b3b]/30 px-2 py-1">
+            ⚠ EMERGENCY_PAUSE_ACTIVE
+          </span>
+        )}
       </div>
 
-      {error && (
-        <div className="mb-6 border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
-          <p className="text-red-400 text-sm font-mono">Error: {error}</p>
-        </div>
-      )}
-
-      {emergencyPause && (
-        <div className="mb-6 border border-red-500/60 bg-red-500/20 rounded-lg px-4 py-3">
-          <p className="text-red-300 font-mono font-bold">EMERGENCY PAUSE ACTIVE — all agent operations suspended</p>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Governance Values */}
-        <div className="border border-gray-800 rounded-lg p-6 bg-[#0d0d14] lg:col-span-2">
-          <h2 className="text-xs font-mono text-gray-600 uppercase tracking-widest mb-4">
-            Governance Values
-          </h2>
-          {loading ? (
-            <div className="h-20 bg-gray-800 rounded animate-pulse" />
-          ) : governanceValues ? (
-            <div className="bg-[#0a0a0f] border border-yellow-400/20 rounded-lg p-4">
-              <p className="text-yellow-100 text-sm leading-relaxed whitespace-pre-wrap font-mono">
-                {governanceValues}
-              </p>
-            </div>
-          ) : (
-            <p className="text-gray-600 italic font-mono text-sm">
-              No governance values set on ParentTreasury
-            </p>
-          )}
-          <p className="text-xs text-gray-700 mt-3">
-            These values are stored onchain and guide all child agent voting decisions.
-            The parent agent reads this and uses Venice AI to evaluate child alignment.
-          </p>
-        </div>
-
-        {/* Treasury Config */}
-        <div className="border border-gray-800 rounded-lg p-6 bg-[#0d0d14]">
-          <h2 className="text-xs font-mono text-gray-600 uppercase tracking-widest mb-4">
-            Treasury Configuration
-          </h2>
-          {loading ? (
-            <div className="space-y-3">
-              {[...Array(4)].map((_, i) => (
-                <div key={i} className="h-8 bg-gray-800 rounded animate-pulse" />
-              ))}
-            </div>
-          ) : (
-            <dl className="space-y-3">
-              <div className="flex justify-between items-center py-2 border-b border-gray-800">
-                <dt className="text-xs text-gray-500 uppercase tracking-wider">Max Children</dt>
-                <dd className="font-mono text-white">{maxChildren.toString()}</dd>
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-gray-800">
-                <dt className="text-xs text-gray-500 uppercase tracking-wider">Max Budget / Child</dt>
-                <dd className="font-mono text-white">
-                  {(Number(maxBudgetPerChild) / 1e18).toFixed(4)} ETH
-                </dd>
-              </div>
-              <div className="flex justify-between items-center py-2 border-b border-gray-800">
-                <dt className="text-xs text-gray-500 uppercase tracking-wider">Emergency Pause</dt>
-                <dd className={`font-mono font-bold ${emergencyPause ? "text-red-400" : "text-green-400"}`}>
-                  {emergencyPause ? "PAUSED" : "Operational"}
-                </dd>
-              </div>
-              <div className="flex justify-between items-center py-2">
-                <dt className="text-xs text-gray-500 uppercase tracking-wider">Parent Agent</dt>
-                <dd>
-                  {parentAgent ? (
-                    <a
-                      href={explorerAddress(parentAgent)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-xs text-blue-400 hover:text-blue-300"
-                    >
-                      {formatAddress(parentAgent)} ↗
-                    </a>
-                  ) : (
-                    <span className="font-mono text-xs text-gray-600">Not set</span>
-                  )}
-                </dd>
-              </div>
-            </dl>
-          )}
-        </div>
-
-        {/* Contract Addresses */}
-        <div className="border border-gray-800 rounded-lg p-6 bg-[#0d0d14]">
-          <h2 className="text-xs font-mono text-gray-600 uppercase tracking-widest mb-4">
-            Deployed Contracts
-          </h2>
-          <dl className="space-y-3">
-            {Object.entries(CONTRACTS).map(([name, contract]) => (
-              <div key={name} className="py-2 border-b border-gray-800 last:border-0">
-                <dt className="text-xs text-gray-500 uppercase tracking-wider mb-1">{name}</dt>
-                <dd>
-                  <a
-                    href={explorerAddress(contract.address)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-mono text-xs text-blue-400 hover:text-blue-300 break-all"
-                  >
-                    {contract.address} ↗
-                  </a>
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-
-        {/* ENS Registry — Live Subdomains */}
-        {ensSubdomains.length > 0 && (
-          <div className="border border-teal-400/20 rounded-lg p-6 bg-teal-400/5 lg:col-span-2">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xs font-mono text-teal-400 uppercase tracking-widest">
-                ENS Registry — Live Subdomains ({ensSubdomains.length})
-              </h2>
-              <a
-                href={`https://sepolia.basescan.org/address/${ENS_REGISTRY}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[10px] font-mono text-teal-400/60 hover:text-teal-400 transition-colors"
-              >
-                SpawnENSRegistry {ENS_REGISTRY.slice(0, 6)}…{ENS_REGISTRY.slice(-4)} ↗
-              </a>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {ensSubdomains.map((sub) => (
-                <div key={sub.label} className="border border-teal-400/10 bg-[#0d0d14] rounded-md px-3 py-2 flex flex-col gap-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-mono text-teal-300 truncate">{sub.label}.spawn.eth</span>
-                    {sub.agentType && (
-                      <span className="text-[10px] font-mono text-teal-400/60 border border-teal-400/20 rounded px-1.5 py-0.5 shrink-0">
-                        {sub.agentType}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] font-mono text-gray-600 truncate">
-                    addr:{" "}
-                    <a
-                      href={`https://sepolia.basescan.org/address/${sub.address}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-gray-500 hover:text-gray-300"
-                    >
-                      {sub.address.slice(0, 6)}…{sub.address.slice(-4)}
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
+      <div className="p-4 md:p-6">
+        {error && (
+          <div className="mb-4 border border-[#ff3b3b]/30 bg-[#ff3b3b]/5 px-4 py-3">
+            <p className="text-[#ff3b3b] text-[11px] font-mono uppercase">ERROR: {error}</p>
           </div>
         )}
 
-        {/* Write Actions Notice */}
-        <div className="border border-yellow-400/20 rounded-lg p-6 bg-yellow-400/5 lg:col-span-2">
-          <h2 className="text-xs font-mono text-yellow-400 uppercase tracking-widest mb-3">
-            Write Transactions
-          </h2>
-          <p className="text-sm text-gray-400 mb-4">
-            To update governance values or spawn new children, connect a wallet and interact
-            directly with the contracts on Base Sepolia. The dashboard is read-only.
-          </p>
-          <div className="flex flex-wrap gap-3">
-            <a
-              href={`https://sepolia.basescan.org/address/${CONTRACTS.ParentTreasury.address}#writeContract`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2 border border-yellow-400/30 rounded-lg text-sm font-mono text-yellow-400 hover:bg-yellow-400/10 transition-colors"
-            >
-              Set Governance Values ↗
-            </a>
-            <a
-              href={`https://sepolia.basescan.org/address/${CONTRACTS.SpawnFactory.address}#writeContract`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2 border border-green-400/30 rounded-lg text-sm font-mono text-green-400 hover:bg-green-400/10 transition-colors"
-            >
-              Spawn Child ↗
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Governance Values */}
+          <div className="border border-white/[0.08] bg-[#0d0d14] p-5 lg:col-span-2">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-2 h-2 bg-[#00ff88]" />
+              <h2 className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                GOVERNANCE_VALUES
+              </h2>
+            </div>
+            {loading ? (
+              <div className="h-16 bg-white/[0.05] animate-pulse" />
+            ) : governanceValues ? (
+              <div className="bg-[#050508] border border-white/[0.08] p-4">
+                <p className="text-[#f5f5f0]/80 text-[11px] leading-relaxed whitespace-pre-wrap font-mono">
+                  {governanceValues}
+                </p>
+              </div>
+            ) : (
+              <p className="text-[#4a4f5e] font-mono text-[11px] uppercase">
+                NO GOVERNANCE VALUES SET ON PARENT_TREASURY
+              </p>
+            )}
+            <p className="font-mono text-[10px] text-[#4a4f5e] mt-3">
+              STORED ONCHAIN — GUIDES ALL CHILD AGENT VOTING DECISIONS
+            </p>
+          </div>
+
+          {/* Treasury Config */}
+          <div className="border border-white/[0.08] bg-[#0d0d14] p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-2 h-2 bg-[#f5a623]" />
+              <h2 className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                TREASURY_CONFIG
+              </h2>
+            </div>
+            {loading ? (
+              <div className="space-y-2">
+                {[...Array(4)].map((_, i) => (
+                  <div key={i} className="h-8 bg-white/[0.05] animate-pulse" />
+                ))}
+              </div>
+            ) : (
+              <dl className="space-y-0">
+                <div className="flex justify-between items-center py-2 border-b border-white/[0.08]">
+                  <dt className="font-mono text-[10px] text-[#4a4f5e] uppercase">MAX_CHILDREN</dt>
+                  <dd className="font-mono text-[11px] text-[#f5f5f0]">{maxChildren.toString()}</dd>
+                </div>
+                <div className="flex justify-between items-center py-2 border-b border-white/[0.08]">
+                  <dt className="font-mono text-[10px] text-[#4a4f5e] uppercase">MAX_BUDGET_PER_CHILD</dt>
+                  <dd className="font-mono text-[11px] text-[#f5f5f0]">
+                    {(Number(maxBudgetPerChild) / 1e18).toFixed(4)} ETH
+                  </dd>
+                </div>
+                <div className="flex justify-between items-center py-2 border-b border-white/[0.08]">
+                  <dt className="font-mono text-[10px] text-[#4a4f5e] uppercase">EMERGENCY_PAUSE</dt>
+                  <dd className={`font-mono text-[11px] font-bold ${emergencyPause ? "text-[#ff3b3b]" : "text-[#00ff88]"}`}>
+                    {emergencyPause ? "PAUSED" : "OPERATIONAL"}
+                  </dd>
+                </div>
+                <div className="flex justify-between items-center py-2">
+                  <dt className="font-mono text-[10px] text-[#4a4f5e] uppercase">PARENT_AGENT</dt>
+                  <dd>
+                    {parentAgent ? (
+                      <a
+                        href={explorerAddress(parentAgent)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-[11px] text-[#4a4f5e] hover:text-[#f5f5f0] transition-colors"
+                      >
+                        {formatAddress(parentAgent)} ↗
+                      </a>
+                    ) : (
+                      <span className="font-mono text-[11px] text-[#4a4f5e]">NOT_SET</span>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+            )}
+          </div>
+
+          {/* Contract Addresses */}
+          <div className="border border-white/[0.08] bg-[#0d0d14] p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-2 h-2 bg-[#4a4f5e]" />
+              <h2 className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                CONTRACT_ADDRESSES
+              </h2>
+            </div>
+            <dl className="space-y-0">
+              {Object.entries(CONTRACTS).map(([name, contract]) => (
+                <div key={name} className="py-2 border-b border-white/[0.08] last:border-0">
+                  <dt className="font-mono text-[10px] text-[#4a4f5e] uppercase mb-0.5">{name}</dt>
+                  <dd>
+                    <a
+                      href={explorerAddress(contract.address)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-[11px] text-[#f5f5f0]/60 hover:text-[#f5f5f0] break-all transition-colors"
+                    >
+                      {contract.address} ↗
+                    </a>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          {/* ENS Registry — Live Subdomains */}
+          {ensSubdomains.length > 0 && (
+            <div className="border border-white/[0.08] bg-[#0d0d14] p-5 lg:col-span-2">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-[#4a4f5e]" />
+                  <h2 className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                    ENS_REGISTRY — LIVE_SUBDOMAINS ({ensSubdomains.length})
+                  </h2>
+                </div>
+                <a
+                  href={`https://sepolia.basescan.org/address/${ENS_REGISTRY}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[10px] text-[#4a4f5e] hover:text-[#f5f5f0] transition-colors"
+                >
+                  {ENS_REGISTRY.slice(0, 6)}…{ENS_REGISTRY.slice(-4)} ↗
+                </a>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {ensSubdomains.map((sub) => (
+                  <div key={sub.label} className="border border-white/[0.08] bg-[#0a0a0f] px-3 py-2 flex flex-col gap-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[11px] text-[#00ff88] truncate">{sub.label}.spawn.eth</span>
+                      {sub.agentType && (
+                        <span className="font-mono text-[9px] text-[#4a4f5e] border border-white/[0.08] px-1.5 py-0.5 shrink-0 uppercase">
+                          {sub.agentType}
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-mono text-[10px] text-[#4a4f5e] truncate">
+                      <a
+                        href={`https://sepolia.basescan.org/address/${sub.address}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:text-[#f5f5f0] transition-colors"
+                      >
+                        {sub.address.slice(0, 6)}…{sub.address.slice(-4)} ↗
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Write Actions */}
+          <div className="border border-white/[0.08] bg-[#0d0d14] p-5 lg:col-span-2">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-2 h-2 bg-[#f5a623]" />
+              <h2 className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
+                WRITE_TRANSACTIONS
+              </h2>
+            </div>
+            <p className="font-mono text-[11px] text-[#4a4f5e] mb-4">
+              CONNECT WALLET AND INTERACT DIRECTLY WITH CONTRACTS ON BASE_SEPOLIA. DASHBOARD IS READ-ONLY.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <a
+                href={`https://sepolia.basescan.org/address/${CONTRACTS.ParentTreasury.address}#writeContract`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-[#f5a623]/30 text-[11px] font-mono text-[#f5a623] uppercase hover:bg-[#f5a623]/10 transition-colors"
+              >
+                SET_GOVERNANCE_VALUES ↗
+              </a>
+              <a
+                href={`https://sepolia.basescan.org/address/${CONTRACTS.SpawnFactory.address}#writeContract`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-[#00ff88]/30 text-[11px] font-mono text-[#00ff88] uppercase hover:bg-[#00ff88]/10 transition-colors"
+              >
+                SPAWN_CHILD ↗
             </a>
             <a
               href={`https://sepolia.basescan.org/address/${CONTRACTS.MockGovernor.address}#writeContract`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2 border border-blue-400/30 rounded-lg text-sm font-mono text-blue-400 hover:bg-blue-400/10 transition-colors"
+              className="inline-flex items-center gap-2 px-4 py-2 border border-white/[0.08] text-[11px] font-mono text-[#4a4f5e] uppercase hover:text-[#f5f5f0] hover:border-white/20 transition-colors"
             >
-              Create Proposal ↗
+              CREATE_PROPOSAL ↗
             </a>
           </div>
         </div>
       </div>
 
-      <div className="fixed bottom-6 right-6 flex items-center gap-2 bg-[#0d0d14] border border-gray-800 rounded-full px-3 py-1.5">
-        <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-ping" style={{ animationDuration: "2s" }} />
-        <span className="text-xs font-mono text-gray-500">Live — 15s</span>
+      <div className="fixed bottom-4 right-4 flex items-center gap-2 border border-white/[0.08] bg-[#0d0d14] px-3 py-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-[#f5a623] animate-pulse" />
+        <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">LIVE — 15S</span>
+      </div>
       </div>
     </div>
   );

@@ -1,322 +1,513 @@
 "use client";
 
-import { useSwarmData } from "@/hooks/useSwarmData";
-import { formatAddress, governorName } from "@/lib/contracts";
 import Link from "next/link";
+import { DashboardHeader, DashboardPageFrame, DashboardPanel, DashboardStatStrip } from "@/components/DashboardChrome";
+import { useSwarmData } from "@/hooks/useSwarmData";
+import { formatAddress, governorName, ensName } from "@/lib/contracts";
 
-const CANVAS_W = 960;
-const CANVAS_H = 600;
+const CANVAS_W = 1120;
+const CANVAS_H = 620;
 const PARENT_X = CANVAS_W / 2;
-const PARENT_Y = 110;
+const PARENT_Y = CANVAS_H / 2;
 const PARENT_R = 52;
-const CHILD_R = 38;
-const CHILD_Y = 400;
+const CHILD_R = 34;
+const SAFE_SIDE_PADDING = 112;
+const SAFE_TOP_PADDING = 112;
+const SAFE_BOTTOM_PADDING = 104;
 
-function alignColor(score: number, active: boolean) {
-  if (!active) return { fill: "#0f0f1a", stroke: "#2d3748", text: "#4b5563", glow: "none" };
-  if (score >= 70) return { fill: "#071a10", stroke: "#22c55e", text: "#4ade80", glow: "url(#glow-green)" };
-  if (score >= 40) return { fill: "#1c1207", stroke: "#eab308", text: "#facc15", glow: "url(#glow-yellow)" };
-  return { fill: "#1a0808", stroke: "#ef4444", text: "#f87171", glow: "url(#glow-red)" };
+function octagonPoints(cx: number, cy: number, r: number): string {
+  return Array.from({ length: 8 }, (_, i) => {
+    const angle = (Math.PI / 180) * (22.5 + i * 45);
+    return `${(cx + r * Math.cos(angle)).toFixed(1)},${(cy + r * Math.sin(angle)).toFixed(1)}`;
+  }).join(" ");
 }
 
-// Cubic bezier path from parent bottom to child top
-function bezierPath(x1: number, y1: number, x2: number, y2: number) {
-  const midY = (y1 + y2) / 2;
-  return `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+function nodeConfig(score: number, active: boolean, isVoting: boolean) {
+  if (!active) {
+    return {
+      stroke: "#4a4f5e",
+      fill: "#0a0a0f",
+      text: "#4a4f5e",
+      line: "#4a4f5e",
+      lineOpacity: 0.15,
+      strokeW: 1,
+    };
+  }
+  if (isVoting) {
+    return {
+      stroke: "#60a5fa",
+      fill: "#04090f",
+      text: "#60a5fa",
+      line: "#60a5fa",
+      lineOpacity: 0.8,
+      strokeW: 2,
+    };
+  }
+  if (score >= 70) {
+    return {
+      stroke: "#00ff88",
+      fill: "#030d07",
+      text: "#00ff88",
+      line: "#00ff88",
+      lineOpacity: 0.45,
+      strokeW: 1.5,
+    };
+  }
+  if (score >= 40) {
+    return {
+      stroke: "#f5a623",
+      fill: "#0c0800",
+      text: "#f5a623",
+      line: "#f5a623",
+      lineOpacity: 0.4,
+      strokeW: 1.5,
+    };
+  }
+  return {
+    stroke: "#ff3b3b",
+    fill: "#0d0303",
+    text: "#ff3b3b",
+    line: "#ff3b3b",
+    lineOpacity: 0.4,
+    strokeW: 1.5,
+  };
 }
 
 export default function GraphPage() {
   const { children, loading, justVotedSet } = useSwarmData();
 
-  const active = children.filter((c) => c.active);
-  const allNodes = active; // only show active agents
+  const active = children.filter((child) => child.active);
+  const allNodes = active;
+  const offlineCount = children.filter((child) => !child.active).length;
 
-  const childPositions = allNodes.map((_, i) => {
+  const maxRingRadius = Math.min(
+    CANVAS_W / 2 - SAFE_SIDE_PADDING,
+    PARENT_Y - SAFE_TOP_PADDING,
+    CANVAS_H - PARENT_Y - SAFE_BOTTOM_PADDING,
+  );
+
+  const nodePositions = allNodes.map((_, index) => {
     const total = allNodes.length || 1;
-    const spacing = Math.min(160, (CANVAS_W - 160) / total);
-    const startX = CANVAS_W / 2 - ((total - 1) * spacing) / 2;
-    // Slight vertical stagger for visual rhythm
-    const stagger = total > 1 ? (i % 2 === 0 ? 0 : 18) : 0;
-    return { x: startX + i * spacing, y: CHILD_Y + stagger };
+    const angle = (2 * Math.PI * index) / total - Math.PI / 2;
+    const desiredRadius =
+      total <= 5 ? 170 : total <= 8 ? 188 : total <= 12 ? 202 : total <= 16 ? 214 : 224;
+    const dist = Math.min(desiredRadius, maxRingRadius);
+    return {
+      x: PARENT_X + dist * Math.cos(angle),
+      y: PARENT_Y + dist * Math.sin(angle),
+    };
   });
 
+  const alignedCount = active.filter((child) => Number(child.alignmentScore) >= 70).length;
+  const driftingCount = active.filter((child) => {
+    const score = Number(child.alignmentScore);
+    return score >= 40 && score < 70;
+  }).length;
+  const misalignedCount = active.filter((child) => Number(child.alignmentScore) < 40).length;
+  const votingCount = active.filter((child) => justVotedSet?.has(child.childAddr)).length;
+
   return (
-    <div className="p-4 md:p-8">
-      {/* Header */}
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-mono font-bold text-green-400 tracking-tight">Agent Graph</h1>
-          <p className="text-sm text-gray-500 mt-1">Parent-child swarm topology — live from onchain</p>
-        </div>
-        <div className="flex gap-4 text-xs font-mono">
-          <span className="flex items-center gap-1.5 text-green-400">
-            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-            {active.length} active
-          </span>
-        </div>
-      </div>
+    <DashboardPageFrame>
+      <DashboardHeader
+        title="NETWORK_TOPOLOGY"
+        subtitle="LIVE NODE GRAPH + REAL-TIME STREAM"
+      />
 
-      {/* SVG Canvas */}
-      <div className="border border-gray-800 rounded-xl bg-[#07070f] overflow-x-auto relative">
-        {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <div className="w-8 h-8 border-2 border-green-400/30 border-t-green-400 rounded-full animate-spin" />
-          </div>
-        ) : (
-          <svg
-            width="100%"
-            viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
-            className="w-full"
-            style={{ maxHeight: 600 }}
-            preserveAspectRatio="xMidYMid meet"
-          >
-            <defs>
-              {/* Glows */}
-              <filter id="glow-green" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="5" result="blur" />
-                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-              </filter>
-              <filter id="glow-yellow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="5" result="blur" />
-                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-              </filter>
-              <filter id="glow-red" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="5" result="blur" />
-                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-              </filter>
-              <filter id="glow-blue" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="6" result="blur" />
-                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-              </filter>
-              <filter id="glow-parent" x="-60%" y="-60%" width="220%" height="220%">
-                <feGaussianBlur stdDeviation="8" result="blur" />
-                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-              </filter>
-              {/* Line gradients */}
-              <linearGradient id="line-grad-green" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#22c55e" stopOpacity="0.6" />
-                <stop offset="100%" stopColor="#22c55e" stopOpacity="0.15" />
-              </linearGradient>
-              <linearGradient id="line-grad-blue" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#60a5fa" stopOpacity="0.8" />
-                <stop offset="100%" stopColor="#60a5fa" stopOpacity="0.2" />
-              </linearGradient>
-              <linearGradient id="line-grad-gray" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#374151" stopOpacity="0.5" />
-                <stop offset="100%" stopColor="#374151" stopOpacity="0.1" />
-              </linearGradient>
-              {/* Radial bg glow behind parent */}
-              <radialGradient id="bg-glow" cx="50%" cy="18%" r="30%">
-                <stop offset="0%" stopColor="#22c55e" stopOpacity="0.04" />
-                <stop offset="100%" stopColor="#22c55e" stopOpacity="0" />
-              </radialGradient>
+      <DashboardStatStrip
+        stats={[
+          { label: "ALIGNED", value: loading ? "—" : alignedCount, tone: "green" },
+          { label: "DRIFTING", value: loading ? "—" : driftingCount, tone: "amber" },
+          { label: "MISALIGNED", value: loading ? "—" : misalignedCount, tone: "red" },
+          { label: "VOTING", value: loading ? "—" : votingCount, tone: "blue" },
+          { label: "OFFLINE", value: loading ? "—" : offlineCount, tone: "neutral" },
+        ]}
+      />
 
-              <style>{`
-                @keyframes dash { to { stroke-dashoffset: -20; } }
-                @keyframes dashFast { to { stroke-dashoffset: -16; } }
-                @keyframes pulse-ring { 0%,100% { opacity:0.2; r:${PARENT_R + 10}; } 50% { opacity:0.5; r:${PARENT_R + 18}; } }
-                @keyframes pulse-child { 0%,100% { opacity:0.15; } 50% { opacity:0.4; } }
-                @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
-                .flow-line { animation: dash 2s linear infinite; }
-                .flow-line-fast { animation: dashFast 0.8s linear infinite; }
-                .pulse-ring { animation: pulse-child 2.5s ease-in-out infinite; }
-                .parent-float { animation: float 4s ease-in-out infinite; }
-              `}</style>
-            </defs>
+      <div className="p-4 space-y-4">
+        <DashboardPanel
+          title="TOPOLOGY_CANVAS"
+          subtitle="Shared-governor topology framed inside the standard dashboard shell."
+        >
+          <div className="bg-[#070710] overflow-x-auto overflow-y-hidden px-3 py-3">
+            {loading ? (
+              <div className="flex items-center justify-center h-[620px] min-w-[1040px]">
+                <span className="font-mono text-[11px] text-[#4a4f5e] uppercase tracking-widest animate-pulse">
+                  LOADING_NODES…
+                </span>
+              </div>
+            ) : (
+              <div className="min-w-[1040px]">
+                <svg
+                  width="100%"
+                  height="620"
+                  viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
+                  className="block w-full min-w-[1040px]"
+                  preserveAspectRatio="xMidYMid meet"
+                >
+                  <defs>
+                    <style>{`
+                      @keyframes dash-flow { to { stroke-dashoffset: -20; } }
+                      @keyframes dash-vote { to { stroke-dashoffset: -12; } }
+                      .flow { animation: dash-flow 3s linear infinite; }
+                      .voting { animation: dash-vote 0.6s linear infinite; }
+                    `}</style>
+                    <pattern id="sp-grid" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+                      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(0,255,136,0.04)" strokeWidth="0.5" />
+                    </pattern>
+                  </defs>
 
-            {/* Dot grid background */}
-            <pattern id="dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">
-              <circle cx="1" cy="1" r="0.8" fill="#1a1a2e" />
-            </pattern>
-            <rect width={CANVAS_W} height={CANVAS_H} fill="url(#dots)" />
-            {/* Radial glow around parent area */}
-            <rect width={CANVAS_W} height={CANVAS_H} fill="url(#bg-glow)" />
+                  <rect width={CANVAS_W} height={CANVAS_H} fill="#070710" />
+                  <rect width={CANVAS_W} height={CANVAS_H} fill="url(#sp-grid)" />
 
-            {/* Bezier connection lines */}
-            {allNodes.map((child, i) => {
-              const pos = childPositions[i];
-              const isVoting = justVotedSet?.has(child.childAddr);
-              const grad = isVoting ? "url(#line-grad-blue)" : child.active ? "url(#line-grad-green)" : "url(#line-grad-gray)";
-              const path = bezierPath(PARENT_X, PARENT_Y + PARENT_R, pos.x, pos.y - CHILD_R);
-              return (
-                <path
-                  key={`line-${child.childAddr}`}
-                  d={path}
-                  fill="none"
-                  stroke={grad}
-                  strokeWidth={isVoting ? 2 : 1.2}
-                  strokeDasharray={isVoting ? "5 3" : "6 5"}
-                  className={isVoting ? "flow-line-fast" : "flow-line"}
-                  style={{ animationDelay: `${i * 0.2}s` }}
-                />
-              );
-            })}
+                  {allNodes.map((child, index) => {
+                    const pos = nodePositions[index];
+                    const score = Number(child.alignmentScore);
+                    const isVoting = !!justVotedSet?.has(child.childAddr);
+                    const cfg = nodeConfig(score, child.active, isVoting);
 
-            {/* ───── PARENT NODE ───── */}
-            <g className="parent-float">
-              {/* Outer pulse rings */}
-              <circle cx={PARENT_X} cy={PARENT_Y} r={PARENT_R + 22} fill="none" stroke="#22c55e" strokeWidth={0.5} opacity={0.12} className="pulse-ring" />
-              <circle cx={PARENT_X} cy={PARENT_Y} r={PARENT_R + 12} fill="none" stroke="#22c55e" strokeWidth={0.8} opacity={0.2} className="pulse-ring" style={{ animationDelay: "0.6s" }} />
-              {/* Main fill */}
-              <circle cx={PARENT_X} cy={PARENT_Y} r={PARENT_R} fill="#050f09" stroke="#22c55e" strokeWidth={2} filter="url(#glow-parent)" />
-              {/* Inner ring */}
-              <circle cx={PARENT_X} cy={PARENT_Y} r={PARENT_R - 8} fill="none" stroke="#22c55e" strokeWidth={0.5} opacity={0.3} />
-              {/* Labels */}
-              <text x={PARENT_X} y={PARENT_Y - 10} textAnchor="middle" fill="#4ade80" fontSize={11} fontFamily="monospace" fontWeight="bold" letterSpacing="2">SPAWN</text>
-              <text x={PARENT_X} y={PARENT_Y + 5} textAnchor="middle" fill="#4ade80" fontSize={11} fontFamily="monospace" fontWeight="bold" letterSpacing="2">PARENT</text>
-              <text x={PARENT_X} y={PARENT_Y + 20} textAnchor="middle" fill="#166534" fontSize={8} fontFamily="monospace" letterSpacing="1">venice ai</text>
-            </g>
-
-            {/* ───── CHILD NODES ───── */}
-            {allNodes.map((child, i) => {
-              const pos = childPositions[i];
-              const score = Number(child.alignmentScore);
-              const colors = alignColor(score, child.active);
-              const isVoting = justVotedSet?.has(child.childAddr);
-              const label = child.ensLabel && child.ensLabel !== ""
-                ? child.ensLabel.replace(".spawn.eth", "").replace(".eth", "")
-                : formatAddress(child.childAddr);
-              const dao = governorName(child.governance) ?? formatAddress(child.governance);
-              const votes = Number(child.voteCount);
-
-              return (
-                <Link key={child.childAddr} href={`/agent/${child.id.toString()}`}>
-                  <g style={{ cursor: "pointer" }}>
-                    {/* Voting pulse ring */}
-                    {isVoting && (
-                      <circle cx={pos.x} cy={pos.y} r={CHILD_R + 16}
-                        fill="none" stroke="#60a5fa" strokeWidth={1.5} opacity={0.5}
-                        className="pulse-ring" filter="url(#glow-blue)"
+                    return (
+                      <line
+                        key={`line-${child.childAddr}`}
+                        x1={PARENT_X}
+                        y1={PARENT_Y}
+                        x2={pos.x}
+                        y2={pos.y}
+                        stroke={cfg.line}
+                        strokeWidth={isVoting ? 1.5 : child.active ? 1 : 0.6}
+                        strokeOpacity={cfg.lineOpacity}
+                        strokeDasharray={child.active ? "6 4" : "3 6"}
+                        className={isVoting ? "voting" : child.active ? "flow" : ""}
                       />
-                    )}
-                    {/* Active outer ring */}
-                    {child.active && !isVoting && (
-                      <circle cx={pos.x} cy={pos.y} r={CHILD_R + 10}
-                        fill="none" stroke={colors.stroke} strokeWidth={0.8} opacity={0.2}
-                        className="pulse-ring" style={{ animationDelay: `${i * 0.3}s` }}
-                      />
-                    )}
-                    {/* Main circle */}
-                    <circle
-                      cx={pos.x} cy={pos.y} r={CHILD_R}
-                      fill={colors.fill}
-                      stroke={isVoting ? "#60a5fa" : colors.stroke}
-                      strokeWidth={isVoting ? 2.5 : 1.5}
-                      opacity={child.active ? 1 : 0.45}
-                      filter={child.active ? colors.glow : "none"}
+                    );
+                  })}
+
+                  <g>
+                    <polygon
+                      points={octagonPoints(PARENT_X, PARENT_Y, PARENT_R + 10)}
+                      fill="none"
+                      stroke="#00ff88"
+                      strokeWidth={0.6}
+                      strokeOpacity={0.2}
+                      strokeDasharray="4 3"
                     />
-                    {/* Inner ring decoration */}
-                    <circle cx={pos.x} cy={pos.y} r={CHILD_R - 6}
-                      fill="none" stroke={colors.stroke} strokeWidth={0.4}
-                      opacity={child.active ? 0.25 : 0.1}
+                    <polygon
+                      points={octagonPoints(PARENT_X, PARENT_Y, PARENT_R)}
+                      fill="#030d07"
+                      stroke="#00ff88"
+                      strokeWidth={2}
                     />
-
-                    {/* Score or terminated mark */}
-                    {child.active ? (
-                      <text x={pos.x} y={pos.y + 5} textAnchor="middle"
-                        fill={colors.text} fontSize={16} fontFamily="monospace" fontWeight="bold"
-                        opacity={1}
-                      >
-                        {score}
-                      </text>
-                    ) : (
-                      <text x={pos.x} y={pos.y + 6} textAnchor="middle"
-                        fill="#4b5563" fontSize={18} fontFamily="monospace"
-                      >✕</text>
-                    )}
-
-                    {/* ENS label — above node */}
-                    <text x={pos.x} y={pos.y - CHILD_R - 10} textAnchor="middle"
-                      fill={child.active ? colors.text : "#4b5563"}
-                      fontSize={9} fontFamily="monospace" fontWeight="bold"
-                      opacity={child.active ? 0.95 : 0.5}
-                    >
-                      {label.length > 14 ? label.slice(0, 14) + "…" : label}
-                    </text>
-
-                    {/* DAO chip — below node */}
-                    <rect
-                      x={pos.x - 30} y={pos.y + CHILD_R + 6}
-                      width={60} height={14} rx={3}
-                      fill={child.active ? colors.fill : "#0f0f1a"}
-                      stroke={child.active ? colors.stroke : "#2d3748"}
-                      strokeWidth={0.6} opacity={child.active ? 0.8 : 0.4}
+                    <polygon
+                      points={octagonPoints(PARENT_X, PARENT_Y, PARENT_R - 8)}
+                      fill="none"
+                      stroke="#00ff88"
+                      strokeWidth={0.5}
+                      strokeOpacity={0.25}
                     />
-                    <text x={pos.x} y={pos.y + CHILD_R + 16} textAnchor="middle"
-                      fill={child.active ? colors.text : "#4b5563"}
-                      fontSize={7} fontFamily="monospace"
-                      opacity={child.active ? 0.85 : 0.4}
+                    <text
+                      x={PARENT_X}
+                      y={PARENT_Y - 8}
+                      textAnchor="middle"
+                      fill="#00ff88"
+                      fontSize={10}
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                      letterSpacing="2"
                     >
-                      {dao.length > 10 ? dao.slice(0, 10) + "…" : dao}
+                      SPAWN_01
                     </text>
-
-                    {/* Vote count — below DAO chip */}
-                    <text x={pos.x} y={pos.y + CHILD_R + 32} textAnchor="middle"
-                      fill="#4b5563" fontSize={7} fontFamily="monospace"
+                    <text
+                      x={PARENT_X}
+                      y={PARENT_Y + 8}
+                      textAnchor="middle"
+                      fill="#00ff88"
+                      fontSize={7.5}
+                      fontFamily="monospace"
+                      opacity={0.5}
+                      letterSpacing="1"
                     >
-                      {child.active
-                        ? votes > 0 ? `${votes} vote${votes !== 1 ? "s" : ""}` : "no votes"
-                        : "terminated"}
+                      MASTER_NODE
                     </text>
-
-                    {/* Voting badge */}
-                    {isVoting && (
-                      <>
-                        <rect x={pos.x - 20} y={pos.y - CHILD_R - 30} width={40} height={14} rx={4}
-                          fill="#1e3a5f" stroke="#60a5fa" strokeWidth={0.8}
-                        />
-                        <text x={pos.x} y={pos.y - CHILD_R - 20} textAnchor="middle"
-                          fill="#60a5fa" fontSize={7} fontFamily="monospace" fontWeight="bold"
-                        >
-                          ⚡ VOTING
-                        </text>
-                      </>
-                    )}
                   </g>
-                </Link>
-              );
-            })}
 
-            {/* ───── EMPTY STATE ───── */}
-            {allNodes.length === 0 && (
-              <>
-                {[0, 1, 2].map((i) => {
-                  const spacing = 200;
-                  const startX = CANVAS_W / 2 - spacing;
-                  const x = startX + i * spacing;
-                  const path = bezierPath(PARENT_X, PARENT_Y + PARENT_R, x, CHILD_Y - CHILD_R);
-                  return (
-                    <g key={i} opacity={0.18}>
-                      <path d={path} fill="none" stroke="#374151" strokeWidth={1} strokeDasharray="5 5" />
-                      <circle cx={x} cy={CHILD_Y} r={CHILD_R} fill="#0d0d14" stroke="#374151" strokeWidth={1} />
-                      <text x={x} y={CHILD_Y + 5} textAnchor="middle" fill="#374151" fontSize={8} fontFamily="monospace">waiting</text>
-                    </g>
-                  );
-                })}
-                <text x={CANVAS_W / 2} y={CHILD_Y + 90} textAnchor="middle" fill="#2d3748" fontSize={13} fontFamily="monospace">
-                  No agents spawned yet
-                </text>
-              </>
+                  {allNodes.map((child, index) => {
+                    const pos = nodePositions[index];
+                    const score = Number(child.alignmentScore);
+                    const isVoting = !!justVotedSet?.has(child.childAddr);
+                    const cfg = nodeConfig(score, child.active, isVoting);
+                    const label = (
+                      ensName(child.ensLabel) ??
+                      child.ensLabel?.replace(".spawn.eth", "").replace(".eth", "") ??
+                      formatAddress(child.childAddr)
+                    ).slice(0, 14);
+                    const dao = (governorName(child.governance) ?? formatAddress(child.governance)).slice(0, 10);
+
+                    return (
+                      <Link key={child.childAddr} href={`/agent/${child.id.toString()}`}>
+                        <g style={{ cursor: "pointer" }} opacity={child.active ? 1 : 0.4}>
+                          {isVoting && (
+                            <polygon
+                              points={octagonPoints(pos.x, pos.y, CHILD_R + 12)}
+                              fill="none"
+                              stroke="#60a5fa"
+                              strokeWidth={0.8}
+                              strokeOpacity={0.35}
+                              strokeDasharray="4 3"
+                              className="voting"
+                            />
+                          )}
+
+                          <polygon
+                            points={octagonPoints(pos.x, pos.y, CHILD_R)}
+                            fill={cfg.fill}
+                            stroke={cfg.stroke}
+                            strokeWidth={cfg.strokeW}
+                          />
+
+                          {child.active ? (
+                            <text
+                              x={pos.x}
+                              y={pos.y + 5}
+                              textAnchor="middle"
+                              fill={cfg.text}
+                              fontSize={14}
+                              fontFamily="monospace"
+                              fontWeight="bold"
+                            >
+                              {score}
+                            </text>
+                          ) : (
+                            <text
+                              x={pos.x}
+                              y={pos.y + 6}
+                              textAnchor="middle"
+                              fill="#4a4f5e"
+                              fontSize={16}
+                              fontFamily="monospace"
+                            >
+                              ✕
+                            </text>
+                          )}
+
+                          <text
+                            x={pos.x}
+                            y={pos.y - CHILD_R - 10}
+                            textAnchor="middle"
+                            fill={cfg.text}
+                            fontSize={7.5}
+                            fontFamily="monospace"
+                            fontWeight="bold"
+                            opacity={child.active ? 0.95 : 0.4}
+                          >
+                            {label}
+                          </text>
+
+                          <text
+                            x={pos.x}
+                            y={pos.y + CHILD_R + 16}
+                            textAnchor="middle"
+                            fill={cfg.text}
+                            fontSize={6.5}
+                            fontFamily="monospace"
+                            opacity={child.active ? 0.6 : 0.3}
+                          >
+                            {dao}
+                          </text>
+
+                          {isVoting && (
+                            <>
+                              <rect
+                                x={pos.x - 24}
+                                y={pos.y - CHILD_R - 26}
+                                width={48}
+                                height={13}
+                                fill="#04090f"
+                                stroke="#60a5fa"
+                                strokeWidth={0.8}
+                              />
+                              <text
+                                x={pos.x}
+                                y={pos.y - CHILD_R - 17}
+                                textAnchor="middle"
+                                fill="#60a5fa"
+                                fontSize={7}
+                                fontFamily="monospace"
+                                fontWeight="bold"
+                              >
+                                ⚡ VOTING
+                              </text>
+                            </>
+                          )}
+                        </g>
+                      </Link>
+                    );
+                  })}
+
+                  {allNodes.length === 0 && (
+                    <>
+                      {[0, 1, 2, 3, 4, 5].map((index) => {
+                        const angle = (2 * Math.PI * index) / 6 - Math.PI / 2;
+                        const x = PARENT_X + Math.min(190, maxRingRadius) * Math.cos(angle);
+                        const y = PARENT_Y + Math.min(190, maxRingRadius) * Math.sin(angle);
+                        return (
+                          <g key={index} opacity={0.1}>
+                            <line
+                              x1={PARENT_X}
+                              y1={PARENT_Y}
+                              x2={x}
+                              y2={y}
+                              stroke="#4a4f5e"
+                              strokeWidth={0.8}
+                              strokeDasharray="4 5"
+                            />
+                            <polygon
+                              points={octagonPoints(x, y, CHILD_R)}
+                              fill="#0d0d14"
+                              stroke="#4a4f5e"
+                              strokeWidth={0.8}
+                            />
+                          </g>
+                        );
+                      })}
+                      <text
+                        x={PARENT_X}
+                        y={PARENT_Y + 290}
+                        textAnchor="middle"
+                        fill="#4a4f5e"
+                        fontSize={11}
+                        fontFamily="monospace"
+                        letterSpacing="2"
+                      >
+                        NO_AGENTS_SPAWNED
+                      </text>
+                    </>
+                  )}
+
+                  <g>
+                    <rect x={14} y={14} width={132} height={84} fill="#070710" stroke="rgba(255,255,255,0.08)" strokeWidth={0.8} />
+                    {[
+                      { color: "#00ff88", label: "ALIGNED" },
+                      { color: "#f5a623", label: "DRIFTING" },
+                      { color: "#ff3b3b", label: "MISALIGNED" },
+                      { color: "#60a5fa", label: "VOTING" },
+                    ].map(({ color, label }, index) => (
+                      <g key={label} transform={`translate(22, ${29 + index * 17})`}>
+                        <polygon points={octagonPoints(0, 0, 5)} fill="none" stroke={color} strokeWidth={1.2} />
+                        <text x={13} y={4} fill={color} fontSize={8} fontFamily="monospace" opacity={0.9}>
+                          {label}
+                        </text>
+                      </g>
+                    ))}
+                  </g>
+
+                  <g>
+                    <rect x={CANVAS_W - 52} y={14} width={22} height={20} fill="#070710" stroke="rgba(255,255,255,0.08)" strokeWidth={0.8} />
+                    <text x={CANVAS_W - 41} y={28} textAnchor="middle" fill="#4a4f5e" fontSize={14} fontFamily="monospace">
+                      +
+                    </text>
+                    <rect x={CANVAS_W - 52} y={38} width={22} height={20} fill="#070710" stroke="rgba(255,255,255,0.08)" strokeWidth={0.8} />
+                    <text x={CANVAS_W - 41} y={52} textAnchor="middle" fill="#4a4f5e" fontSize={14} fontFamily="monospace">
+                      −
+                    </text>
+                    <rect x={CANVAS_W - 62} y={62} width={32} height={14} fill="#070710" stroke="rgba(255,255,255,0.08)" strokeWidth={0.8} />
+                    <text x={CANVAS_W - 46} y={72} textAnchor="middle" fill="#4a4f5e" fontSize={7} fontFamily="monospace">
+                      RESET
+                    </text>
+                  </g>
+                </svg>
+              </div>
             )}
-          </svg>
+          </div>
+        </DashboardPanel>
+
+        {active.length > 0 && (
+          <DashboardPanel
+            title="REAL_TIME_NODE_STREAM"
+            right={
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse" />
+                <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">{active.length} NODES</span>
+              </div>
+            }
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-white/[0.08] bg-[#0a0a0f]">
+                    <th className="px-4 py-1.5 text-left font-mono text-[10px] text-[#4a4f5e] uppercase w-10" />
+                    <th className="px-4 py-1.5 text-left font-mono text-[10px] text-[#4a4f5e] uppercase">AGENT_ID</th>
+                    <th className="px-4 py-1.5 text-left font-mono text-[10px] text-[#4a4f5e] uppercase">DAO_AFFILIATION</th>
+                    <th className="px-4 py-1.5 text-right font-mono text-[10px] text-[#4a4f5e] uppercase">ALIGNMENT_SC</th>
+                    <th className="px-4 py-1.5 text-right font-mono text-[10px] text-[#4a4f5e] uppercase">VOTES</th>
+                    <th className="px-4 py-1.5 text-right font-mono text-[10px] text-[#4a4f5e] uppercase">STATUS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {active.map((child, index) => {
+                    const score = Number(child.alignmentScore);
+                    const isVoting = !!justVotedSet?.has(child.childAddr);
+                    const scoreColor = isVoting
+                      ? "text-blue-400"
+                      : score >= 70
+                      ? "text-[#00ff88]"
+                      : score >= 40
+                      ? "text-[#f5a623]"
+                      : "text-[#ff3b3b]";
+                    const dotColor = isVoting
+                      ? "bg-blue-400"
+                      : score >= 70
+                      ? "bg-[#00ff88]"
+                      : score >= 40
+                      ? "bg-[#f5a623]"
+                      : "bg-[#ff3b3b]";
+                    const statusLabel = isVoting
+                      ? "VOTING"
+                      : score >= 70
+                      ? "ALIGNED"
+                      : score >= 40
+                      ? "DRIFTING"
+                      : "MISALIGNED";
+                    const label =
+                      ensName(child.ensLabel) ??
+                      child.ensLabel?.replace(".spawn.eth", "").replace(".eth", "") ??
+                      formatAddress(child.childAddr);
+                    const dao = governorName(child.governance) ?? formatAddress(child.governance);
+
+                    return (
+                      <tr
+                        key={child.childAddr}
+                        className={`border-b border-white/[0.08] hover:bg-white/[0.02] transition-colors ${
+                          index % 2 === 0 ? "bg-[#0a0a0f]" : "bg-[#0d0d14]"
+                        } ${isVoting ? "border-l-2 border-l-blue-400" : ""}`}
+                      >
+                        <td className="px-4 py-1.5">
+                          <span className={`w-2 h-2 rounded-full inline-block ${dotColor} ${isVoting ? "animate-pulse" : ""}`} />
+                        </td>
+                        <td className="px-4 py-1.5 font-mono text-[11px] text-[#00ff88]">
+                          <Link href={`/agent/${child.id.toString()}`} className="hover:text-white transition-colors">
+                            {label}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-1.5 font-mono text-[11px] text-[#4a4f5e]">{dao}</td>
+                        <td className={`px-4 py-1.5 text-right font-mono text-[11px] font-bold ${scoreColor}`}>
+                          {score}
+                        </td>
+                        <td className="px-4 py-1.5 text-right font-mono text-[11px] text-[#f5f5f0]/60">
+                          {child.voteCount.toString()}
+                        </td>
+                        <td className="px-4 py-1.5 text-right">
+                          <span className={`font-mono text-[9px] uppercase px-2 py-0.5 border ${scoreColor} border-current/30 bg-current/5`}>
+                            {statusLabel}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </DashboardPanel>
         )}
       </div>
-
-      {/* Legend */}
-      <div className="flex flex-wrap gap-5 mt-5 text-xs font-mono text-gray-500 px-1">
-        {[
-          { color: "bg-green-400", label: "Alignment ≥ 70" },
-          { color: "bg-yellow-400", label: "Alignment 40–69" },
-          { color: "bg-red-400", label: "Alignment < 40" },
-          { color: "bg-blue-400", label: "Currently voting" },
-          { color: "bg-gray-600", label: "Terminated" },
-        ].map((item) => (
-          <div key={item.label} className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${item.color}`} />
-            <span>{item.label}</span>
-          </div>
-        ))}
-      </div>
-    </div>
+    </DashboardPageFrame>
   );
 }

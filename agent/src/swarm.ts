@@ -60,6 +60,12 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { startControlServer } from "./control-server.js";
+import { getAllRegisteredDAOs } from "./dao-registry.js";
+import {
+  findMirroredProposalByInternal,
+  getAllMirroredProposals,
+  syncMirroredProposalsForRegisteredDaos,
+} from "./mirror-index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -754,6 +760,30 @@ const POLYMARKET_PERSPECTIVES = [
   { suffix: "skeptic", prompt: "You are a professional skeptic and risk assessor. You default to voting AGAINST (No) on most prediction markets because most predicted events do not happen. You require extraordinary evidence for extraordinary claims. Vote FOR only when the outcome is nearly certain based on already-occurred events or irreversible commitments. Apply base rate neglect correction — most things people predict will happen, don't. When in doubt, vote AGAINST." },
 ];
 
+const REGISTERED_DAO_CHILD_PREFIX = "ext";
+
+function isRegisteredDaoChildLabel(label: string) {
+  return label.startsWith(`${REGISTERED_DAO_CHILD_PREFIX}-`);
+}
+
+function buildRegisteredDaoChildLabel(daoSlug: string, suffix: string) {
+  return `${REGISTERED_DAO_CHILD_PREFIX}-${daoSlug}-${suffix}`;
+}
+
+function parseRegisteredDaoSlugFromLabel(label: string): string | null {
+  if (!isRegisteredDaoChildLabel(label)) return null;
+  const normalizedLabel = label.replace(/-v\d+$/, "");
+  const suffixes = [...PERSPECTIVES, ...POLYMARKET_PERSPECTIVES].map((perspective) => perspective.suffix);
+  for (const suffix of suffixes) {
+    const tail = `-${suffix}`;
+    if (normalizedLabel.endsWith(tail)) {
+      const middle = normalizedLabel.slice(`${REGISTERED_DAO_CHILD_PREFIX}-`.length, -tail.length);
+      return middle || null;
+    }
+  }
+  return null;
+}
+
 let proposalIndex = 0;
 
 function findDerivedChildIdByAddress(targetAddress: `0x${string}`): number | null {
@@ -1170,6 +1200,10 @@ function spawnChildProcess(
     }
     if (chainName) {
       childEnv.CHILD_CHAIN = chainName;
+    }
+    const targetDaoSlug = parseRegisteredDaoSlugFromLabel(label);
+    if (targetDaoSlug) {
+      childEnv.CHILD_TARGET_DAO_SLUG = targetDaoSlug;
     }
     // Find perspective from label (e.g., "uniswap-dao-conservative" -> "conservative", "polymarket-data" -> "data")
     const perspectiveSuffix = label.split("-").pop() || "";
@@ -2580,15 +2614,155 @@ const MIN_ETH_TO_SPAWN = BigInt(5e15); // 0.005 ETH minimum to spawn a new child
 const IDLE_CYCLES_TO_RECALL = 5; // recall child if no votes for 5 cycles
 const idleCycleCount = new Map<string, number>(); // track idle cycles per child
 
+type RegisteredDaoSpawnTarget = {
+  daoId: string;
+  daoName: string;
+  daoSlug: string;
+  governorAddr: `0x${string}`;
+  governorName: string;
+  activeProposalIds: string[];
+};
+
+type ActiveRegisteredDaoMirror = {
+  daoId: string;
+  daoName: string;
+  daoSlug: string;
+  governorAddr: `0x${string}`;
+  governorName: string;
+  proposalId: string;
+  externalProposalKey: string;
+  mirroredAt: string;
+};
+
+async function getActiveRegisteredDaoMirrors(
+  config: ChainConfig,
+  options: {
+    daoSlug?: string;
+    governorAddr?: `0x${string}`;
+  } = {}
+): Promise<ActiveRegisteredDaoMirror[]> {
+  const registeredDaos = getAllRegisteredDAOs().filter((dao) => dao.status === "active");
+  if (registeredDaos.length === 0) return [];
+
+  const synced = syncMirroredProposalsForRegisteredDaos(registeredDaos);
+  if (synced > 0) {
+    console.log(`[Scaling] Backfilled ${synced} mirrored proposals for registered DAOs`);
+  }
+
+  const daoBySlug = new Map(registeredDaos.map((dao) => [dao.slug, dao]));
+  const activeMirrors: ActiveRegisteredDaoMirror[] = [];
+
+  for (const mirrored of getAllMirroredProposals()) {
+    if (!mirrored.sourceDaoSlug) continue;
+    if (options.daoSlug && mirrored.sourceDaoSlug !== options.daoSlug) continue;
+    if (
+      options.governorAddr &&
+      mirrored.governorAddress.toLowerCase() !== options.governorAddr.toLowerCase()
+    ) {
+      continue;
+    }
+    const dao = daoBySlug.get(mirrored.sourceDaoSlug);
+    if (!dao) continue;
+
+    try {
+      const state = Number(await config.readClient.readContract({
+        address: mirrored.governorAddress as `0x${string}`,
+        abi: MockGovernorABI,
+        functionName: "state",
+        args: [BigInt(mirrored.proposalId)],
+      }));
+      if (state !== 1) continue;
+
+      const governor = config.governors.find(
+        (candidate) => candidate.addr.toLowerCase() === mirrored.governorAddress.toLowerCase()
+      );
+      if (!governor) continue;
+
+      activeMirrors.push({
+        daoId: dao.id,
+        daoName: dao.name,
+        daoSlug: dao.slug,
+        governorAddr: governor.addr,
+        governorName: governor.name,
+        proposalId: mirrored.proposalId,
+        externalProposalKey: mirrored.externalProposalKey,
+        mirroredAt: mirrored.mirroredAt,
+      });
+    } catch {}
+  }
+
+  return activeMirrors;
+}
+
+async function getActiveRegisteredDaoSpawnTargets(config: ChainConfig): Promise<RegisteredDaoSpawnTarget[]> {
+  const activeMirrors = await getActiveRegisteredDaoMirrors(config);
+  if (activeMirrors.length === 0) return [];
+
+  const activeTargets = new Map<string, RegisteredDaoSpawnTarget>();
+  const targetMeta = new Map<string, { count: number; latestMirroredAt: string }>();
+
+  for (const mirror of activeMirrors) {
+    const targetKey = `${mirror.daoSlug}:${mirror.governorAddr.toLowerCase()}`;
+    const existingMeta = targetMeta.get(targetKey);
+    const nextMeta = {
+      count: (existingMeta?.count || 0) + 1,
+      latestMirroredAt:
+        !existingMeta || mirror.mirroredAt > existingMeta.latestMirroredAt
+          ? mirror.mirroredAt
+          : existingMeta.latestMirroredAt,
+    };
+    targetMeta.set(targetKey, nextMeta);
+
+    const existing = activeTargets.get(mirror.daoSlug);
+    const candidate: RegisteredDaoSpawnTarget = {
+      daoId: mirror.daoId,
+      daoName: mirror.daoName,
+      daoSlug: mirror.daoSlug,
+      governorAddr: mirror.governorAddr,
+      governorName: mirror.governorName,
+      activeProposalIds: [mirror.proposalId],
+    };
+
+    if (!existing) {
+      activeTargets.set(mirror.daoSlug, candidate);
+      continue;
+    }
+
+    const existingKey = `${existing.daoSlug}:${existing.governorAddr.toLowerCase()}`;
+    const existingKeyMeta = targetMeta.get(existingKey) || { count: existing.activeProposalIds.length, latestMirroredAt: "" };
+    if (
+      targetKey === existingKey ||
+      nextMeta.count > existingKeyMeta.count ||
+      (nextMeta.count === existingKeyMeta.count && nextMeta.latestMirroredAt > existingKeyMeta.latestMirroredAt)
+    ) {
+      const mergedProposalIds = targetKey === existingKey
+        ? Array.from(new Set([...existing.activeProposalIds, mirror.proposalId]))
+        : [mirror.proposalId];
+      activeTargets.set(mirror.daoSlug, {
+        ...candidate,
+        activeProposalIds: mergedProposalIds,
+      });
+      continue;
+    }
+
+    existing.activeProposalIds = Array.from(new Set([...existing.activeProposalIds, mirror.proposalId]));
+  }
+
+  return Array.from(activeTargets.values());
+}
+
 async function dynamicScaling(config: ChainConfig) {
   const children = (await config.readClient.readContract({
     address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
   })) as any[];
-  const standardChildren = children.filter((child: any) => !isJudgeChildLabel(child.ensLabel));
+  const standardChildren = children.filter(
+    (child: any) => !isJudgeChildLabel(child.ensLabel) && !isRegisteredDaoChildLabel(child.ensLabel)
+  );
+  const registeredDaoChildren = children.filter((child: any) => isRegisteredDaoChildLabel(child.ensLabel));
 
   const parentBalance = await (config.readClient as any).getBalance({ address: account.address });
   const targetTotal = config.governors.length * 3; // 3 perspectives per governor
-  console.log(`\n[Scaling] ${config.name}: ${standardChildren.length}/${targetTotal} agents | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
+  console.log(`\n[Scaling] ${config.name}: ${standardChildren.length}/${targetTotal} shared agents + ${registeredDaoChildren.length} registered-dao agents | Budget: ${(Number(parentBalance) / 1e18).toFixed(4)} ETH`);
 
   // Check which governors have children assigned
   const coveredGovernors = new Set<string>();
@@ -2677,8 +2851,133 @@ async function dynamicScaling(config: ChainConfig) {
     }
   }
 
+  // Spawn dedicated cohorts for registered DAOs with active mirrored proposals.
+  const activeDaoTargets = await getActiveRegisteredDaoSpawnTargets(config);
+  if (activeDaoTargets.length > 0) {
+    console.log(
+      `[Scaling] Registered DAO targets active: ${activeDaoTargets
+        .map((target) => `${target.daoSlug}@${target.governorName}(${target.activeProposalIds.length})`)
+        .join(", ")}`
+    );
+  }
+  for (const target of activeDaoTargets) {
+    const existingForDao = registeredDaoChildren.filter(
+      (child: any) =>
+        parseRegisteredDaoSlugFromLabel(child.ensLabel) === target.daoSlug &&
+        (child.governance as string).toLowerCase() === target.governorAddr.toLowerCase()
+    );
+    const needed = PERSPECTIVES.length - existingForDao.length;
+    if (needed <= 0) continue;
+    if (parentBalance < MIN_ETH_TO_SPAWN) {
+      console.log(`[Scaling] Skipping registered DAO spawn for ${target.daoName} — low ETH`);
+      continue;
+    }
+
+    console.log(
+      `[Scaling] ${target.daoName} has ${existingForDao.length}/${PERSPECTIVES.length} dedicated agents — spawning ${needed} more`
+    );
+
+    let spawned = 0;
+    for (const perspective of PERSPECTIVES) {
+      if (spawned >= needed) break;
+      const childName = buildRegisteredDaoChildLabel(target.daoSlug, perspective.suffix);
+      const alreadyExists = registeredDaoChildren.some((child: any) => child.ensLabel === childName);
+      if (alreadyExists) continue;
+
+      try {
+        const childId = allocateChildId();
+        const childWallet = deriveChildWallet(childId);
+
+        await fundChildWallet(childWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
+        saveChildKey(childName, childWallet.privateKey);
+
+        const receipt = await config.sendTx({
+          address: config.factory,
+          abi: SpawnFactoryABI,
+          functionName: "spawnChildWithOperator",
+          args: [childName, target.governorAddr, 0n, DEFAULT_MAX_GAS_PER_VOTE, childWallet.address],
+        });
+
+        try { await registerSubdomain(childName, childWallet.address); } catch {}
+
+        const freshChildren = (await config.readClient.readContract({
+          address: config.factory, abi: SpawnFactoryABI, functionName: "getActiveChildren",
+        })) as any[];
+        const newChild = freshChildren.find((child: any) => child.ensLabel === childName);
+
+        if (newChild) {
+          let delegationRecord: DelegationRecord | undefined;
+          try {
+            delegationRecord = await createVotingDelegation(
+              newChild.childAddr as `0x${string}`,
+              childWallet.address as `0x${string}`,
+              100,
+              childName
+            );
+            storeDelegationForChild(childName, delegationRecord);
+          } catch (delegationErr: any) {
+            console.log(`  [Delegation] Creation failed for ${childName}: ${delegationErr?.message?.slice(0, 60)}`);
+          }
+
+          spawnChildProcess(
+            newChild.childAddr,
+            target.governorAddr,
+            childName,
+            config.treasury,
+            childWallet.privateKey,
+            config.name,
+            undefined,
+            delegationRecord,
+            { CHILD_TARGET_DAO_SLUG: target.daoSlug }
+          );
+          registeredDaoChildren.push(newChild);
+        }
+
+        try {
+          const regResult = await registerAgent(`spawn://${childName}.spawn.eth`, {
+            agentType: "child",
+            assignedDAO: target.daoName,
+            governanceContract: target.governorAddr,
+            ensName: `${childName}.spawn.eth`,
+            alignmentScore: 100,
+            capabilities: ["vote", "reason", perspective.suffix, "registered-dao"],
+            createdAt: Date.now(),
+          });
+          if (regResult.agentId > 0n && regResult.txHash) {
+            trackAgentId(childName, regResult.agentId);
+          }
+        } catch {}
+
+        console.log(`[Scaling] Spawned ${childName} for ${target.daoName} (wallet: ${childWallet.address})`);
+        try {
+          logParentAction(
+            "dynamic_spawn_registered_dao",
+            {
+              chain: config.name,
+              dao: target.daoName,
+              daoSlug: target.daoSlug,
+              reason: "registered_dao_active_proposal",
+              perspective: perspective.suffix,
+              activeProposalIds: target.activeProposalIds,
+            },
+            {
+              childWallet: childWallet.address,
+              governance: target.governorAddr,
+              txHash: receipt.transactionHash,
+            },
+            receipt.transactionHash
+          );
+        } catch {}
+        spawned++;
+      } catch (err: any) {
+        console.log(`[Scaling] Registered DAO spawn failed for ${childName}: ${err?.message?.slice(0, 50)}`);
+      }
+    }
+  }
+
   // Track idle children — recall if no votes for too many cycles
-  for (const child of standardChildren) {
+  const managedChildren = [...standardChildren, ...registeredDaoChildren];
+  for (const child of managedChildren) {
     const key = `${config.name}:${child.id}`;
     try {
       const voteCount = Number(await config.readClient.readContract({
@@ -2694,6 +2993,7 @@ async function dynamicScaling(config: ChainConfig) {
         if (idle >= IDLE_CYCLES_TO_RECALL) {
           // Check if governor still has active proposals before recalling
           const govAddr = child.governance as `0x${string}`;
+          const targetDaoSlug = parseRegisteredDaoSlugFromLabel(child.ensLabel);
           const proposalCount = Number(await config.readClient.readContract({
             address: govAddr, abi: MockGovernorABI, functionName: "proposalCount",
           }));
@@ -2703,7 +3003,19 @@ async function dynamicScaling(config: ChainConfig) {
             const state = Number(await config.readClient.readContract({
               address: govAddr, abi: MockGovernorABI, functionName: "state", args: [BigInt(p)],
             }));
-            if (state === 1) { hasActiveProposals = true; break; }
+            if (state !== 1) continue;
+            if (!targetDaoSlug) {
+              hasActiveProposals = true;
+              break;
+            }
+          }
+
+          if (targetDaoSlug) {
+            const activeDaoMirrors = await getActiveRegisteredDaoMirrors(config, {
+              daoSlug: targetDaoSlug,
+              governorAddr: govAddr,
+            });
+            hasActiveProposals = activeDaoMirrors.length > 0;
           }
 
           if (!hasActiveProposals) {
@@ -2720,7 +3032,19 @@ async function dynamicScaling(config: ChainConfig) {
               try { await deregisterSubdomain(child.ensLabel); } catch {}
               const swept = await sweepChildWallet(child.ensLabel, config, child.childAddr);
 
-              try { logParentAction("dynamic_recall", { chain: config.name, child: child.ensLabel, reason: "idle_no_proposals", idleCycles: idle }, { walletSwept: swept }); } catch {}
+              try {
+                logParentAction(
+                  "dynamic_recall",
+                  {
+                    chain: config.name,
+                    child: child.ensLabel,
+                    reason: targetDaoSlug ? "registered_dao_idle_no_active_proposals" : "idle_no_proposals",
+                    idleCycles: idle,
+                    ...(targetDaoSlug ? { targetDaoSlug } : {}),
+                  },
+                  { walletSwept: swept }
+                );
+              } catch {}
               idleCycleCount.delete(key);
               idleCycleCount.delete(`${key}:votes`);
               strikes.delete(key);
@@ -2878,6 +3202,18 @@ async function main() {
       `reasons=${runtimeBudgetState.reasons.join(",") || "healthy"}`
     );
 
+    // Dynamic scaling first so newly mirrored registered DAOs can get their
+    // dedicated cohort without waiting for a long alignment pass to finish.
+    if (runtimeBudgetState.pauseScaling) {
+      console.log(`[Budget] Dynamic scaling paused (${runtimeBudgetState.policy})`);
+    } else {
+      try {
+        await dynamicScaling(BASE_CONFIG);
+      } catch (err: any) {
+        console.log(`[Scaling] Error: ${err?.message?.slice(0, 50)}`);
+      }
+    }
+
     try {
       console.log(`\n[Base Sepolia]`);
       await evaluateChainChildren(BASE_CONFIG);
@@ -2889,17 +3225,6 @@ async function main() {
       console.log(`\n[Yield]`);
       await logYieldStatus();
     } catch {}
-
-    // Dynamic scaling — auto-spawn/recall based on conditions
-    if (runtimeBudgetState.pauseScaling) {
-      console.log(`[Budget] Dynamic scaling paused (${runtimeBudgetState.policy})`);
-    } else {
-      try {
-        await dynamicScaling(BASE_CONFIG);
-      } catch (err: any) {
-        console.log(`[Scaling] Error: ${err?.message?.slice(0, 50)}`);
-      }
-    }
 
     // Venice usage metrics
     const veniceMetrics = getVeniceMetrics();

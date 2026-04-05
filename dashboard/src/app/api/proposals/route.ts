@@ -148,6 +148,9 @@ export async function GET(request: Request) {
     const voteSummaries = buildVoteSummaries(logEntries);
     const registeredDaos = readRegisteredDAOs();
     const registeredDaosBySlug = new Map(registeredDaos.map((dao) => [dao.slug, dao]));
+    const registeredDaosBySourceRef = new Map<string, (typeof registeredDaos)[number]>(
+      registeredDaos.map((dao) => [`${dao.source}:${dao.sourceRef}`, dao] as const)
+    );
     const mirrorLookup = buildMirrorLookup();
 
     const allProposals: any[] = [];
@@ -176,20 +179,33 @@ export async function GET(request: Request) {
 
               const p = rawProposal as any;
               const mirror = mirrorLookup.get(getMirrorLookupKey(gov.address, p.id.toString()));
+              const mirrorRegistrationKey =
+                mirror &&
+                mirror.sourceRef &&
+                (mirror.source === "tally" || mirror.source === "snapshot")
+                  ? `${mirror.source}:${mirror.sourceRef}`
+                  : null;
+              const matchedRegisteredDao =
+                (mirror?.sourceDaoSlug
+                  ? registeredDaosBySlug.get(mirror.sourceDaoSlug)
+                  : undefined) ||
+                (mirrorRegistrationKey
+                  ? registeredDaosBySourceRef.get(mirrorRegistrationKey)
+                  : undefined);
               if (normalizedFilter) {
-                if (!mirror?.sourceDaoSlug || mirror.sourceDaoSlug !== normalizedFilter) {
+                const effectiveDaoSlug = matchedRegisteredDao?.slug ?? mirror?.sourceDaoSlug;
+                if (!effectiveDaoSlug || effectiveDaoSlug !== normalizedFilter) {
                   return null;
                 }
               }
 
-              const registeredDao = mirror?.sourceDaoSlug
-                ? registeredDaosBySlug.get(mirror.sourceDaoSlug)
-                : undefined;
               const legacySource = parseLegacySource(p.description || "");
               const sourceDaoName =
-                registeredDao?.name ?? mirror?.sourceDaoName ?? legacySource.sourceDaoName;
+                matchedRegisteredDao?.name ?? mirror?.sourceDaoName ?? legacySource.sourceDaoName;
               const sourceType =
-                registeredDao?.source ?? (mirror?.source as typeof legacySource.sourceType) ?? legacySource.sourceType;
+                matchedRegisteredDao?.source ??
+                (mirror?.source as typeof legacySource.sourceType) ??
+                legacySource.sourceType;
               const proposalKey = mirror?.externalProposalKey || `${gov.slug}-${p.id.toString()}`;
               const voters = getProposalVoters(proposalKey, voteSummaries.byProposal, childLookup);
 
@@ -208,11 +224,11 @@ export async function GET(request: Request) {
                 governorAddress: gov.address,
                 daoColor: gov.color,
                 daoBorderColor: gov.borderColor,
-                sourceDaoId: registeredDao?.id ?? mirror?.sourceDaoId ?? null,
-                sourceDaoSlug: registeredDao?.slug ?? mirror?.sourceDaoSlug ?? null,
+                sourceDaoId: matchedRegisteredDao?.id ?? mirror?.sourceDaoId ?? null,
+                sourceDaoSlug: matchedRegisteredDao?.slug ?? mirror?.sourceDaoSlug ?? null,
                 sourceDaoName,
                 sourceType,
-                sourceRef: registeredDao?.sourceRef ?? mirror?.sourceRef ?? null,
+                sourceRef: matchedRegisteredDao?.sourceRef ?? mirror?.sourceRef ?? null,
                 mirroredAt: mirror?.mirroredAt ?? null,
                 tallySource: sourceType === "tally",
                 voters,

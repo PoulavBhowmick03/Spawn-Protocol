@@ -50,6 +50,15 @@ async function main() {
   } else {
     console.log(`[ChildProcess:${label}] PID ${process.pid} starting (shared wallet)...`);
   }
+  const targetDaoSlug = process.env.CHILD_TARGET_DAO_SLUG?.trim().toLowerCase() || "";
+  if (targetDaoSlug) {
+    console.log(`[ChildProcess:${label}] Registered DAO target: ${targetDaoSlug}`);
+    ipcLog(
+      "registered_dao_child_process_boot",
+      { targetDaoSlug, childAddr, governanceAddr },
+      { targeted: true }
+    );
+  }
 
   // Prepend perspective to governance values if provided
   const fullValues = childPerspective

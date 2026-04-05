@@ -29,7 +29,8 @@ export function CurlSnippet() {
   const [tab, setTab] = useState<Tab>("snapshot");
   const [copied, setCopied] = useState(false);
 
-  const snippet = tab === "snapshot" ? SNAPSHOT_EXAMPLE : tab === "tally" ? TALLY_EXAMPLE : ONBOARD_SH;
+  const snippet =
+    tab === "snapshot" ? SNAPSHOT_EXAMPLE : tab === "tally" ? TALLY_EXAMPLE : ONBOARD_SH;
 
   function copy() {
     navigator.clipboard.writeText(snippet).then(() => {
@@ -39,36 +40,43 @@ export function CurlSnippet() {
   }
 
   return (
-    <div className="rounded-lg border border-gray-800 bg-[#0d0d14]">
-      <div className="flex items-center justify-between border-b border-gray-800 px-4 py-2">
-        <div className="flex gap-1">
+    <div className="bg-[#070710]">
+      {/* Tab bar */}
+      <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-2">
+        <div className="flex gap-0">
           {(["snapshot", "tally", "script"] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`rounded px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider transition-colors ${
+              className={`px-3 py-1 text-[10px] font-mono uppercase tracking-widest border-b-2 transition-colors ${
                 tab === t
-                  ? "bg-gray-700 text-gray-200"
-                  : "text-gray-600 hover:text-gray-400"
+                  ? "text-[#00ff88] border-[#00ff88]"
+                  : "text-[#4a4f5e] border-transparent hover:text-[#f5f5f0]"
               }`}
             >
-              {t === "script" ? "onboard.sh" : t}
+              {t === "script" ? "ONBOARD.SH" : t.toUpperCase()}
             </button>
           ))}
         </div>
         <button
           onClick={copy}
-          className="text-[10px] font-mono text-gray-600 transition-colors hover:text-gray-300"
+          className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest hover:text-[#f5f5f0] transition-colors"
         >
-          {copied ? "copied ✓" : "copy"}
+          {copied ? "COPIED ✓" : "COPY"}
         </button>
       </div>
-      <pre className="overflow-x-auto px-4 py-3 text-xs font-mono leading-relaxed text-gray-400">
-        {snippet}
+
+      {/* Code block */}
+      <pre className="overflow-x-auto px-4 py-4 text-[11px] font-mono leading-relaxed text-[#f5f5f0]/60">
+        <code>{snippet}</code>
       </pre>
-      <p className="border-t border-gray-800 px-4 py-2 text-[10px] font-mono text-gray-700">
-        Control server listens on port 8787 by default · set SPAWN_CONTROL_URL to override
-      </p>
+
+      {/* Footer */}
+      <div className="border-t border-white/[0.08] px-4 py-2">
+        <p className="font-mono text-[10px] text-[#4a4f5e] uppercase">
+          CONTROL_SERVER LISTENS ON PORT 8787 — SET SPAWN_CONTROL_URL TO OVERRIDE
+        </p>
+      </div>
     </div>
   );
 }
