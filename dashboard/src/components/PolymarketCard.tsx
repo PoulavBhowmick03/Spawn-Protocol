@@ -32,22 +32,25 @@ export function PolymarketCard({ market }: PolymarketCardProps) {
   const hasOutcomes = market.outcomes.length > 0 && market.outcomePrices.length > 0;
 
   return (
-    <div className="border border-gray-800 rounded-lg p-4 bg-[#0d0d14] hover:bg-[#12121c] transition-all">
+    <article className="relative overflow-hidden border border-white/[0.1] bg-[#0f1118] transition-colors hover:border-white/[0.16] shadow-[0_0_0_1px_rgba(245,166,35,0.08),0_18px_42px_rgba(12,8,0,0.38)]">
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-orange-400/45 via-orange-300/20 to-transparent" />
+      <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-orange-400/90" />
+
       {/* Header */}
-      <div className="flex items-start gap-3 mb-3">
+      <div className="flex items-start gap-3 px-5 py-4 border-b border-white/[0.08] bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0))]">
         {market.image && (
           <img
             src={market.image}
             alt=""
-            className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-gray-700"
+            className="w-10 h-10 object-cover flex-shrink-0 border border-white/[0.08]"
           />
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-xs border border-orange-400/30 bg-orange-400/5 text-orange-400 rounded px-1.5 py-0.5 font-mono font-semibold">
+            <span className="text-xs border border-orange-400/30 bg-orange-400/5 text-orange-400 px-1.5 py-0.5 font-mono font-semibold uppercase">
               Polymarket
             </span>
-            <span className="text-xs border border-blue-400 text-blue-400 rounded px-1.5 py-0.5 font-mono">
+            <span className="text-xs border border-blue-400 text-blue-400 px-1.5 py-0.5 font-mono uppercase">
               Active
             </span>
             {market.volume24hr > 0 && (
@@ -69,12 +72,12 @@ export function PolymarketCard({ market }: PolymarketCardProps) {
 
       {/* Description */}
       {desc && (
-        <p className="text-xs text-gray-500 mb-3 leading-relaxed">{desc}</p>
+        <p className="px-5 py-3 text-xs text-gray-500 leading-relaxed border-b border-white/[0.08] bg-[#0b0d14]">{desc}</p>
       )}
 
       {/* Outcome probabilities */}
       {hasOutcomes && (
-        <div className="mb-3">
+        <div className="px-5 py-3 border-b border-white/[0.08] bg-[#0a0c12]">
           <div className="flex h-2 rounded overflow-hidden gap-px">
             {market.outcomes.map((outcome, i) => {
               const pct = (market.outcomePrices[i] || 0) * 100;
@@ -113,7 +116,7 @@ export function PolymarketCard({ market }: PolymarketCardProps) {
       )}
 
       {/* Footer */}
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 font-mono items-center">
+      <div className="px-5 py-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600 font-mono items-center bg-[#0b0d14]">
         <span>Vol: {formatVolume(market.volume)}</span>
         <span>Liq: {formatVolume(market.liquidity)}</span>
         <span>Ends: {formatDate(market.endDate)}</span>
@@ -128,6 +131,6 @@ export function PolymarketCard({ market }: PolymarketCardProps) {
           </a>
         </span>
       </div>
-    </div>
+    </article>
   );
 }

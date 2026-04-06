@@ -405,10 +405,10 @@ export default function AgentDetailPage({ params }: PageProps) {
   if (loading) {
     return (
       <div className="p-4 md:p-8">
-        <div className="animate-pulse space-y-4">
-          <div className="h-8 bg-gray-800 rounded w-1/3" />
-          <div className="h-4 bg-gray-800 rounded w-1/2" />
-          <div className="h-32 bg-gray-800 rounded" />
+        <div className="animate-pulse space-y-3">
+          <div className="h-6 bg-white/[0.05] w-1/3" />
+          <div className="h-4 bg-white/[0.05] w-1/2" />
+          <div className="h-24 bg-white/[0.05]" />
         </div>
       </div>
     );
@@ -417,12 +417,12 @@ export default function AgentDetailPage({ params }: PageProps) {
   if (error || !child) {
     return (
       <div className="p-4 md:p-8">
-        <Link href="/" className="text-sm text-gray-500 hover:text-gray-300 font-mono mb-6 inline-block">
-          ← Back to Swarm
+        <Link href="/" className="text-[11px] font-mono text-[#4a4f5e] hover:text-[#f5f5f0] uppercase tracking-wider mb-6 inline-block transition-colors">
+          ← BACK_TO_SWARM
         </Link>
-        <div className="border border-red-500/30 bg-red-500/10 rounded-lg px-4 py-3">
-          <p className="text-red-400 font-mono">
-            {error || "Agent not found"}
+        <div className="border border-[#ff3b3b]/30 bg-[#ff3b3b]/5 px-4 py-3">
+          <p className="text-[#ff3b3b] font-mono text-sm uppercase">
+            ERROR: {error || "AGENT NOT FOUND"}
           </p>
         </div>
       </div>
@@ -433,31 +433,31 @@ export default function AgentDetailPage({ params }: PageProps) {
   const daoDisplay = governorName(child.governance);
 
   return (
-    <div className="p-4 md:p-8">
-      <Link href="/" className="text-sm text-gray-500 hover:text-gray-300 font-mono mb-6 inline-block">
-        ← Back to Swarm
+    <div className="p-4 md:p-6">
+      <Link href="/" className="text-[11px] font-mono text-[#4a4f5e] hover:text-[#f5f5f0] uppercase tracking-wider mb-4 inline-block transition-colors">
+        ← SWARM
       </Link>
 
       {/* Agent header */}
-      <div className="border border-gray-800 rounded-lg p-4 md:p-6 bg-[#0d0d14] mb-6">
+      <div className="border border-white/[0.08] bg-[#0d0d14] p-4 md:p-5 mb-4">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-3 mb-1">
-              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${child.active ? "bg-green-400 animate-ping" : "bg-gray-600"}`} style={{ animationDuration: "2s" }} />
-              <span className="text-xs text-gray-500 uppercase tracking-wider font-mono">
-                Agent #{id} — {child.active ? "Active" : "Terminated"}
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${child.active ? "bg-[#00ff88] animate-pulse" : "bg-[#4a4f5e]"}`} />
+              <span className="text-[10px] text-[#4a4f5e] uppercase tracking-widest font-mono">
+                AGENT_{id} — {child.active ? "ACTIVE" : "TERMINATED"}
               </span>
             </div>
-            <h1 className="text-lg md:text-xl font-mono font-bold text-green-400 mb-1 flex items-center gap-2 flex-wrap">
+            <h1 className="text-base md:text-lg font-mono font-bold text-[#00ff88] mb-1 flex items-center gap-2 flex-wrap">
               {ensDisplay}
               {delegation && !revocation && (
-                <span className="text-[10px] border border-orange-400/30 bg-orange-400/10 text-orange-400 rounded px-1.5 py-0.5 font-mono uppercase">
+                <span className="text-[9px] border border-[#f5a623]/30 bg-[#f5a623]/10 text-[#f5a623] px-1.5 py-0.5 font-mono uppercase">
                   ERC-7715
                 </span>
               )}
               {revocation && (
-                <span className="text-[10px] border border-red-400/30 bg-red-400/10 text-red-400 rounded px-1.5 py-0.5 font-mono uppercase">
-                  7715 REVOKED
+                <span className="text-[9px] border border-[#ff3b3b]/30 bg-[#ff3b3b]/10 text-[#ff3b3b] px-1.5 py-0.5 font-mono uppercase">
+                  7715_REVOKED
                 </span>
               )}
               {(() => {
@@ -481,28 +481,28 @@ export default function AgentDetailPage({ params }: PageProps) {
           <AlignmentBadge score={child.alignmentScore} size="lg" />
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+        <div className="grid grid-cols-2 md:grid-cols-4 border-t border-white/[0.08] mt-4 pt-4 gap-x-6 gap-y-3">
           <div>
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">DAO</p>
+            <p className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">DAO</p>
             <a
               href={explorerAddress(child.governance)}
               target="_blank"
               rel="noopener noreferrer"
-              className="font-mono text-blue-400 hover:text-blue-300 text-xs"
+              className="font-mono text-[11px] text-[#f5f5f0]/70 hover:text-[#f5f5f0] transition-colors"
             >
               {daoDisplay ?? formatAddress(child.governance)} ↗
             </a>
           </div>
           <div>
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Votes Cast</p>
-            <p className="font-mono text-white">{child.voteCount.toString()}</p>
+            <p className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">VOTES_CAST</p>
+            <p className="font-mono text-[#f5f5f0] font-bold">{child.voteCount.toString()}</p>
           </div>
           <div>
-            <p className="text-xs text-gray-600 uppercase tracking-wider mb-1">Last Vote</p>
-            <p className="font-mono text-xs text-gray-400">
+            <p className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">LAST_VOTE</p>
+            <p className="font-mono text-[11px] text-[#4a4f5e]">
               {child.lastVoteTimestamp > BigInt(0)
                 ? formatTimestamp(child.lastVoteTimestamp)
-                : "Never"}
+                : "NEVER"}
             </p>
           </div>
         </div>
@@ -510,18 +510,18 @@ export default function AgentDetailPage({ params }: PageProps) {
 
       {/* ERC-8004 Onchain Identity */}
       {(erc8004Loading || erc8004Data) && (
-        <div className="border border-indigo-400/30 bg-indigo-400/5 rounded-lg p-5 mb-6">
+        <div className="border border-white/[0.08] bg-[#0d0d14] p-4 mb-4">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <h2 className="text-xs font-mono text-indigo-400 uppercase tracking-widest">ERC-8004 Onchain Identity</h2>
+            <h2 className="text-[10px] font-mono text-[#4a4f5e] uppercase tracking-widest">ERC-8004_ONCHAIN_IDENTITY</h2>
             <a
               href={`https://sepolia.basescan.org/address/${ERC8004_REGISTRY}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-[10px] font-mono text-indigo-300 border border-indigo-400/30 bg-indigo-400/10 rounded px-2 py-1 hover:bg-indigo-400/20 transition-all"
+              className="flex items-center gap-1.5 text-[10px] font-mono text-[#4a4f5e] border border-white/[0.08] px-2 py-1 hover:text-[#f5f5f0] hover:border-white/20 transition-all"
               title="View ERC-8004 registry contract on BaseScan"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
-              Verified onchain via ERC-8004 registry {formatAddress(ERC8004_REGISTRY)} ↗
+              <span className="w-1.5 h-1.5 rounded-full bg-[#4a4f5e] inline-block" />
+              VERIFIED — {formatAddress(ERC8004_REGISTRY)} ↗
             </a>
           </div>
 

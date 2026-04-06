@@ -1,17 +1,15 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import { useSwarmData } from "@/hooks/useSwarmData";
 import { useChainContext } from "@/context/ChainContext";
 import { formatAddress } from "@/lib/contracts";
-
-type SortKey = "score" | "votes" | "efficiency" | "streak";
 
 export default function LeaderboardPage() {
   const { children, loading } = useSwarmData({ includeMeta: false });
   const { explorerBase } = useChainContext();
 
-  // Build leaderboard data from active children (vote breakdown already in ChildInfo)
   const activeChildren = children.filter((c) => c.active);
   const terminatedChildren = children.filter((c) => !c.active);
 
@@ -20,17 +18,8 @@ export default function LeaderboardPage() {
       const votes = Number(child.voteCount);
       const alignment = Number(child.alignmentScore);
       const diversityScore = votes > 0 ? Math.round(((child.againstVotes + child.abstainVotes) / votes) * 100) : 0;
-      const efficiency = votes > 0 ? Math.round((alignment / 100) * votes) : 0;
       const perspective = child.ensLabel.split("-").pop() || "general";
-
-      return {
-        ...child,
-        votes,
-        alignment,
-        diversityScore,
-        efficiency,
-        perspective,
-      };
+      return { ...child, votes, alignment, diversityScore, perspective };
     });
 
     const sorted = [...leaderboard].sort((a, b) => {
@@ -50,182 +39,137 @@ export default function LeaderboardPage() {
   }, [activeChildren]);
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-mono font-bold text-green-400 tracking-tight">
-          Agent Leaderboard
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Performance ranking across all active governance agents
-        </p>
+    <div className="min-h-screen">
+      {/* Header */}
+      <div className="border-b border-white/[0.08] px-4 py-3 flex items-center justify-between">
+        <h1 className="font-mono text-sm font-bold text-[#f5f5f0] uppercase tracking-widest">LEADERBOARD</h1>
+        <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">RANKED: ALIGNMENT × VOTES × DIVERSITY</span>
       </div>
 
-      {/* Aggregate Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-        <StatCard label="Active Agents" value={sorted.length} color="green" />
-        <StatCard label="Total Votes" value={totalVotes} color="blue" />
-        <StatCard label="Avg Alignment" value={`${avgAlignment}/100`} color="yellow" />
-        <StatCard label="FOR Votes" value={totalFor} color="green" />
-        <StatCard label="AGAINST Votes" value={totalAgainst} color="red" />
+      {/* Stat strip */}
+      <div className="border-b border-white/[0.08] grid grid-cols-2 sm:grid-cols-5">
+        {[
+          { label: "ACTIVE_AGENTS", value: sorted.length, color: "text-[#00ff88]" },
+          { label: "TOTAL_VOTES", value: totalVotes, color: "text-[#f5f5f0]" },
+          { label: "AVG_ALIGNMENT", value: `${avgAlignment}/100`, color: avgAlignment >= 70 ? "text-[#00ff88]" : avgAlignment >= 40 ? "text-[#f5a623]" : "text-[#ff3b3b]" },
+          { label: "FOR_VOTES", value: totalFor, color: "text-[#00ff88]" },
+          { label: "AGAINST_VOTES", value: totalAgainst, color: "text-[#ff3b3b]" },
+        ].map((stat, i) => (
+          <div key={stat.label} className={`px-6 py-4 ${i < 4 ? "border-r border-white/[0.08]" : ""}`}>
+            <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">{stat.label}</div>
+            <div className={`font-mono text-2xl font-bold leading-none ${stat.color}`}>
+              {loading ? "—" : stat.value}
+            </div>
+          </div>
+        ))}
       </div>
 
-      {/* Leaderboard Table */}
+      {/* Table */}
       {loading ? (
-        <div className="text-gray-500 font-mono text-sm animate-pulse">Loading agents...</div>
+        <div className="px-4 py-4 space-y-2">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="h-9 bg-white/[0.05] animate-pulse" />
+          ))}
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="border border-white/[0.08] m-4 p-12 text-center">
+          <div className="mb-4 text-4xl text-[#4a4f5e]">▲</div>
+          <h2 className="font-mono text-sm text-[#4a4f5e] uppercase tracking-widest">NO ACTIVE AGENTS</h2>
+        </div>
       ) : (
-        <div className="border border-gray-800 rounded-lg overflow-x-auto">
-          <table className="w-full text-sm font-mono min-w-[700px]">
+        <div className="overflow-x-auto">
+          <table className="w-full font-mono min-w-[700px]">
             <thead>
-              <tr className="bg-gray-900/80 text-gray-400 text-xs uppercase tracking-wider">
-                <th className="px-4 py-3 text-left">Rank</th>
-                <th className="px-4 py-3 text-left">Agent</th>
-                <th className="px-4 py-3 text-left">Perspective</th>
-                <th className="px-4 py-3 text-center">Alignment</th>
-                <th className="px-4 py-3 text-center">Votes</th>
-                <th className="px-4 py-3 text-center">FOR</th>
-                <th className="px-4 py-3 text-center">AGAINST</th>
-                <th className="px-4 py-3 text-center">Diversity</th>
-                <th className="px-4 py-3 text-center">Score</th>
+              <tr className="border-b border-white/[0.08]">
+                {["RANK", "AGENT_ID", "PERSPECTIVE", "ALIGNMENT", "VOTES", "FOR", "AGAINST", "DIVERSITY", "COMPOSITE"].map((h, i) => (
+                  <th key={h} className={`px-4 py-2 font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest ${i > 2 ? "text-center" : "text-left"}`}>
+                    {h}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {sorted.map((agent, idx) => {
-                // Composite score: 60% alignment + 30% votes + 10% diversity
                 const compositeScore = Math.round(
                   agent.alignment * 0.6 +
                   Math.min(agent.votes, 100) * 0.3 +
                   agent.diversityScore * 0.1
                 );
+                const alignColor = agent.alignment >= 70 ? "text-[#00ff88]" : agent.alignment >= 45 ? "text-[#f5a623]" : "text-[#ff3b3b]";
+                const rankStyle = idx === 0
+                  ? "border-l-2 border-[#00ff88] bg-[#00ff88]/[0.03]"
+                  : idx === 1
+                  ? "border-l-2 border-[#f5f5f0]/30"
+                  : idx === 2
+                  ? "border-l-2 border-[#f5a623]/30"
+                  : "";
 
                 return (
                   <tr
                     key={agent.childAddr}
-                    className={`border-t border-gray-800/60 transition-colors ${
-                      idx === 0
-                        ? "bg-yellow-400/5"
-                        : idx === 1
-                        ? "bg-gray-400/5"
-                        : idx === 2
-                        ? "bg-orange-400/5"
-                        : "hover:bg-gray-900/50"
-                    }`}
+                    className={`border-b border-white/[0.08] ${idx % 2 === 0 ? "bg-[#0a0a0f]" : "bg-[#0d0d14]"} ${rankStyle} hover:bg-white/[0.02] transition-colors`}
                   >
-                    <td className="px-4 py-3">
-                      <span className={`text-lg ${
-                        idx === 0 ? "text-yellow-400" : idx === 1 ? "text-gray-300" : idx === 2 ? "text-orange-400" : "text-gray-600"
-                      }`}>
-                        {idx === 0 ? "1st" : idx === 1 ? "2nd" : idx === 2 ? "3rd" : `${idx + 1}th`}
+                    <td className="px-4 py-2.5">
+                      <span className={`text-[11px] font-bold ${idx === 0 ? "text-[#00ff88]" : idx <= 2 ? "text-[#f5f5f0]/60" : "text-[#4a4f5e]"}`}>
+                        #{idx + 1}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
-                      <a
-                        href={`/agent/${agent.id}`}
-                        className="text-green-400 hover:text-green-300 hover:underline"
-                      >
+                    <td className="px-4 py-2.5">
+                      <Link href={`/agent/${agent.id}`} className="text-[11px] text-[#00ff88] hover:text-white transition-colors">
                         {agent.ensLabel}
-                      </a>
-                      <div className="text-[10px] text-gray-600 mt-0.5">
-                        <a
-                          href={`${explorerBase}/address/${agent.childAddr}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hover:text-gray-400"
-                        >
+                      </Link>
+                      <div className="text-[10px] text-[#4a4f5e] mt-0.5">
+                        <a href={`${explorerBase}/address/${agent.childAddr}`} target="_blank" rel="noopener noreferrer" className="hover:text-[#f5f5f0] transition-colors">
                           {formatAddress(agent.childAddr)}
                         </a>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded text-xs ${
-                        agent.perspective === "defi"
-                          ? "bg-blue-400/10 text-blue-400 border border-blue-400/20"
-                          : agent.perspective === "publicgoods"
-                          ? "bg-purple-400/10 text-purple-400 border border-purple-400/20"
-                          : agent.perspective === "conservative"
-                          ? "bg-orange-400/10 text-orange-400 border border-orange-400/20"
-                          : "bg-gray-400/10 text-gray-400 border border-gray-400/20"
-                      }`}>
+                    <td className="px-4 py-2.5">
+                      <span className="px-2 py-0.5 text-[9px] border border-white/[0.08] text-[#4a4f5e] uppercase">
                         {agent.perspective}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`font-bold ${
-                        agent.alignment >= 70 ? "text-green-400" : agent.alignment >= 45 ? "text-yellow-400" : "text-red-400"
-                      }`}>
-                        {agent.alignment}
-                      </span>
+                    <td className="px-4 py-2.5 text-center">
+                      <span className={`text-[11px] font-bold ${alignColor}`}>{agent.alignment}</span>
                     </td>
-                    <td className="px-4 py-3 text-center text-gray-300">{agent.votes}</td>
-                    <td className="px-4 py-3 text-center text-green-400">{Number(agent.forVotes)}</td>
-                    <td className="px-4 py-3 text-center text-red-400">{Number(agent.againstVotes)}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`${agent.diversityScore > 20 ? "text-purple-400" : "text-gray-500"}`}>
-                        {agent.diversityScore}%
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className="text-white font-bold">{compositeScore}</span>
-                    </td>
+                    <td className="px-4 py-2.5 text-center text-[11px] text-[#f5f5f0]/70">{agent.votes}</td>
+                    <td className="px-4 py-2.5 text-center text-[11px] text-[#00ff88]/80">{Number(agent.forVotes)}</td>
+                    <td className="px-4 py-2.5 text-center text-[11px] text-[#ff3b3b]/80">{Number(agent.againstVotes)}</td>
+                    <td className="px-4 py-2.5 text-center text-[11px] text-[#4a4f5e]">{agent.diversityScore}%</td>
+                    <td className="px-4 py-2.5 text-center text-[11px] font-bold text-[#f5f5f0]">{compositeScore}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          <p className="px-4 py-2 font-mono text-[10px] text-[#4a4f5e] border-t border-white/[0.08]">
+            COMPOSITE_SCORE = ALIGNMENT × 0.6 + VOTES × 0.3 + DIVERSITY × 0.1
+          </p>
         </div>
       )}
 
-      {/* Terminated Agents Summary */}
+      {/* Terminated Agents */}
       {terminatedChildren.length > 0 && (
-        <div className="mt-8">
-          <h2 className="text-lg font-mono text-red-400 mb-3">
-            Terminated Agents ({terminatedChildren.length})
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="border-t border-white/[0.08] p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-2 h-2 bg-[#ff3b3b]/60" />
+            <span className="font-mono text-[10px] text-[#ff3b3b]/60 uppercase tracking-widest">
+              TERMINATED_AGENTS ({terminatedChildren.length})
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
             {terminatedChildren.slice(0, 12).map((child) => (
-              <div
-                key={child.ensLabel}
-                className="border border-red-900/30 rounded-lg p-3 bg-red-400/5"
-              >
-                <div className="text-xs text-gray-500 font-mono truncate">{child.ensLabel}</div>
+              <div key={child.ensLabel} className="border border-white/[0.08] bg-[#0d0d14] px-3 py-2 opacity-50">
+                <div className="font-mono text-[10px] text-[#4a4f5e] truncate">{child.ensLabel}</div>
                 <div className="flex items-center gap-2 mt-1">
-                  <span className="text-red-400 text-xs font-bold">
-                    {Number(child.alignmentScore)}/100
-                  </span>
-                  <span className="text-gray-600 text-xs">
-                    {Number(child.voteCount)} votes
-                  </span>
+                  <span className="font-mono text-[10px] text-[#ff3b3b]">{Number(child.alignmentScore)}/100</span>
+                  <span className="font-mono text-[10px] text-[#4a4f5e]">{Number(child.voteCount)}v</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: string | number;
-  color: string;
-}) {
-  const colorMap: Record<string, string> = {
-    green: "text-green-400",
-    blue: "text-blue-400",
-    yellow: "text-yellow-400",
-    red: "text-red-400",
-    purple: "text-purple-400",
-  };
-  return (
-    <div className="border border-gray-800 rounded-lg p-4 bg-gray-900/30">
-      <div className={`text-2xl font-mono font-bold ${colorMap[color] || "text-white"}`}>
-        {value}
-      </div>
-      <div className="text-xs text-gray-500 uppercase tracking-wider mt-1">{label}</div>
     </div>
   );
 }

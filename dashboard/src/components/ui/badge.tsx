@@ -5,20 +5,25 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const badgeVariants = cva(
-  "group/badge inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-4xl border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3!",
+  "group/badge inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest leading-none whitespace-nowrap transition-all [&>svg]:pointer-events-none [&>svg]:size-3!",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
-        secondary:
-          "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
-        destructive:
-          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
-        outline:
-          "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
-        ghost:
-          "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
-        link: "text-primary underline-offset-4 hover:underline",
+        default: "bg-[#00ff88] text-black border-transparent",
+        secondary: "bg-[#1a1a2e] text-[#f5f5f0] border-white/[0.08]",
+        destructive: "bg-[#ff3b3b] text-white border-transparent",
+        outline: "border-white/[0.08] text-[#f5f5f0] bg-transparent",
+        ghost: "text-[#4a4f5e] border-transparent bg-transparent",
+        link: "text-[#00ff88] underline-offset-4 hover:underline border-transparent bg-transparent",
+        /* Tactical status variants */
+        aligned: "bg-[#00ff88] text-black border-transparent",
+        drifting: "bg-[#f5a623] text-black border-transparent",
+        misaligned: "bg-[#ff3b3b] text-white border-transparent",
+        terminated: "bg-[#4a4f5e]/40 text-[#4a4f5e] border-white/[0.08]",
+        pending: "border-[#4a4f5e] text-[#4a4f5e] bg-transparent",
+        active: "border-[#00ff88]/40 text-[#00ff88] bg-[#00ff88]/10",
+        warning: "bg-[#f5a623] text-black border-transparent",
+        info: "border-white/[0.08] text-[#f5f5f0] bg-white/[0.05]",
       },
     },
     defaultVariants: {

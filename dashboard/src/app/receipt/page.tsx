@@ -1,25 +1,18 @@
 import Link from "next/link";
 import { listJudgeReceipts } from "@/lib/judge-receipt";
-import { storageViewerPath } from "@/lib/contracts";
 
 export const dynamic = "force-dynamic";
 
 function formatTime(value?: string) {
   if (!value) return "—";
-  return new Date(value).toLocaleString();
+  const d = new Date(value);
+  return d.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }).toUpperCase()
+    + " " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-function StatusPill({ status }: { status: string }) {
-  const cls =
-    status === "completed" ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" :
-    status === "failed"    ? "border-red-400/30 bg-red-400/10 text-red-300" :
-    status === "running" || status === "queued" ? "border-amber-400/30 bg-amber-400/10 text-amber-300" :
-    "border-gray-700 bg-gray-900 text-gray-500";
-  return (
-    <span className={`rounded border px-2 py-1 text-[10px] font-mono uppercase tracking-wider ${cls}`}>
-      {status}
-    </span>
-  );
+function shortId(id: string) {
+  if (id.length <= 16) return id;
+  return `${id.slice(0, 8)}…${id.slice(-6)}`;
 }
 
 function shortHash(hash?: string) {
@@ -27,135 +20,190 @@ function shortHash(hash?: string) {
   return `${hash.slice(0, 8)}…${hash.slice(-4)}`;
 }
 
+function StatusChip({ status }: { status: string }) {
+  const cfg =
+    status === "completed" ? "text-[#00ff88] border-[#00ff88]/30 bg-[#00ff88]/5" :
+    status === "failed"    ? "text-[#ff3b3b] border-[#ff3b3b]/30 bg-[#ff3b3b]/5" :
+    status === "running"   ? "text-[#f5a623] border-[#f5a623]/30 bg-[#f5a623]/5 animate-pulse" :
+    status === "queued"    ? "text-[#f5a623] border-[#f5a623]/30 bg-[#f5a623]/5" :
+                             "text-[#4a4f5e] border-white/[0.08]";
+  return (
+    <span className={`font-mono text-[9px] uppercase border px-1.5 py-0.5 leading-none ${cfg}`}>
+      {status}
+    </span>
+  );
+}
+
+function DecisionChip({ decision }: { decision?: string }) {
+  if (!decision) return <span className="font-mono text-[10px] text-[#4a4f5e]">—</span>;
+  const cfg =
+    decision === "FOR"     ? "text-[#00ff88] border-[#00ff88]/30" :
+    decision === "AGAINST" ? "text-[#ff3b3b] border-[#ff3b3b]/30" :
+                             "text-[#f5a623] border-[#f5a623]/30";
+  return (
+    <span className={`font-mono text-[9px] uppercase border px-1.5 py-0.5 leading-none ${cfg}`}>
+      {decision}
+    </span>
+  );
+}
+
 export default async function ReceiptIndexPage() {
   const receipts = await listJudgeReceipts(24);
 
-  return (
-    <div className="p-4 md:p-8">
+  const completedCount = receipts.filter((r) => r.status === "completed").length;
+  const failedCount    = receipts.filter((r) => r.status === "failed").length;
+  const runningCount   = receipts.filter((r) => r.status === "running" || r.status === "queued").length;
+  const filecoinCount  = receipts.filter((r) => r.filecoinCid).length;
 
+  return (
+    <div className="min-h-screen">
       {/* Header */}
-      <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <div className="mb-2 inline-flex items-center gap-2 rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 text-[10px] font-mono uppercase tracking-widest text-indigo-300">
-            ERC-8004 Proof Bundles
-          </div>
-          <h1 className="text-2xl font-mono font-bold text-indigo-300 tracking-tight">
-            Receipts
+      <div className="border-b border-white/[0.08] px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          <h1 className="font-mono text-sm font-bold text-[#f5f5f0] uppercase tracking-widest">
+            RECEIPTS
           </h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Verifiable lifecycle proofs for canonical judge runs — identity, vote, trust receipts, Filecoin memory, and lineage.
-          </p>
+          <span className="font-mono text-[10px] text-[#4a4f5e] uppercase">
+            ERC-8004 PROOF BUNDLES — LIFECYCLE VERIFIABLE RECEIPTS
+          </span>
         </div>
         <Link
           href="/judge-flow"
-          className="w-fit rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-2 text-sm font-mono text-amber-300 transition hover:bg-amber-400/15"
+          className="font-mono text-[10px] text-[#f5a623] uppercase border border-[#f5a623]/30 px-3 py-1.5 hover:bg-[#f5a623]/10 transition-colors"
         >
-          Start Canonical Run
+          START_CANONICAL_RUN →
         </Link>
       </div>
 
+      {/* Stat strip */}
+      <div className="border-b border-white/[0.08] grid grid-cols-2 sm:grid-cols-4">
+        <div className="border-r border-white/[0.08] px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">TOTAL_RUNS</div>
+          <div className="font-mono text-3xl font-bold text-[#f5f5f0] leading-none">{receipts.length}</div>
+        </div>
+        <div className="border-r border-white/[0.08] px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">COMPLETED</div>
+          <div className="font-mono text-3xl font-bold text-[#00ff88] leading-none">{completedCount}</div>
+        </div>
+        <div className="border-r border-white/[0.08] px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">FAILED</div>
+          <div className="font-mono text-3xl font-bold text-[#ff3b3b] leading-none">{failedCount}</div>
+        </div>
+        <div className="px-6 py-4">
+          <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">FILECOIN</div>
+          <div className="font-mono text-3xl font-bold text-[#f5f5f0] leading-none">{filecoinCount}</div>
+        </div>
+      </div>
+
       {receipts.length === 0 ? (
-        <div className="rounded-xl border border-gray-800 bg-[#0d0d14] p-8 text-center">
-          <div className="mb-2 text-2xl">◇</div>
-          <div className="font-mono text-sm text-gray-400">No judge receipts found yet.</div>
-          <div className="mt-1 text-xs text-gray-600">
-            Run a canonical flow from{" "}
-            <Link href="/judge-flow" className="text-amber-400 hover:underline">/judge-flow</Link>.
-          </div>
+        <div className="m-4 border border-white/[0.08] p-12 text-center">
+          <div className="mb-4 text-4xl text-[#4a4f5e]">◇</div>
+          <h2 className="font-mono text-sm text-[#4a4f5e] uppercase tracking-widest mb-2">
+            NO RECEIPTS FOUND
+          </h2>
+          <p className="font-mono text-[11px] text-[#4a4f5e]/60 mb-4">
+            RUN A CANONICAL FLOW TO GENERATE PROOF BUNDLES
+          </p>
+          <Link
+            href="/judge-flow"
+            className="font-mono text-[10px] text-[#f5a623] uppercase border border-[#f5a623]/30 px-4 py-2 hover:bg-[#f5a623]/10 transition-colors"
+          >
+            START_CANONICAL_RUN →
+          </Link>
         </div>
       ) : (
-        <div className="space-y-3">
-          {receipts.map((receipt) => (
-            <Link
-              key={receipt.runId}
-              href={`/receipt/${encodeURIComponent(receipt.runId)}`}
-              className="block rounded-xl border border-gray-800 bg-[#0d0d14] p-4 transition hover:border-gray-600 hover:bg-[#101018]"
-            >
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 flex-1">
+        <div className="overflow-x-auto">
+          {/* Table header */}
+          <div className="border-b border-white/[0.08] bg-[#0d0d14] grid grid-cols-[1fr_80px_120px_70px_70px_60px_80px_80px] gap-x-3 px-4 py-2 min-w-[900px]">
+            {["RUN_ID", "STATUS", "GOVERNOR", "DECISION", "DURATION", "EVENTS", "STARTED", ""].map((h) => (
+              <span key={h} className="font-mono text-[9px] text-[#4a4f5e] uppercase tracking-widest">
+                {h}
+              </span>
+            ))}
+          </div>
 
-                  {/* Run ID + status badges */}
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm text-gray-100 truncate max-w-xs">{receipt.runId}</span>
-                    <StatusPill status={receipt.status} />
-                    <span className="rounded border border-blue-400/20 bg-blue-400/5 px-2 py-1 text-[10px] font-mono text-blue-300">
-                      {receipt.governor}
-                    </span>
+          {/* Rows */}
+          {receipts.map((receipt, i) => {
+            const durationSec = receipt.durationMs
+              ? `${(receipt.durationMs / 1000).toFixed(1)}S`
+              : "—";
+
+            const txCount = [
+              receipt.proposalTxHash,
+              receipt.voteTxHash,
+              receipt.reputationTxHash,
+              receipt.terminationTxHash,
+              receipt.respawnTxHash,
+            ].filter(Boolean).length;
+
+            const rowBg = i % 2 === 0 ? "bg-[#0a0a0f]" : "bg-[#0d0d14]";
+            const leftBorder =
+              receipt.status === "failed"  ? "border-l-2 border-l-[#ff3b3b]" :
+              receipt.status === "running" ? "border-l-2 border-l-[#f5a623]" :
+              receipt.status === "completed" ? "border-l-2 border-l-[#00ff88]/40" :
+              "";
+
+            return (
+              <Link
+                key={receipt.runId}
+                href={`/receipt/${encodeURIComponent(receipt.runId)}`}
+                className={`grid grid-cols-[1fr_80px_120px_70px_70px_60px_80px_80px] gap-x-3 items-center px-4 py-2.5 border-b border-white/[0.05] min-w-[900px] hover:bg-white/[0.02] transition-colors group ${rowBg} ${leftBorder}`}
+              >
+                {/* Run ID */}
+                <div className="min-w-0">
+                  <div className="font-mono text-[11px] text-[#f5f5f0]/80 truncate group-hover:text-[#f5f5f0] transition-colors">
+                    {shortId(receipt.runId)}
+                  </div>
+                  <div className="font-mono text-[9px] text-[#4a4f5e] mt-0.5 flex items-center gap-2">
                     {receipt.filecoinCid && (
-                      <span className="rounded border border-green-400/30 bg-green-400/10 px-2 py-1 text-[10px] font-mono text-green-300">
-                        Filecoin
-                      </span>
+                      <span className="text-[#4a4f5e] border border-white/[0.08] px-1 py-0.5 leading-none">FIL</span>
                     )}
                     {receipt.validationRequestId && (
-                      <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 text-[10px] font-mono text-indigo-300">
+                      <span className="text-[#4a4f5e] border border-white/[0.08] px-1 py-0.5 leading-none">
                         ERC-8004 #{receipt.validationRequestId}
                       </span>
                     )}
-                    {receipt.decision && (
-                      <span className={`rounded border px-2 py-1 text-[10px] font-mono ${
-                        receipt.decision === "FOR"     ? "border-green-400/20 bg-green-400/5 text-green-300" :
-                        receipt.decision === "AGAINST" ? "border-red-400/20 bg-red-400/5 text-red-300" :
-                        "border-yellow-400/20 bg-yellow-400/5 text-yellow-300"
-                      }`}>
-                        {receipt.decision}
-                      </span>
+                    {txCount > 0 && (
+                      <span className="text-[#4a4f5e]">{txCount} TX</span>
                     )}
                   </div>
-
-                  {/* Key fields grid */}
-                  <div className="grid gap-x-6 gap-y-1 text-xs font-mono text-gray-500 md:grid-cols-2 xl:grid-cols-4">
-                    <div>Proposal: <span className="text-gray-300">{receipt.proposalId || "—"}</span></div>
-                    <div>Proof ERC-8004: <span className="text-indigo-300">{receipt.proofChildAgentId ? `#${receipt.proofChildAgentId}` : "—"}</span></div>
-                    <div>Respawn ERC-8004: <span className="text-indigo-300">{receipt.respawnedChildAgentId ? `#${receipt.respawnedChildAgentId}` : "—"}</span></div>
-                    <div>Duration: <span className="text-gray-300">{receipt.durationMs ? `${(receipt.durationMs / 1000).toFixed(1)}s` : "—"}</span></div>
-                    <div>Started: <span className="text-gray-300">{formatTime(receipt.startedAt)}</span></div>
-                    <div>Completed: <span className="text-gray-300">{formatTime(receipt.completedAt)}</span></div>
-                    <div>Events: <span className="text-gray-300">{receipt.events.length}</span></div>
-                    <div>Venice calls: <span className="text-violet-300">{receipt.veniceCallsUsed ?? "—"}</span></div>
-                  </div>
-
-                  {/* Tx hash strip */}
-                  {[receipt.proposalTxHash, receipt.voteTxHash, receipt.reputationTxHash, receipt.terminationTxHash, receipt.respawnTxHash]
-                    .filter(Boolean).length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {[
-                        { label: "Proposal",    hash: receipt.proposalTxHash },
-                        { label: "Vote",        hash: receipt.voteTxHash },
-                        { label: "Reputation",  hash: receipt.reputationTxHash },
-                        { label: "Terminate",   hash: receipt.terminationTxHash },
-                        { label: "Respawn",     hash: receipt.respawnTxHash },
-                      ]
-                        .filter((item): item is { label: string; hash: string } => Boolean(item.hash))
-                        .map((item) => (
-                          <span key={`${item.label}-${item.hash}`}
-                            className="rounded border border-blue-400/20 bg-blue-400/5 px-2 py-0.5 text-[10px] font-mono text-blue-300">
-                            {item.label}: {shortHash(item.hash)}
-                          </span>
-                        ))}
-                    </div>
-                  )}
-
-                  {receipt.failureReason && (
-                    <div className="mt-3 rounded border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs font-mono text-red-300">
-                      {receipt.failureReason}
-                    </div>
-                  )}
                 </div>
 
-                {/* Right side */}
-                <div className="flex flex-col items-end gap-2 shrink-0">
-                  <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-3 py-1.5 text-xs font-mono text-indigo-300">
-                    Open Receipt ↗
-                  </span>
-                  {receipt.filecoinCid && (
-                    <span className="text-[10px] font-mono text-green-400/60 max-w-[140px] truncate">
-                      {receipt.filecoinCid.slice(0, 20)}…
-                    </span>
-                  )}
-                </div>
-              </div>
-            </Link>
-          ))}
+                {/* Status */}
+                <StatusChip status={receipt.status} />
+
+                {/* Governor */}
+                <span className="font-mono text-[10px] text-[#4a4f5e] truncate">
+                  {receipt.governor ?? "—"}
+                </span>
+
+                {/* Decision */}
+                <DecisionChip decision={receipt.decision} />
+
+                {/* Duration */}
+                <span className="font-mono text-[10px] text-[#f5f5f0]/50 tabular-nums">
+                  {durationSec}
+                </span>
+
+                {/* Events */}
+                <span className="font-mono text-[10px] text-[#f5f5f0]/50 tabular-nums">
+                  {receipt.events.length}
+                </span>
+
+                {/* Started */}
+                <span className="font-mono text-[9px] text-[#4a4f5e] tabular-nums">
+                  {receipt.startedAt
+                    ? new Date(receipt.startedAt).toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toUpperCase()
+                    : "—"}
+                </span>
+
+                {/* Open */}
+                <span className="font-mono text-[10px] text-[#4a4f5e] group-hover:text-[#00ff88] transition-colors text-right">
+                  OPEN →
+                </span>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

@@ -6,3 +6,8 @@ cache/
 .DS_Store
 agent/.next/
 judge_flow_state.json
+agent_log.json
+runtime_budget_state.json
+child_id_state.json
+child_keys.json
+cohort_records.json

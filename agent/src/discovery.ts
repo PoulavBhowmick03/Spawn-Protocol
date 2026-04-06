@@ -11,8 +11,14 @@
  * can vote on real governance topics via Venice AI reasoning.
  */
 
-import { type Address } from "viem";
+import { parseEventLogs, type Address } from "viem";
 import { MockGovernorABI } from "./abis.js";
+import { getAllRegisteredDAOs, type RegisteredDAO } from "./dao-registry.js";
+import {
+  getAllMirroredProposals,
+  recordMirroredProposal,
+  syncMirroredProposalsForRegisteredDaos,
+} from "./mirror-index.js";
 
 // ── Types ──
 
@@ -29,6 +35,12 @@ export interface DiscoveredProposal {
   daoSlug: string;
   /** Source platform */
   source: "tally" | "snapshot" | "boardroom" | "polymarket" | "simulated";
+  /** Registered DAO id when onboarding is active */
+  sourceDaoId?: string;
+  /** Registered DAO slug when onboarding is active */
+  sourceDaoSlug?: string;
+  /** Normalized Tally org id or Snapshot space id */
+  sourceRef?: string;
   /** Timestamp when we discovered it */
   discoveredAt: number;
 }
@@ -46,16 +58,26 @@ const MAX_TRACKED_PROPOSALS = 2000; // cap to prevent unbounded memory growth
 const seenProposals = new Set<string>(); // externalId set for O(1) dedup
 const allProposals: DiscoveredProposal[] = []; // ordered list (capped)
 const discoveredDAOs = new Map<string, DiscoveredDAO>();
+const trackedDaoProposalKeys = new Set<string>();
 let feedInterval: ReturnType<typeof setInterval> | null = null;
 let isPolling = false; // prevent overlapping polls
 let simulatedIndex = 0;
+
+type ProposalSource = DiscoveredProposal["source"];
+type TallyOrgEntry = { id: string; name: string; registeredDao?: RegisteredDAO };
+type SnapshotSpaceEntry = { id: string; name: string; registeredDao?: RegisteredDAO };
+
+interface DiscoverySourceConfig {
+  tallyOrgs: TallyOrgEntry[];
+  snapshotSpaces: SnapshotSpaceEntry[];
+}
 
 // ── Tally API ──
 
 const TALLY_ENDPOINT = "https://api.tally.xyz/query";
 
 // Major DAOs on Tally — organization IDs
-const TALLY_ORGS: Array<{ id: string; name: string }> = [
+const BASE_TALLY_ORGS: TallyOrgEntry[] = [
   { id: "2206072050315953936", name: "Arbitrum" },
   { id: "2206072049871356990", name: "Optimism" },
   { id: "2297436623035434412", name: "ZKsync" },
@@ -86,7 +108,50 @@ function buildTallyQuery(orgId: string): string {
   }`;
 }
 
-async function fetchFromTally(): Promise<DiscoveredProposal[]> {
+function buildDiscoverySources(): DiscoverySourceConfig {
+  const tallyById = new Map<string, TallyOrgEntry>();
+  const snapshotById = new Map<string, SnapshotSpaceEntry>();
+
+  for (const org of BASE_TALLY_ORGS) {
+    tallyById.set(org.id, { ...org });
+  }
+
+  for (const space of BASE_SNAPSHOT_SPACES) {
+    snapshotById.set(space, { id: space, name: space });
+  }
+
+  for (const dao of getAllRegisteredDAOs()) {
+    if (!dao.enabled) continue;
+    if (dao.source === "tally") {
+      const existing = tallyById.get(dao.sourceRef);
+      tallyById.set(dao.sourceRef, {
+        id: dao.sourceRef,
+        name: existing?.name || dao.name,
+        registeredDao: dao,
+      });
+      continue;
+    }
+
+    if (dao.source === "snapshot") {
+      const existing = snapshotById.get(dao.sourceRef);
+      snapshotById.set(dao.sourceRef, {
+        id: dao.sourceRef,
+        name: existing?.name || dao.name,
+        registeredDao: dao,
+      });
+    }
+  }
+
+  return {
+    tallyOrgs: Array.from(tallyById.values()),
+    snapshotSpaces: Array.from(snapshotById.values()),
+  };
+}
+
+async function fetchFromTally(
+  sources: DiscoverySourceConfig,
+  knownExternalIds: Set<string>
+): Promise<DiscoveredProposal[]> {
   const apiKey = process.env.TALLY_API_KEY;
   if (!apiKey) {
     console.log("[Discovery] No TALLY_API_KEY set — skipping Tally");
@@ -101,7 +166,7 @@ async function fetchFromTally(): Promise<DiscoveredProposal[]> {
   const results: DiscoveredProposal[] = [];
   const now = Math.floor(Date.now() / 1000);
 
-  for (const org of TALLY_ORGS) {
+  for (const org of sources.tallyOrgs) {
     try {
       const response = await fetch(TALLY_ENDPOINT, {
         method: "POST",
@@ -122,14 +187,15 @@ async function fetchFromTally(): Promise<DiscoveredProposal[]> {
       const nodes = json.data?.proposals?.nodes || [];
       for (const p of nodes) {
         const externalId = `tally-${p.id}`;
-        if (seenProposals.has(externalId)) continue; // dedup
+        if (knownExternalIds.has(externalId)) continue;
 
         const title = p.metadata?.title || "Untitled";
         const description = p.metadata?.description || title;
-        const daoName = p.governor?.name || org.name;
+        const daoName = org.registeredDao?.name || p.governor?.name || org.name;
         const daoSlug = p.governor?.slug || org.name.toLowerCase();
+        const trackedSlug = org.registeredDao?.slug || daoSlug;
 
-        trackDAO(daoName, daoSlug, "tally");
+        trackDAO(daoName, trackedSlug, "tally", externalId);
 
         results.push({
           externalId,
@@ -138,6 +204,9 @@ async function fetchFromTally(): Promise<DiscoveredProposal[]> {
           daoName,
           daoSlug,
           source: "tally",
+          sourceDaoId: org.registeredDao?.id,
+          sourceDaoSlug: org.registeredDao?.slug,
+          sourceRef: org.id,
           discoveredAt: now,
         });
       }
@@ -150,7 +219,9 @@ async function fetchFromTally(): Promise<DiscoveredProposal[]> {
   }
 
   if (results.length > 0) {
-    console.log(`[Discovery] Tally: ${results.length} new proposals from ${TALLY_ORGS.length} DAOs`);
+    console.log(
+      `[Discovery] Tally: ${results.length} new proposals from ${sources.tallyOrgs.length} DAOs`
+    );
   }
   return results;
 }
@@ -178,7 +249,9 @@ const BOARDROOM_PROTOCOLS = [
   "curve",
 ];
 
-async function fetchFromBoardroom(): Promise<DiscoveredProposal[]> {
+async function fetchFromBoardroom(
+  knownExternalIds: Set<string>
+): Promise<DiscoveredProposal[]> {
   const apiKey = process.env.BOARDROOM_API_KEY;
   if (!apiKey) {
     console.log("[Discovery] No BOARDROOM_API_KEY set — skipping Boardroom");
@@ -212,12 +285,12 @@ async function fetchFromBoardroom(): Promise<DiscoveredProposal[]> {
       const proposals = json.data || [];
       for (const p of proposals) {
         const externalId = `boardroom-${p.refId}`;
-        if (seenProposals.has(externalId)) continue;
+        if (knownExternalIds.has(externalId)) continue;
 
         const daoName = p.protocol.charAt(0).toUpperCase() + p.protocol.slice(1);
         const daoSlug = p.protocol;
 
-        trackDAO(daoName, daoSlug, "boardroom");
+      trackDAO(daoName, daoSlug, "boardroom", externalId);
 
         results.push({
           externalId,
@@ -247,7 +320,7 @@ async function fetchFromBoardroom(): Promise<DiscoveredProposal[]> {
 const SNAPSHOT_ENDPOINT = "https://hub.snapshot.org/graphql";
 
 // Major Snapshot spaces
-const SNAPSHOT_SPACES = [
+const BASE_SNAPSHOT_SPACES = [
   "uniswapgovernance.eth",
   "ens.eth",
   "lido-snapshot.eth",
@@ -262,13 +335,12 @@ const SNAPSHOT_SPACES = [
   "apecoin.eth",
 ];
 
-function buildSnapshotQuery(): string {
-  const spacesStr = SNAPSHOT_SPACES.map(s => `"${s}"`).join(", ");
+function buildSnapshotQuery(spaceId: string): string {
   return `{
     proposals(
-      first: 20,
+      first: 5,
       skip: 0,
-      where: { space_in: [${spacesStr}] },
+      where: { space_in: ["${spaceId}"] },
       orderBy: "created",
       orderDirection: desc
     ) {
@@ -284,53 +356,66 @@ function buildSnapshotQuery(): string {
   }`;
 }
 
-async function fetchFromSnapshot(): Promise<DiscoveredProposal[]> {
+async function fetchFromSnapshot(
+  sources: DiscoverySourceConfig,
+  knownExternalIds: Set<string>
+): Promise<DiscoveredProposal[]> {
   const results: DiscoveredProposal[] = [];
   const now = Math.floor(Date.now() / 1000);
+  const fetchedThisPass = new Set(knownExternalIds);
 
-  try {
-    const response = await fetch(SNAPSHOT_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: buildSnapshotQuery() }),
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!response.ok) {
-      console.log(`[Discovery] Snapshot returned ${response.status}`);
-      return [];
-    }
-
-    const json = (await response.json()) as {
-      data?: { proposals: any[] };
-    };
-
-    const proposals = json.data?.proposals || [];
-    for (const p of proposals) {
-      const externalId = `snapshot-${p.id}`;
-      if (seenProposals.has(externalId)) continue; // dedup
-
-      const daoName = p.space?.name || "Unknown";
-      const daoSlug = p.space?.id || "unknown";
-
-      trackDAO(daoName, daoSlug, "snapshot");
-
-      results.push({
-        externalId,
-        title: p.title || "Untitled",
-        description: `[${daoName} — Snapshot Governance] ${p.title}\n\n${truncate(p.body || p.title)}`,
-        daoName,
-        daoSlug,
-        source: "snapshot",
-        discoveredAt: now,
+  for (const space of sources.snapshotSpaces) {
+    try {
+      const response = await fetch(SNAPSHOT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: buildSnapshotQuery(space.id) }),
+        signal: AbortSignal.timeout(10_000),
       });
-    }
 
-    if (results.length > 0) {
-      console.log(`[Discovery] Snapshot: ${results.length} new active proposals`);
+      if (!response.ok) {
+        console.log(`[Discovery] Snapshot returned ${response.status} for ${space.id}`);
+        continue;
+      }
+
+      const json = (await response.json()) as {
+        data?: { proposals: any[] };
+      };
+
+      const proposals = json.data?.proposals || [];
+      for (const p of proposals) {
+        const externalId = `snapshot-${p.id}`;
+        if (fetchedThisPass.has(externalId)) continue;
+        fetchedThisPass.add(externalId);
+
+        const daoName = space.registeredDao?.name || p.space?.name || space.name || "Unknown";
+        const daoSlug = p.space?.id || space.id || "unknown";
+        const trackedSlug = space.registeredDao?.slug || daoSlug;
+
+        trackDAO(daoName, trackedSlug, "snapshot", externalId);
+
+        results.push({
+          externalId,
+          title: p.title || "Untitled",
+          description: `[${daoName} — Snapshot Governance] ${p.title}\n\n${truncate(p.body || p.title)}`,
+          daoName,
+          daoSlug,
+          source: "snapshot",
+          sourceDaoId: space.registeredDao?.id,
+          sourceDaoSlug: space.registeredDao?.slug,
+          sourceRef: space.id || p.space?.id || undefined,
+          discoveredAt: now,
+        });
+      }
+
+      await sleep(200);
+    } catch (err: any) {
+      console.log(`[Discovery] Snapshot fetch failed for ${space.id}: ${err?.message?.slice(0, 60)}`);
     }
-  } catch (err: any) {
-    console.log(`[Discovery] Snapshot fetch failed: ${err?.message?.slice(0, 60)}`);
+  }
+
+  if (results.length > 0) {
+    console.log(`[Discovery] Snapshot: ${results.length} recent proposals from ${sources.snapshotSpaces.length} spaces`);
   }
 
   return results;
@@ -340,7 +425,9 @@ async function fetchFromSnapshot(): Promise<DiscoveredProposal[]> {
 
 const POLYMARKET_GAMMA_API = "https://gamma-api.polymarket.com";
 
-async function fetchFromPolymarket(): Promise<DiscoveredProposal[]> {
+async function fetchFromPolymarket(
+  knownExternalIds: Set<string>
+): Promise<DiscoveredProposal[]> {
   const results: DiscoveredProposal[] = [];
   const now = Math.floor(Date.now() / 1000);
 
@@ -361,7 +448,7 @@ async function fetchFromPolymarket(): Promise<DiscoveredProposal[]> {
       if (!m.question || !m.active || m.closed) continue;
 
       const externalId = `polymarket-${m.id}`;
-      if (seenProposals.has(externalId)) continue;
+      if (knownExternalIds.has(externalId)) continue;
 
       // Parse outcome probabilities for context
       let outcomesStr = "";
@@ -398,7 +485,7 @@ async function fetchFromPolymarket(): Promise<DiscoveredProposal[]> {
         daoName = "Polymarket — AI/Tech"; daoSlug = "polymarket-tech";
       }
 
-      trackDAO(daoName, daoSlug, "polymarket");
+      trackDAO(daoName, daoSlug, "polymarket", externalId);
 
       const proposalDescription = [
         `[${daoName} — Prediction Market via Polymarket]`,
@@ -410,6 +497,7 @@ async function fetchFromPolymarket(): Promise<DiscoveredProposal[]> {
         `Volume: ${volumeStr} | Liquidity: $${((m.liquidityNum || Number(m.liquidity) || 0) / 1000).toFixed(1)}K`,
         m.endDate ? `Resolution: ${new Date(m.endDate).toLocaleDateString()}` : "",
         `Source: https://polymarket.com/event/${m.slug}`,
+        `PMID: ${m.id}`,
       ].filter(Boolean).join("\n");
 
       results.push({
@@ -456,7 +544,7 @@ function generateSimulatedProposal(): DiscoveredProposal {
   const now = Math.floor(Date.now() / 1000);
   const externalId = `sim-${template.daoSlug}-${simulatedIndex}`;
 
-  trackDAO(template.daoName, template.daoSlug, "simulated");
+  trackDAO(template.daoName, template.daoSlug, "simulated", externalId);
 
   return {
     externalId,
@@ -476,7 +564,11 @@ function truncate(text: string, maxLen = 1500): string {
   return text.slice(0, maxLen) + "...";
 }
 
-function trackDAO(name: string, slug: string, source: "tally" | "snapshot" | "boardroom" | "polymarket" | "simulated") {
+function trackDAO(name: string, slug: string, source: ProposalSource, proposalKey?: string) {
+  if (proposalKey) {
+    if (trackedDaoProposalKeys.has(proposalKey)) return;
+    trackedDaoProposalKeys.add(proposalKey);
+  }
   const existing = discoveredDAOs.get(slug);
   if (existing) {
     existing.proposalCount++;
@@ -496,7 +588,7 @@ type SendTxFn = (params: {
   abi: typeof MockGovernorABI;
   functionName: string;
   args: readonly unknown[];
-}) => Promise<{ transactionHash: `0x${string}` }>;
+}) => Promise<{ transactionHash: `0x${string}`; logs?: readonly any[] }>;
 
 // ── Core Feed Logic ──
 
@@ -508,7 +600,7 @@ async function mirrorToMockGovernor(
   proposal: DiscoveredProposal,
   governors: Array<{ addr: Address; name: string }>,
   sendTxFn: SendTxFn
-): Promise<void> {
+): Promise<boolean> {
   // Map proposal to a governor based on DAO name similarity
   const gov = pickGovernor(proposal, governors);
 
@@ -520,10 +612,84 @@ async function mirrorToMockGovernor(
       args: [proposal.description],
     });
 
+    try {
+      const events = parseEventLogs({
+        abi: MockGovernorABI,
+        logs: (receipt.logs ?? []) as any,
+        eventName: "ProposalCreated",
+      });
+      const createdId = (events[0] as any)?.args?.proposalId;
+      if (createdId !== undefined) {
+        recordMirroredProposal({
+          governorAddress: gov.addr,
+          proposalId: String(createdId),
+          externalProposalKey: proposal.externalId,
+          sourceDaoId: proposal.sourceDaoId,
+          sourceDaoSlug: proposal.sourceDaoSlug,
+          sourceDaoName: proposal.daoName,
+          source: proposal.source,
+          sourceRef: proposal.sourceRef,
+          mirroredAt: new Date().toISOString(),
+          transactionHash: receipt.transactionHash,
+        });
+      }
+    } catch {}
+
     console.log(`[Discovery] Mirrored "${proposal.title.slice(0, 50)}" → ${gov.name} (${proposal.source}) tx: ${receipt.transactionHash?.slice(0, 18)}...`);
+    return true;
   } catch (err: any) {
     console.log(`[Discovery] Mirror failed "${proposal.title.slice(0, 40)}": ${err?.message?.slice(0, 40)}`);
+    return false;
   }
+}
+
+function collectCandidates(
+  target: DiscoveredProposal[],
+  proposals: DiscoveredProposal[],
+  knownExternalIds: Set<string>
+) {
+  for (const proposal of proposals) {
+    if (knownExternalIds.has(proposal.externalId)) continue;
+    knownExternalIds.add(proposal.externalId);
+    target.push(proposal);
+  }
+}
+
+function selectProposalsToMirror(
+  proposals: DiscoveredProposal[],
+  limit = 5
+): DiscoveredProposal[] {
+  const groups = new Map<string, DiscoveredProposal[]>();
+  for (const proposal of proposals) {
+    const key = proposal.sourceDaoSlug || `${proposal.source}:${proposal.daoSlug}`;
+    const bucket = groups.get(key) || [];
+    bucket.push(proposal);
+    groups.set(key, bucket);
+  }
+
+  const orderedGroups = Array.from(groups.values()).sort((a, b) => {
+    const aPriority = a[0]?.sourceDaoSlug ? 1 : 0;
+    const bPriority = b[0]?.sourceDaoSlug ? 1 : 0;
+    return bPriority - aPriority;
+  });
+
+  const selected: DiscoveredProposal[] = [];
+
+  for (const bucket of orderedGroups) {
+    if (bucket.length > 0 && selected.length < limit) {
+      selected.push(bucket.shift()!);
+    }
+  }
+
+  for (const bucket of orderedGroups) {
+    for (const proposal of bucket) {
+      if (selected.length >= limit) break;
+      selected.push(proposal);
+    }
+    if (selected.length >= limit) break;
+  }
+
+  return selected;
 }
 
 /**
@@ -563,8 +729,11 @@ function pickGovernor(
     return governors.find(g => g.name.toLowerCase().includes("ens")) || governors[2 % governors.length];
   }
 
-  // Default: round-robin
-  return governors[Math.floor(Math.random() * governors.length)];
+  // Default: stable assignment so a registered DAO always lands on the same
+  // shared simulation governor and can keep a single dedicated cohort.
+  const key = proposal.sourceDaoSlug || `${proposal.source}:${proposal.sourceRef || proposal.daoSlug}`;
+  const hash = Array.from(key).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return governors[hash % governors.length];
 }
 
 /**
@@ -574,98 +743,67 @@ async function pollOnce(
   governors: Array<{ addr: Address; name: string }>,
   sendTxFn: SendTxFn
 ): Promise<DiscoveredProposal[]> {
-  const newProposals: DiscoveredProposal[] = [];
+  const newlyMirrored: DiscoveredProposal[] = [];
+  const candidateProposals: DiscoveredProposal[] = [];
+  const registeredDaos = getAllRegisteredDAOs().filter((dao) => dao.enabled);
+  syncMirroredProposalsForRegisteredDaos(registeredDaos);
+  const sources = buildDiscoverySources();
+  const mirroredKeys = new Set(
+    getAllMirroredProposals().map((proposal) => proposal.externalProposalKey)
+  );
+  const knownExternalIds = new Set([...seenProposals, ...mirroredKeys]);
 
   // 1. Fetch from Tally
   try {
-    const tallyProposals = await fetchFromTally();
-    for (const p of tallyProposals) {
-      if (!seenProposals.has(p.externalId)) {
-        seenProposals.add(p.externalId);
-        allProposals.push(p);
-        newProposals.push(p);
-      }
-    }
+    const tallyProposals = await fetchFromTally(sources, knownExternalIds);
+    collectCandidates(candidateProposals, tallyProposals, knownExternalIds);
   } catch (err: any) {
     console.log(`[Discovery] Tally error: ${err?.message?.slice(0, 50)}`);
   }
 
   // 2. Fetch from Boardroom
   try {
-    const boardroomProposals = await fetchFromBoardroom();
-    for (const p of boardroomProposals) {
-      if (!seenProposals.has(p.externalId)) {
-        seenProposals.add(p.externalId);
-        allProposals.push(p);
-        newProposals.push(p);
-      }
-    }
+    const boardroomProposals = await fetchFromBoardroom(knownExternalIds);
+    collectCandidates(candidateProposals, boardroomProposals, knownExternalIds);
   } catch (err: any) {
     console.log(`[Discovery] Boardroom error: ${err?.message?.slice(0, 50)}`);
   }
 
   // 3. Fetch from Snapshot
   try {
-    const snapshotProposals = await fetchFromSnapshot();
-    for (const p of snapshotProposals) {
-      if (!seenProposals.has(p.externalId)) {
-        seenProposals.add(p.externalId);
-        allProposals.push(p);
-        newProposals.push(p);
-      }
-    }
+    const snapshotProposals = await fetchFromSnapshot(sources, knownExternalIds);
+    collectCandidates(candidateProposals, snapshotProposals, knownExternalIds);
   } catch (err: any) {
     console.log(`[Discovery] Snapshot error: ${err?.message?.slice(0, 50)}`);
   }
 
   // 4. Fetch from Polymarket (no API key needed)
   try {
-    const polymarketProposals = await fetchFromPolymarket();
-    for (const p of polymarketProposals) {
-      if (!seenProposals.has(p.externalId)) {
-        seenProposals.add(p.externalId);
-        allProposals.push(p);
-        newProposals.push(p);
-      }
-    }
+    const polymarketProposals = await fetchFromPolymarket(knownExternalIds);
+    collectCandidates(candidateProposals, polymarketProposals, knownExternalIds);
   } catch (err: any) {
     console.log(`[Discovery] Polymarket error: ${err?.message?.slice(0, 50)}`);
   }
 
   // 5. If no real proposals found, generate simulated ones
-  if (newProposals.length === 0) {
+  if (candidateProposals.length === 0) {
     const sim = generateSimulatedProposal();
-    if (!seenProposals.has(sim.externalId)) {
-      seenProposals.add(sim.externalId);
-      allProposals.push(sim);
-      newProposals.push(sim);
+    if (!knownExternalIds.has(sim.externalId)) {
+      knownExternalIds.add(sim.externalId);
+      candidateProposals.push(sim);
     }
   }
 
-  // 6. Mirror new proposals to MockGovernor (max 5 per poll to avoid nonce issues)
-  // Ensure each source gets at least one slot so Polymarket doesn't get starved
-  const bySource = new Map<string, DiscoveredProposal[]>();
-  for (const p of newProposals) {
-    const arr = bySource.get(p.source) || [];
-    arr.push(p);
-    bySource.set(p.source, arr);
-  }
-  const toMirror: DiscoveredProposal[] = [];
-  // Round-robin: one from each source first
-  for (const [, proposals] of bySource) {
-    if (proposals.length > 0 && toMirror.length < 5) {
-      toMirror.push(proposals.shift()!);
-    }
-  }
-  // Fill remaining slots from whatever's left
-  for (const [, proposals] of bySource) {
-    for (const p of proposals) {
-      if (toMirror.length >= 5) break;
-      toMirror.push(p);
-    }
-  }
+  // 6. Mirror candidate proposals to MockGovernor (max 5 per poll)
+  // Registered DAOs get priority so new onboarded sources are not starved.
+  const toMirror = selectProposalsToMirror(candidateProposals, 5);
   for (const p of toMirror) {
-    await mirrorToMockGovernor(p, governors, sendTxFn);
+    const mirrored = await mirrorToMockGovernor(p, governors, sendTxFn);
+    if (mirrored) {
+      seenProposals.add(p.externalId);
+      allProposals.push(p);
+      newlyMirrored.push(p);
+    }
     await sleep(4000); // space out txs to avoid nonce collisions with child agent votes
   }
 
@@ -675,12 +813,14 @@ async function pollOnce(
     for (const r of removed) seenProposals.delete(r.externalId);
   }
 
-  if (newProposals.length > 0) {
-    const sources = [...new Set(newProposals.map(p => p.source))];
-    console.log(`[Discovery] ${newProposals.length} new proposals (${sources.join("+")}), ${seenProposals.size} total tracked`);
+  if (candidateProposals.length > 0) {
+    const sources = [...new Set(candidateProposals.map((p) => p.source))];
+    console.log(
+      `[Discovery] ${candidateProposals.length} candidate proposals (${sources.join("+")}), ${newlyMirrored.length} mirrored, ${seenProposals.size} total tracked`
+    );
   }
 
-  return newProposals;
+  return newlyMirrored;
 }
 
 // ── Exported API ──
@@ -696,8 +836,9 @@ export async function startProposalFeed(
   governors: Array<{ addr: Address; name: string }>,
   sendTxFn: SendTxFn
 ): Promise<() => void> {
+  const sources = buildDiscoverySources();
   console.log("[Discovery] Starting multi-source proposal feed...");
-  console.log(`[Discovery] Sources: Tally (${TALLY_ORGS.length} DAOs) + Boardroom (${BOARDROOM_PROTOCOLS.length} protocols) + Snapshot (${SNAPSHOT_SPACES.length} spaces) + Polymarket + simulated`);
+  console.log(`[Discovery] Sources: Tally (${sources.tallyOrgs.length} DAOs) + Boardroom (${BOARDROOM_PROTOCOLS.length} protocols) + Snapshot (${sources.snapshotSpaces.length} spaces) + Polymarket + simulated`);
   console.log(`[Discovery] Governors: ${governors.map(g => g.name).join(", ")}`);
   console.log(`[Discovery] Poll interval: ${POLL_INTERVAL_MS / 1000}s`);
 
@@ -754,10 +895,11 @@ export function getDiscoveredDAOs(): DiscoveredDAO[] {
  * Get feed stats.
  */
 export function getFeedStats() {
+  const sources = buildDiscoverySources();
   return {
     totalProposals: seenProposals.size,
-    tallyDAOs: TALLY_ORGS.length,
-    snapshotSpaces: SNAPSHOT_SPACES.length,
+    tallyDAOs: sources.tallyOrgs.length,
+    snapshotSpaces: sources.snapshotSpaces.length,
     discoveredDAOs: discoveredDAOs.size,
     sources: {
       tally: allProposals.filter(p => p.source === "tally").length,
@@ -767,4 +909,52 @@ export function getFeedStats() {
       simulated: allProposals.filter(p => p.source === "simulated").length,
     },
   };
+}
+
+// ── Polymarket Resolution Check ──
+
+/**
+ * Fetch resolution status for a Polymarket market by its raw market ID.
+ * A resolved market has one outcome priced at ~1.0.
+ * Returns null on fetch failure.
+ */
+export async function fetchPolymarketResolution(marketId: string): Promise<{
+  resolved: boolean;
+  winningOutcome: string | null;
+  winningIndex: number | null;
+  outcomes: string[];
+  question: string;
+} | null> {
+  try {
+    const res = await fetch(
+      `${POLYMARKET_GAMMA_API}/markets/${encodeURIComponent(marketId)}`,
+      { signal: AbortSignal.timeout(10_000) }
+    );
+    if (!res.ok) return null;
+    const m = await res.json() as any;
+
+    const outcomes: string[] = JSON.parse(m.outcomes || "[]");
+    const prices: number[] = JSON.parse(m.outcomePrices || "[]").map(Number);
+
+    if (!m.closed && !m.resolved) {
+      return { resolved: false, winningOutcome: null, winningIndex: null, outcomes, question: m.question || "" };
+    }
+
+    // Winning outcome = highest price (should be ~1.0)
+    let winningIndex: number | null = null;
+    let maxPrice = -1;
+    for (let i = 0; i < prices.length; i++) {
+      if (prices[i] > maxPrice) { maxPrice = prices[i]; winningIndex = i; }
+    }
+
+    return {
+      resolved: true,
+      winningOutcome: winningIndex !== null ? (outcomes[winningIndex] ?? null) : null,
+      winningIndex,
+      outcomes,
+      question: m.question || "",
+    };
+  } catch {
+    return null;
+  }
 }

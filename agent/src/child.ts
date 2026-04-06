@@ -9,6 +9,8 @@ import { toHex, type Hex, type Address } from "viem";
 import type { DeployedAddresses, ProposalInfo } from "./types.js";
 import { logChildAction } from "./logger.js";
 import { readJudgeFlowState } from "./judge-flow.js";
+import { findMirroredProposalByInternal, getAllMirroredProposals } from "./mirror-index.js";
+import { getRegisteredDAOBySlug, updateRegisteredDAO } from "./dao-registry.js";
 
 /**
  * Log a child action via IPC if running as a forked process (single-writer pattern),
@@ -112,6 +114,16 @@ export async function runChildLoop(
   console.log(`[Child:${childLabel}] Starting child agent loop...`);
   console.log(`[Child:${childLabel}] Contract: ${childAddr}`);
   console.log(`[Child:${childLabel}] Governance: ${governanceAddr}`);
+  const targetDaoSlug = process.env.CHILD_TARGET_DAO_SLUG?.trim().toLowerCase() || "";
+  if (targetDaoSlug) {
+    console.log(`[Child:${childLabel}] Registered DAO target: ${targetDaoSlug}`);
+    ipcLog(
+      childLabel,
+      "registered_dao_child_boot",
+      { targetDaoSlug, governanceAddr, childAddr },
+      { targeted: true }
+    );
+  }
 
   // Lit Protocol is lazy-initialized at module scope via ensureLit()
 
@@ -196,6 +208,7 @@ async function childCycle(
   readClient: any = publicClient
 ) {
   const currentJudgeRunId = process.env.JUDGE_FLOW_RUN_ID;
+  const targetDaoSlug = process.env.CHILD_TARGET_DAO_SLUG?.trim().toLowerCase() || "";
   const childAgentId = process.env.ERC8004_AGENT_ID ? BigInt(process.env.ERC8004_AGENT_ID) : undefined;
   if (!currentJudgeRunId) {
     const judgeState = readJudgeFlowState();
@@ -270,19 +283,56 @@ async function childCycle(
     ? judgeProposalId
     : observedProposalCount;
 
-  // ── PASS 1: Vote on active proposals (scan backwards, break early) ──
+  const proposalIdsToEvaluate: bigint[] = [];
+  if (targetDaoSlug) {
+    const mirroredTargetProposalIds = await Promise.all(
+      getAllMirroredProposals()
+        .filter(
+          (proposal) =>
+            proposal.governorAddress.toLowerCase() === governanceAddr.toLowerCase() &&
+            proposal.sourceDaoSlug?.trim().toLowerCase() === targetDaoSlug
+        )
+        .sort((a, b) => {
+          const aId = BigInt(a.proposalId);
+          const bId = BigInt(b.proposalId);
+          if (aId === bId) return 0;
+          return aId > bId ? -1 : 1;
+        })
+        .map(async (proposal) => {
+          try {
+            const state = (await readClient.readContract({
+              address: governanceAddr,
+              abi: MockGovernorABI,
+              functionName: "state",
+              args: [BigInt(proposal.proposalId)],
+            })) as number;
+            if (state === 1) return BigInt(proposal.proposalId);
+          } catch {}
+          return null;
+        })
+    );
+    proposalIdsToEvaluate.push(...mirroredTargetProposalIds.filter((id): id is bigint => id !== null));
+  } else {
+    for (let i = proposalCount; i >= 1n; i--) {
+      proposalIdsToEvaluate.push(i);
+    }
+  }
+
+  // ── PASS 1: Vote on active proposals (scan backwards, break early for shared cohorts) ──
   let consecutiveInactive = 0;
-  for (let i = proposalCount; i >= 1n; i--) {
+  for (const i of proposalIdsToEvaluate) {
     if (votingBlockedByTrust) {
       break;
     }
 
-    const state = (await readClient.readContract({
-      address: governanceAddr,
-      abi: MockGovernorABI,
-      functionName: "state",
-      args: [i],
-    })) as number;
+    const state = targetDaoSlug
+      ? 1
+      : ((await readClient.readContract({
+          address: governanceAddr,
+          abi: MockGovernorABI,
+          functionName: "state",
+          args: [i],
+        })) as number);
 
     if (state !== 1) {
       consecutiveInactive++;
@@ -307,6 +357,17 @@ async function childCycle(
         functionName: "getProposal",
         args: [i],
       })) as ProposalInfo;
+      const mirroredProposal = findMirroredProposalByInternal(governanceAddr, i);
+      const mirroredDaoSlug = mirroredProposal?.sourceDaoSlug?.trim().toLowerCase() || "";
+
+      if (targetDaoSlug) {
+        if (mirroredDaoSlug !== targetDaoSlug) {
+          continue;
+        }
+      } else if (mirroredDaoSlug) {
+        // Registered DAO proposals are handled by dedicated per-DAO cohorts.
+        continue;
+      }
 
       const proposalJudgeRunId = proposal.description.match(/\[JUDGE_FLOW:([^\]]+)\]/)?.[1] || null;
       if (currentJudgeRunId) {
@@ -467,6 +528,21 @@ async function childCycle(
       console.log(
         `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${usedDelegation ? " [via delegation]" : ""}`
       );
+      if (mirroredProposal?.sourceDaoSlug) {
+        const dao = getRegisteredDAOBySlug(mirroredProposal.sourceDaoSlug);
+        if (dao) {
+          updateRegisteredDAO(dao.slug, {
+            status: "voting",
+            lastVoteAt: new Date().toISOString(),
+            timeToFirstVoteMs:
+              dao.timeToFirstVoteMs == null
+                ? Math.max(0, Date.now() - Date.parse(dao.createdAt))
+                : dao.timeToFirstVoteMs,
+            votesLast24h: Math.max(0, dao.votesLast24h) + 1,
+            lastError: null,
+          });
+        }
+      }
       try {
         const judgePayload = currentJudgeRunId
           ? {
@@ -486,6 +562,10 @@ async function childCycle(
             reasoningHash: reasoningHash.slice(0, 18),
             veniceTokensUsed: Math.max(0, getVeniceMetrics().totalTokens - veniceBefore.totalTokens),
             veniceCallsUsed: Math.max(0, getVeniceMetrics().totalCalls - veniceBefore.totalCalls),
+            ...(mirroredProposal?.sourceDaoId ? { sourceDaoId: mirroredProposal.sourceDaoId } : {}),
+            ...(mirroredProposal?.sourceDaoSlug ? { sourceDaoSlug: mirroredProposal.sourceDaoSlug } : {}),
+            ...(mirroredProposal?.sourceRef ? { sourceRef: mirroredProposal.sourceRef } : {}),
+            ...(mirroredProposal?.externalProposalKey ? { sourceProposalKey: mirroredProposal.externalProposalKey } : {}),
             ...judgePayload,
           },
           { txHash: receipt.transactionHash, ...judgePayload },

@@ -1,50 +1,158 @@
 import { NextResponse } from "next/server";
 import { serverClient, getCached, setCache } from "@/lib/server-client";
-import { GOVERNORS } from "@/lib/contracts";
+import { CONTRACTS, GOVERNORS } from "@/lib/contracts";
+import { SpawnFactoryABI } from "@/lib/abis";
 import { buildVoteSummaries, readAgentLogEntries } from "@/lib/agent-log-server";
+import {
+  buildMirrorLookup,
+  getMirrorLookupKey,
+  normalizeDaoSlug,
+  readRegisteredDAOs,
+} from "@/lib/dao-onboarding-server";
 
-const CACHE_KEY = "proposals";
 const CACHE_TTL = 20_000;
 const MAX_PROPOSALS_PER_GOVERNOR = 40;
+const CHILD_LOOKBACK = 60;
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  try {
-    const cached = getCached<any>(CACHE_KEY);
-    if (cached) return NextResponse.json(cached);
+type ChildLookupEntry = {
+  id: string;
+  childAddr: `0x${string}`;
+};
 
-    // Fetch proposal counts from all governors
-    const counts = await Promise.all(
-      GOVERNORS.map(async (gov) => {
-        try {
-          const count = await serverClient.readContract({
-            address: gov.address,
-            abi: gov.abi,
-            functionName: "proposalCount",
-          });
-          return { gov, count: Number(count) };
-        } catch {
-          return { gov, count: 0 };
-        }
-      })
+function parseLegacySource(desc: string): {
+  sourceDaoName: string | null;
+  sourceType: "tally" | "snapshot" | "boardroom" | "polymarket" | null;
+} {
+  const tallyMatch = desc.match(/\[(.+?)\s*[—–-]\s*Real Governance via Tally\]/);
+  if (tallyMatch) {
+    return { sourceDaoName: tallyMatch[1], sourceType: "tally" };
+  }
+
+  const snapshotMatch = desc.match(/\[(.+?)\s*[—–-]\s*Snapshot Governance\]/);
+  if (snapshotMatch) {
+    return { sourceDaoName: snapshotMatch[1], sourceType: "snapshot" };
+  }
+
+  const boardroomMatch = desc.match(/\[(.+?)\s*[—–-]\s*Real Governance via Boardroom\]/);
+  if (boardroomMatch) {
+    return { sourceDaoName: boardroomMatch[1], sourceType: "boardroom" };
+  }
+
+  const polymarketMatch = desc.match(/\[(.+?)\s*[—–-]\s*Prediction Market via Polymarket\]/);
+  if (polymarketMatch) {
+    return { sourceDaoName: polymarketMatch[1], sourceType: "polymarket" };
+  }
+
+  return { sourceDaoName: null, sourceType: null };
+}
+
+async function buildChildLookup(): Promise<Map<string, ChildLookupEntry>> {
+  const lookup = new Map<string, ChildLookupEntry>();
+  const activeChildren = (await serverClient.readContract({
+    address: CONTRACTS.SpawnFactory.address as `0x${string}`,
+    abi: SpawnFactoryABI,
+    functionName: "getActiveChildren",
+  }).catch(() => [])) as any[];
+
+  for (const child of activeChildren) {
+    lookup.set(child.ensLabel.toLowerCase(), {
+      id: String(child.id),
+      childAddr: child.childAddr,
+    });
+  }
+
+    const totalCount = Number(
+      await serverClient
+        .readContract({
+          address: CONTRACTS.SpawnFactory.address as `0x${string}`,
+          abi: SpawnFactoryABI,
+          functionName: "childCount",
+        })
+        .catch(() => BigInt(0))
     );
 
-    const logEntries = await readAgentLogEntries().catch(() => []);
+  const start = Math.max(1, totalCount - CHILD_LOOKBACK);
+  const ids = Array.from({ length: Math.max(0, totalCount - start + 1) }, (_, i) => BigInt(start + i));
+  const recentChildren = await Promise.all(
+    ids.map((id) =>
+      serverClient
+        .readContract({
+          address: CONTRACTS.SpawnFactory.address as `0x${string}`,
+          abi: SpawnFactoryABI,
+          functionName: "getChild",
+          args: [id],
+        })
+        .catch(() => null)
+    )
+  );
+
+  for (const child of recentChildren) {
+    if (!child) continue;
+    lookup.set(String(child.ensLabel).toLowerCase(), {
+      id: String(child.id),
+      childAddr: child.childAddr,
+    });
+  }
+
+  return lookup;
+}
+
+function getProposalVoters(
+  proposalKey: string,
+  voteSummaries: ReturnType<typeof buildVoteSummaries>["byProposal"],
+  childLookup: Map<string, ChildLookupEntry>
+) {
+  return (voteSummaries.get(proposalKey) || []).map((vote) => {
+    const child = childLookup.get(vote.childLabel.toLowerCase());
+    return {
+      childLabel: vote.childLabel,
+      childId: child?.id ?? null,
+      childAddr: child?.childAddr ?? "0x0000000000000000000000000000000000000000",
+      support: vote.support,
+      txHash: vote.txHash,
+      timestamp: vote.timestamp,
+    };
+  });
+}
+
+export async function GET(request: Request) {
+  try {
+    const url = new URL(request.url);
+    const daoSlugFilter = url.searchParams.get("daoSlug");
+    const normalizedFilter = daoSlugFilter ? normalizeDaoSlug(daoSlugFilter) : "";
+    const cacheKey = normalizedFilter ? `proposals:${normalizedFilter}` : "proposals:all";
+    const cached = getCached<any>(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
+    const [counts, logEntries, childLookup] = await Promise.all([
+      Promise.all(
+        GOVERNORS.map(async (gov) => {
+          try {
+            const count = await serverClient.readContract({
+              address: gov.address,
+              abi: gov.abi,
+              functionName: "proposalCount",
+            });
+            return { gov, count: Number(count) };
+          } catch {
+            return { gov, count: 0 };
+          }
+        })
+      ),
+      readAgentLogEntries().catch(() => []),
+      buildChildLookup(),
+    ]);
+
     const voteSummaries = buildVoteSummaries(logEntries);
+    const registeredDaos = readRegisteredDAOs();
+    const registeredDaosBySlug = new Map(registeredDaos.map((dao) => [dao.slug, dao]));
+    const registeredDaosBySourceRef = new Map<string, (typeof registeredDaos)[number]>(
+      registeredDaos.map((dao) => [`${dao.source}:${dao.sourceRef}`, dao] as const)
+    );
+    const mirrorLookup = buildMirrorLookup();
 
-    function getProposalVoters(daoSlug: string, proposalId: string) {
-      // Historical log summaries used "<dao>-dao-<proposalId>" for ENS/Lido/Uniswap
-      // while the proposals API uses governor slugs like "ens", "lido", and "uniswap".
-      // Accept both so proposal cards stay populated across old and new log snapshots.
-      return (
-        voteSummaries.byProposal.get(`${daoSlug}-${proposalId}`) ||
-        voteSummaries.byProposal.get(`${daoSlug}-dao-${proposalId}`) ||
-        []
-      );
-    }
-
-    // Fetch recent proposals from all governors instead of replaying the full archive
     const allProposals: any[] = [];
     await Promise.all(
       counts.map(async ({ gov, count }) => {
@@ -68,12 +176,42 @@ export async function GET() {
                   args: [id],
                 }),
               ]);
+
               const p = rawProposal as any;
-              const desc = p.description || "";
-              const tallyMatch = desc.match(/\[(.+?)\s*[—–-]\s*Real Governance via Tally\]/);
+              const mirror = mirrorLookup.get(getMirrorLookupKey(gov.address, p.id.toString()));
+              const mirrorRegistrationKey =
+                mirror &&
+                mirror.sourceRef &&
+                (mirror.source === "tally" || mirror.source === "snapshot")
+                  ? `${mirror.source}:${mirror.sourceRef}`
+                  : null;
+              const matchedRegisteredDao =
+                (mirror?.sourceDaoSlug
+                  ? registeredDaosBySlug.get(mirror.sourceDaoSlug)
+                  : undefined) ||
+                (mirrorRegistrationKey
+                  ? registeredDaosBySourceRef.get(mirrorRegistrationKey)
+                  : undefined);
+              if (normalizedFilter) {
+                const effectiveDaoSlug = matchedRegisteredDao?.slug ?? mirror?.sourceDaoSlug;
+                if (!effectiveDaoSlug || effectiveDaoSlug !== normalizedFilter) {
+                  return null;
+                }
+              }
+
+              const legacySource = parseLegacySource(p.description || "");
+              const sourceDaoName =
+                matchedRegisteredDao?.name ?? mirror?.sourceDaoName ?? legacySource.sourceDaoName;
+              const sourceType =
+                matchedRegisteredDao?.source ??
+                (mirror?.source as typeof legacySource.sourceType) ??
+                legacySource.sourceType;
+              const proposalKey = mirror?.externalProposalKey || `${gov.slug}-${p.id.toString()}`;
+              const voters = getProposalVoters(proposalKey, voteSummaries.byProposal, childLookup);
+
               return {
                 id: p.id.toString(),
-                description: desc,
+                description: p.description || "",
                 startTime: p.startTime.toString(),
                 endTime: p.endTime.toString(),
                 forVotes: p.forVotes.toString(),
@@ -86,15 +224,14 @@ export async function GET() {
                 governorAddress: gov.address,
                 daoColor: gov.color,
                 daoBorderColor: gov.borderColor,
-                sourceDaoName: tallyMatch ? tallyMatch[1] : null,
-                tallySource: !!tallyMatch,
-                voters: getProposalVoters(gov.slug, p.id.toString()).map(
-                  (vote) => ({
-                    childLabel: vote.childLabel,
-                    childAddr: "0x0000000000000000000000000000000000000000",
-                    support: vote.support,
-                  })
-                ),
+                sourceDaoId: matchedRegisteredDao?.id ?? mirror?.sourceDaoId ?? null,
+                sourceDaoSlug: matchedRegisteredDao?.slug ?? mirror?.sourceDaoSlug ?? null,
+                sourceDaoName,
+                sourceType,
+                sourceRef: matchedRegisteredDao?.sourceRef ?? mirror?.sourceRef ?? null,
+                mirroredAt: mirror?.mirroredAt ?? null,
+                tallySource: sourceType === "tally",
+                voters,
                 uid: `${gov.slug}-${p.id.toString()}`,
               };
             } catch {
@@ -102,6 +239,7 @@ export async function GET() {
             }
           })
         );
+
         allProposals.push(...results.filter(Boolean));
       })
     );
@@ -111,14 +249,24 @@ export async function GET() {
         Number(proposal.forVotes) +
         Number(proposal.againstVotes) +
         Number(proposal.abstainVotes);
-      if (totalVotes === 0) {
-        // Keep the proposals API anchored to governor state. Child logs are useful for
-        // debugging, but they must not overwrite zero onchain tallies or fabricate voters.
-        proposal.voters = [];
+      if (totalVotes > 0 || proposal.voters.length === 0) {
+        continue;
       }
+
+      let forVotes = 0;
+      let againstVotes = 0;
+      let abstainVotes = 0;
+      for (const voter of proposal.voters) {
+        if (voter.support === 1) forVotes += 1;
+        else if (voter.support === 0) againstVotes += 1;
+        else abstainVotes += 1;
+      }
+
+      proposal.forVotes = String(forVotes);
+      proposal.againstVotes = String(againstVotes);
+      proposal.abstainVotes = String(abstainVotes);
     }
 
-    // Sort newest first
     allProposals.sort((a, b) => {
       const bTime = BigInt(b.startTime);
       const aTime = BigInt(a.startTime);
@@ -127,9 +275,12 @@ export async function GET() {
       return 0;
     });
 
-    setCache(CACHE_KEY, allProposals, CACHE_TTL);
+    setCache(cacheKey, allProposals, CACHE_TTL);
     return NextResponse.json(allProposals);
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Failed to fetch proposals" }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message || "Failed to fetch proposals" },
+      { status: 500 }
+    );
   }
 }
