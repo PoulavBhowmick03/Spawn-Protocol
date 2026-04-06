@@ -7,6 +7,7 @@ const DATA_CACHE_KEY = "agent-log-data:v2";
 const DATA_CACHE_TTL = 10_000;
 const GITHUB_DATA_CACHE_KEY = "agent-log-data:github:v1";
 const GITHUB_DATA_CACHE_TTL = 300_000;
+const CONTROL_SERVER_URL = process.env.SPAWN_CONTROL_URL?.replace(/\/$/, "");
 
 const GITHUB_LOG_BRANCH = process.env.GITHUB_LOG_BRANCH || "pl_genesis";
 const GITHUB_URLS = [
@@ -68,6 +69,21 @@ async function tryStorageCid(cid: string): Promise<any | null> {
   }
 }
 
+async function readControlServerAgentLogData(): Promise<any | null> {
+  if (!CONTROL_SERVER_URL) return null;
+  try {
+    const res = await fetch(`${CONTROL_SERVER_URL}/agent-log`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 async function readEnsAgentLogCid(): Promise<string> {
   try {
     const value = await serverClient.readContract({
@@ -114,6 +130,12 @@ export async function readGitHubAgentLogData(): Promise<any | null> {
 export async function readAgentLogData(): Promise<any> {
   const cached = getCached<any>(DATA_CACHE_KEY);
   if (cached) return cached;
+
+  const controlServerData = await readControlServerAgentLogData();
+  if (controlServerData) {
+    setCache(DATA_CACHE_KEY, controlServerData, DATA_CACHE_TTL);
+    return controlServerData;
+  }
 
   const localData = readLocalAgentLogData();
   if (localData && !PREFER_PUBLISHED_LOGS) {

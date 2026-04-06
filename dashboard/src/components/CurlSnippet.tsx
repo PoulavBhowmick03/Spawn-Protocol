@@ -2,32 +2,39 @@
 
 import { useState } from "react";
 
-const SNAPSHOT_EXAMPLE = `curl -s -X POST http://localhost:8787/dao/register \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "name": "Uniswap",
-    "source": "snapshot",
-    "sourceRef": "uniswapgovernance.eth",
-    "philosophy": "neutral"
-  }'`;
-
-const TALLY_EXAMPLE = `curl -s -X POST http://localhost:8787/dao/register \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "name": "Arbitrum",
-    "source": "tally",
-    "sourceRef": "2206072050315953936",
-    "philosophy": "progressive"
-  }'`;
-
-const ONBOARD_SH = `# Interactive shell script (wraps the curl above)
-bash <(curl -s http://localhost:3000/onboard.sh)`;
+const PROD_APP_URL = "https://spawn-protocol.vercel.app";
+const PROD_CONTROL_URL = "https://spawn-protocol-production.up.railway.app";
 
 type Tab = "snapshot" | "tally" | "script";
 
 export function CurlSnippet() {
   const [tab, setTab] = useState<Tab>("snapshot");
   const [copied, setCopied] = useState(false);
+  const baseUrl =
+    typeof window !== "undefined" && window.location.origin
+      ? window.location.origin
+      : PROD_APP_URL;
+
+  const SNAPSHOT_EXAMPLE = `curl -sS -X POST ${baseUrl}/api/daos/register?wait=true \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Uniswap",
+    "source": "snapshot",
+    "sourceRef": "uniswapgovernance.eth",
+    "philosophy": "neutral"
+  }' | jq`;
+
+  const TALLY_EXAMPLE = `curl -sS -X POST ${baseUrl}/api/daos/register?wait=true \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Arbitrum",
+    "source": "tally",
+    "sourceRef": "2206072050315953936",
+    "philosophy": "progressive"
+  }' | jq`;
+
+  const ONBOARD_SH = `# Interactive shell script (served by the dashboard)
+bash <(curl -s ${baseUrl}/onboard.sh)`;
 
   const snippet =
     tab === "snapshot" ? SNAPSHOT_EXAMPLE : tab === "tally" ? TALLY_EXAMPLE : ONBOARD_SH;
@@ -73,9 +80,14 @@ export function CurlSnippet() {
 
       {/* Footer */}
       <div className="border-t border-white/[0.08] px-4 py-2">
-        <p className="font-mono text-[10px] text-[#4a4f5e] uppercase">
-          CONTROL_SERVER LISTENS ON PORT 8787 — SET SPAWN_CONTROL_URL TO OVERRIDE
-        </p>
+        <div className="space-y-1">
+          <p className="font-mono text-[10px] text-[#4a4f5e] uppercase">
+            USE THE DASHBOARD PROXY FOR REGISTRATION — WAIT MODE RETURNS MIRROR / SPAWN STATUS INLINE
+          </p>
+          <p className="font-mono text-[10px] text-[#4a4f5e] uppercase break-all">
+            DASHBOARD: {baseUrl} · CONTROL_SERVER: {PROD_CONTROL_URL}
+          </p>
+        </div>
       </div>
     </div>
   );

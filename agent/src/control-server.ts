@@ -11,6 +11,7 @@ import {
   getRegisteredDAOBySlug,
   getRegisteredDAOBySource,
   normalizeSlug,
+  updateRegisteredDAO,
   type RegisteredDAO,
 } from "./dao-registry.js";
 import { syncMirroredProposalsForRegisteredDaos } from "./mirror-index.js";
@@ -120,6 +121,27 @@ type JudgeReceipt = {
   executionLogs: JudgeExecutionLog[];
 };
 
+type DaoBootstrapOptions = {
+  wait: boolean;
+  timeoutMs: number;
+};
+
+type DaoBootstrapResult = {
+  status?: RegisteredDAO["status"];
+  mirroredProposalCount?: number;
+  activeProposalCount?: number;
+  cohortSpawned?: boolean;
+  spawnedChildren?: string[];
+  message?: string;
+};
+
+type ControlServerOptions = {
+  onDaoRegistered?: (
+    dao: RegisteredDAO,
+    options: DaoBootstrapOptions
+  ) => Promise<DaoBootstrapResult | void>;
+};
+
 const EMPTY_STATE = {
   runId: null,
   status: "idle",
@@ -157,6 +179,32 @@ function json(res: ServerResponse, status: number, body: unknown) {
 
 function buildDashboardUrl(slug: string) {
   return `${DASHBOARD_BASE_URL}/dao/${encodeURIComponent(slug)}`;
+}
+
+function buildStatusUrl(slug: string) {
+  return `${DASHBOARD_BASE_URL}/api/daos/${encodeURIComponent(slug)}/status`;
+}
+
+function buildDaoRegistrationMessage(dao: RegisteredDAO) {
+  if (dao.status === "error") {
+    return dao.lastError || "DAO registered, but autonomous onboarding hit an error";
+  }
+  if (dao.status === "voting") {
+    return `${dao.votesLast24h || 0} vote${dao.votesLast24h === 1 ? "" : "s"} observed for this DAO`;
+  }
+  if (dao.status === "cohort_spawned") {
+    return `${dao.spawnedChildren.length} dedicated child agents spawned`;
+  }
+  if (dao.activeProposalCount > 0) {
+    return `${dao.activeProposalCount} active proposal${dao.activeProposalCount === 1 ? "" : "s"} found — cohort spawn pending next swarm tick`;
+  }
+  if (dao.mirroredProposalCount > 0) {
+    return `${dao.mirroredProposalCount} mirrored proposal${dao.mirroredProposalCount === 1 ? "" : "s"} linked to this DAO`;
+  }
+  if (dao.status === "discovering") {
+    return "Discovery in progress";
+  }
+  return "No active upstream proposals found yet";
 }
 
 function safeReadJson<T>(path: string): T | null {
@@ -425,7 +473,7 @@ function getJudgeReceipt(runId: string): JudgeReceipt | null {
   };
 }
 
-export function startControlServer() {
+export function startControlServer(options: ControlServerOptions = {}) {
   if (process.env.JUDGE_FLOW_HTTP_ENABLED === "false") return;
 
   const port = Number(process.env.PORT || process.env.JUDGE_FLOW_CONTROL_PORT || 8787);
@@ -453,6 +501,14 @@ export function startControlServer() {
       );
     }
 
+    if (method === "GET" && url.pathname === "/agent-log") {
+      const current = safeReadJson<any>(LOG_PATH);
+      if (!current) {
+        return json(res, 404, { error: "agent_log.json unavailable" });
+      }
+      return json(res, 200, current);
+    }
+
     if (method === "GET" && url.pathname === "/daos") {
       return json(res, 200, { daos: getAllRegisteredDAOs() });
     }
@@ -468,6 +524,11 @@ export function startControlServer() {
 
     if (method === "POST" && url.pathname === "/dao/register") {
       const body = await readBody(req);
+      const wait = url.searchParams.get("wait") === "true";
+      const timeoutMs = Math.min(
+        60_000,
+        Math.max(5_000, Number(url.searchParams.get("timeoutMs") || 30_000))
+      );
       const name = typeof body.name === "string" ? body.name.trim() : "";
       const source = body.source === "tally" || body.source === "snapshot" ? body.source : null;
       const rawSourceRef = typeof body.sourceRef === "string" ? body.sourceRef.trim() : "";
@@ -510,13 +571,28 @@ export function startControlServer() {
             daoId: existingBySource.id,
             slug: existingBySource.slug,
             dashboardUrl: buildDashboardUrl(existingBySource.slug),
+            statusUrl: buildStatusUrl(existingBySource.slug),
+            status: existingBySource.status,
+            mirroredProposalCount: existingBySource.mirroredProposalCount,
+            activeProposalCount: existingBySource.activeProposalCount,
+            cohortSpawned: existingBySource.spawnedChildren.length > 0,
           });
         }
 
         const desiredSlug = normalizeSlug(displaySlug || name);
         const existingBySlug = getRegisteredDAOBySlug(desiredSlug);
         if (existingBySlug) {
-          return json(res, 409, { error: `DAO slug already registered: ${desiredSlug}` });
+          return json(res, 409, {
+            error: `DAO slug already registered: ${desiredSlug}`,
+            daoId: existingBySlug.id,
+            slug: existingBySlug.slug,
+            status: existingBySlug.status,
+            dashboardUrl: buildDashboardUrl(existingBySlug.slug),
+            statusUrl: buildStatusUrl(existingBySlug.slug),
+            mirroredProposalCount: existingBySlug.mirroredProposalCount,
+            activeProposalCount: existingBySlug.activeProposalCount,
+            cohortSpawned: existingBySlug.spawnedChildren.length > 0,
+          });
         }
 
         const dao = createRegisteredDAO({
@@ -526,6 +602,7 @@ export function startControlServer() {
           sourceRef: normalizedSourceRef,
           philosophy,
           contact,
+          status: "validated",
         });
 
         let created: RegisteredDAO;
@@ -539,15 +616,56 @@ export function startControlServer() {
           return json(res, 409, { error: err?.message || "DAO registration conflict" });
         }
 
+        let bootstrapMessage: string | undefined;
+        try {
+          if (options.onDaoRegistered) {
+            const bootstrapResult = await options.onDaoRegistered(created, { wait, timeoutMs });
+            if (bootstrapResult) {
+              created =
+                updateRegisteredDAO(created.slug, {
+                  ...(bootstrapResult.status ? { status: bootstrapResult.status } : {}),
+                  ...(typeof bootstrapResult.mirroredProposalCount === "number"
+                    ? { mirroredProposalCount: bootstrapResult.mirroredProposalCount }
+                    : {}),
+                  ...(typeof bootstrapResult.activeProposalCount === "number"
+                    ? { activeProposalCount: bootstrapResult.activeProposalCount }
+                    : {}),
+                  ...(Array.isArray(bootstrapResult.spawnedChildren)
+                    ? { spawnedChildren: bootstrapResult.spawnedChildren }
+                    : {}),
+                }) || getRegisteredDAOBySlug(created.slug) || created;
+              bootstrapMessage = bootstrapResult.message;
+            }
+          } else {
+            created =
+              updateRegisteredDAO(created.slug, {
+                status: created.mirroredProposalCount > 0 ? "mirrored" : "idle",
+              }) || getRegisteredDAOBySlug(created.slug) || created;
+          }
+        } catch (bootstrapErr: any) {
+          created =
+            updateRegisteredDAO(created.slug, {
+              status: "error",
+              lastError: bootstrapErr?.message || "Autonomous onboarding failed",
+            }) || getRegisteredDAOBySlug(created.slug) || created;
+          bootstrapMessage = created.lastError || undefined;
+        }
+
+        created = getRegisteredDAOBySlug(created.slug) || created;
         return json(res, 201, {
           daoId: created.id,
           slug: created.slug,
           status: created.status,
           dashboardUrl: buildDashboardUrl(created.slug),
+          statusUrl: buildStatusUrl(created.slug),
           source: created.source,
           sourceRef: created.sourceRef,
           resolvedName: verified.name,
           resolvedSlug: verified.slug ?? null,
+          mirroredProposalCount: created.mirroredProposalCount,
+          activeProposalCount: created.activeProposalCount,
+          cohortSpawned: created.spawnedChildren.length > 0,
+          message: bootstrapMessage || buildDaoRegistrationMessage(created),
         });
       } catch (err: any) {
         return json(res, 500, { error: err?.message || "Failed to register DAO" });

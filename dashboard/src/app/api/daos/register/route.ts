@@ -13,11 +13,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const upstream = await fetch(`${CONTROL_URL}/dao/register`, {
+    const upstream = await fetch(`${CONTROL_URL}/dao/register${req.nextUrl.search}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(35_000),
     });
 
     const data = await upstream.json();

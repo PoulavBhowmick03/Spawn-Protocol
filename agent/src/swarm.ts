@@ -38,7 +38,7 @@ import {
   isFilecoinAvailable,
   filecoinExplorerUrl,
 } from "./filecoin.js";
-import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats } from "./discovery.js";
+import { startProposalFeed, getDiscoveredDAOs, getLatestProposals, getFeedStats, pollNow } from "./discovery.js";
 import { decodeEventLog, formatEther, parseEther } from "viem";
 import type { DeployedAddresses } from "./types.js";
 import { fileURLToPath } from "url";
@@ -60,12 +60,22 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { startControlServer } from "./control-server.js";
-import { getAllRegisteredDAOs } from "./dao-registry.js";
+import {
+  getAllRegisteredDAOs,
+  getRegisteredDAOBySlug,
+  updateRegisteredDAO,
+  type RegisteredDAO,
+} from "./dao-registry.js";
 import {
   findMirroredProposalByInternal,
   getAllMirroredProposals,
   syncMirroredProposalsForRegisteredDaos,
 } from "./mirror-index.js";
+import {
+  getActiveCohortRecords,
+  markCohortInactive,
+  recordCohortSpawn,
+} from "./cohort-registry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2634,6 +2644,94 @@ type ActiveRegisteredDaoMirror = {
   mirroredAt: string;
 };
 
+function getRegisteredDaoSpawnedChildren(daoSlug: string): string[] {
+  return getActiveCohortRecords(daoSlug)
+    .map((record) => record.label)
+    .sort();
+}
+
+async function refreshRegisteredDaoState(
+  config: ChainConfig,
+  daoSlug: string
+): Promise<ReturnType<typeof getRegisteredDAOBySlug>> {
+  const dao = getRegisteredDAOBySlug(daoSlug);
+  if (!dao) return undefined;
+
+  const mirroredProposalCount = getAllMirroredProposals().filter(
+    (proposal) => proposal.sourceDaoSlug === dao.slug
+  ).length;
+  const activeMirrors = await getActiveRegisteredDaoMirrors(config, { daoSlug: dao.slug });
+  const activeProposalCount = activeMirrors.length;
+  const spawnedChildren = getRegisteredDaoSpawnedChildren(dao.slug);
+
+  let status: RegisteredDAO["status"] = dao.status;
+  if (dao.lastVoteAt) status = "voting";
+  else if (spawnedChildren.length > 0) status = "cohort_spawned";
+  else if (activeProposalCount > 0 || mirroredProposalCount > 0) status = "mirrored";
+  else if (status !== "error") status = "idle";
+
+  return (
+    updateRegisteredDAO(dao.slug, {
+      status,
+      mirroredProposalCount,
+      activeProposalCount,
+      spawnedChildren,
+      timeToFirstMirrorMs:
+        mirroredProposalCount > 0 && dao.timeToFirstMirrorMs == null
+          ? Math.max(0, Date.now() - Date.parse(dao.createdAt))
+          : dao.timeToFirstMirrorMs,
+      ...(status !== "error" ? { lastError: null } : {}),
+    }) || getRegisteredDAOBySlug(dao.slug)
+  );
+}
+
+async function bootstrapRegisteredDao(
+  config: ChainConfig,
+  dao: RegisteredDAO,
+  options: { wait: boolean; timeoutMs: number }
+) {
+  updateRegisteredDAO(dao.slug, {
+    status: "discovering",
+    lastError: null,
+  });
+
+  await refreshRuntimeBudgetState(config, "dao_register_bootstrap");
+  await pollNow(config.governors, config.sendTx);
+  let latest = await refreshRegisteredDaoState(config, dao.slug);
+
+  if (latest?.activeProposalCount && latest.activeProposalCount > 0 && !runtimeBudgetState.pauseScaling) {
+    await dynamicScaling(config);
+    latest = await refreshRegisteredDaoState(config, dao.slug);
+  }
+
+  if (options.wait) {
+    const deadline = Date.now() + options.timeoutMs;
+    while (Date.now() < deadline) {
+      latest = await refreshRegisteredDaoState(config, dao.slug);
+      if (!latest) break;
+      if (["cohort_spawned", "voting", "idle", "error"].includes(latest.status)) break;
+      await sleep(1_000);
+    }
+  }
+
+  latest = latest || (await refreshRegisteredDaoState(config, dao.slug)) || getRegisteredDAOBySlug(dao.slug);
+  return {
+    status: latest?.status,
+    mirroredProposalCount: latest?.mirroredProposalCount ?? 0,
+    activeProposalCount: latest?.activeProposalCount ?? 0,
+    cohortSpawned: (latest?.spawnedChildren.length || 0) > 0,
+    spawnedChildren: latest?.spawnedChildren || [],
+    message:
+      latest?.status === "voting"
+        ? `${latest.votesLast24h || 0} vote${latest?.votesLast24h === 1 ? "" : "s"} observed`
+        : latest?.status === "cohort_spawned"
+          ? `${latest?.spawnedChildren.length || 0} dedicated agents spawned`
+          : (latest?.activeProposalCount || 0) > 0
+            ? `${latest?.activeProposalCount || 0} active proposal${latest?.activeProposalCount === 1 ? "" : "s"} found`
+            : "No active upstream proposals found yet",
+  };
+}
+
 async function getActiveRegisteredDaoMirrors(
   config: ChainConfig,
   options: {
@@ -2641,7 +2739,7 @@ async function getActiveRegisteredDaoMirrors(
     governorAddr?: `0x${string}`;
   } = {}
 ): Promise<ActiveRegisteredDaoMirror[]> {
-  const registeredDaos = getAllRegisteredDAOs().filter((dao) => dao.status === "active");
+  const registeredDaos = getAllRegisteredDAOs().filter((dao) => dao.enabled);
   if (registeredDaos.length === 0) return [];
 
   const synced = syncMirroredProposalsForRegisteredDaos(registeredDaos);
@@ -2949,6 +3047,32 @@ async function dynamicScaling(config: ChainConfig) {
         } catch {}
 
         console.log(`[Scaling] Spawned ${childName} for ${target.daoName} (wallet: ${childWallet.address})`);
+        recordCohortSpawn({
+          daoSlug: target.daoSlug,
+          label: childName,
+          governorAddr: target.governorAddr,
+          governorName: target.governorName,
+          perspective: perspective.suffix,
+          spawnedAt: new Date().toISOString(),
+          spawnReason: "active_proposal",
+          triggeringProposalId: target.activeProposalIds[0] || null,
+          active: true,
+          recalledAt: null,
+          recallReason: null,
+        });
+        const daoRecord = getRegisteredDAOBySlug(target.daoSlug);
+        if (daoRecord) {
+          updateRegisteredDAO(target.daoSlug, {
+            status: "cohort_spawned",
+            activeProposalCount: target.activeProposalIds.length,
+            spawnedChildren: getRegisteredDaoSpawnedChildren(target.daoSlug),
+            timeToFirstSpawnMs:
+              daoRecord.timeToFirstSpawnMs == null
+                ? Math.max(0, Date.now() - Date.parse(daoRecord.createdAt))
+                : daoRecord.timeToFirstSpawnMs,
+            lastError: null,
+          });
+        }
         try {
           logParentAction(
             "dynamic_spawn_registered_dao",
@@ -3031,6 +3155,10 @@ async function dynamicScaling(config: ChainConfig) {
               });
               try { await deregisterSubdomain(child.ensLabel); } catch {}
               const swept = await sweepChildWallet(child.ensLabel, config, child.childAddr);
+              if (targetDaoSlug) {
+                markCohortInactive(child.ensLabel, "registered_dao_idle_no_active_proposals");
+                await refreshRegisteredDaoState(config, targetDaoSlug);
+              }
 
               try {
                 logParentAction(
@@ -3071,7 +3199,9 @@ async function main() {
   loadPersistedChildIdCounter();
   loadPersistedChildKeys();
   seedNextChildIdFromKnownKeys();
-  startControlServer();
+  startControlServer({
+    onDaoRegistered: async (dao, options) => bootstrapRegisteredDao(BASE_CONFIG, dao, options),
+  });
   console.log("╔══════════════════════════════════════════════════════╗");
   console.log("║  SPAWN PROTOCOL — AUTONOMOUS GOVERNANCE SWARM       ║");
   console.log("║  Cross-chain · Self-correcting · Zero human input   ║");

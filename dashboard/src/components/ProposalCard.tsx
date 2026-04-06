@@ -179,29 +179,29 @@ export function ProposalCard({ proposal }: ProposalCardProps) {
             {proposal.sourceDaoName && (
               <span className="text-xs border border-cyan-400/30 bg-cyan-400/5 text-cyan-300 px-1.5 py-0.5 font-mono uppercase">
                 {tallyUrl ? (
-                  <a href={tallyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                    Source: {proposal.sourceDaoName} ↗
-                  </a>
-                ) : (
-                  `Source: ${proposal.sourceDaoName}`
-                )}
+                    <a href={tallyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                    SOURCE_DAO: {proposal.sourceDaoName} ↗
+                    </a>
+                  ) : (
+                  `SOURCE_DAO: ${proposal.sourceDaoName}`
+                  )}
               </span>
             )}
 
             {polySource && (
               <span className="text-xs border border-orange-400/30 bg-orange-400/5 text-orange-300 px-1.5 py-0.5 font-mono uppercase">
                 {polyUrl ? (
-                  <a href={polyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                    Source: {polySource.name} ↗
-                  </a>
-                ) : (
-                  `Source: ${polySource.name}`
-                )}
+                    <a href={polyUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                    SOURCE_DAO: {polySource.name} ↗
+                    </a>
+                  ) : (
+                  `SOURCE_DAO: ${polySource.name}`
+                  )}
               </span>
             )}
 
             <span className={`text-xs border rounded px-1.5 py-0.5 font-mono uppercase ${proposal.daoColor ?? "text-gray-400"} ${proposal.daoBorderColor ?? "border-gray-700"}`}>
-              Sim: {proposal.daoName || simGovernor}
+              SIM_GOV: {proposal.daoName || simGovernor}
             </span>
 
             {proposal.sourceType && (

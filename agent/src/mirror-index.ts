@@ -1,5 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import {
+  getRegisteredDAOBySlug,
+  updateRegisteredDAO,
+} from "./dao-registry.js";
 
 export type MirroredProposalSource =
   | "tally"
@@ -99,6 +103,28 @@ export function hasMirroredProposal(externalProposalKey: string): boolean {
   return !!findMirroredProposalByExternalKey(externalProposalKey);
 }
 
+function updateDaoMirrorMetrics(daoSlug?: string) {
+  if (!daoSlug) return;
+  const dao = getRegisteredDAOBySlug(daoSlug);
+  if (!dao) return;
+  const mirroredProposalCount = getAllMirroredProposals().filter(
+    (proposal) => proposal.sourceDaoSlug === dao.slug
+  ).length;
+  const timeToFirstMirrorMs =
+    mirroredProposalCount > 0 && dao.timeToFirstMirrorMs == null
+      ? Math.max(0, Date.now() - Date.parse(dao.createdAt))
+      : dao.timeToFirstMirrorMs;
+  updateRegisteredDAO(dao.slug, {
+    mirroredProposalCount,
+    status:
+      mirroredProposalCount > 0 && dao.status !== "cohort_spawned" && dao.status !== "voting"
+        ? "mirrored"
+        : dao.status,
+    timeToFirstMirrorMs,
+    lastError: dao.status === "error" ? null : dao.lastError,
+  });
+}
+
 export function recordMirroredProposal(record: MirroredProposalRecord): MirroredProposalRecord {
   const index = readMirrorIndex();
   const existingIndex = index.proposals.findIndex(
@@ -112,11 +138,13 @@ export function recordMirroredProposal(record: MirroredProposalRecord): Mirrored
     const merged = mergeMirroredProposalRecord(index.proposals[existingIndex], record);
     index.proposals[existingIndex] = merged;
     writeMirrorIndex(index);
+    updateDaoMirrorMetrics(merged.sourceDaoSlug);
     return merged;
   }
 
   index.proposals.push(record);
   writeMirrorIndex(index);
+  updateDaoMirrorMetrics(record.sourceDaoSlug);
   return record;
 }
 
@@ -166,6 +194,9 @@ export function syncMirroredProposalsForRegisteredDaos(
 
   if (changed > 0) {
     writeMirrorIndex(index);
+    for (const dao of daos) {
+      updateDaoMirrorMetrics(dao.slug);
+    }
   }
 
   return changed;

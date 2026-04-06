@@ -15,7 +15,19 @@ type RegisteredDAO = {
   philosophy: string;
   contact: string;
   createdAt: string;
-  status: "active" | "pending";
+  status:
+    | "registered"
+    | "validated"
+    | "discovering"
+    | "mirrored"
+    | "cohort_spawned"
+    | "voting"
+    | "idle"
+    | "error";
+  enabled: boolean;
+  mirroredProposalCount: number;
+  activeProposalCount: number;
+  spawnedChildren: string[];
 };
 
 const PHILOSOPHY_CONFIG: Record<string, { label: string; color: string; border: string }> = {
@@ -46,8 +58,8 @@ export default function DAOsPage() {
 
   useEffect(() => { load(); }, []);
 
-  const activeCount  = daos.filter((d) => d.status === "active").length;
-  const pendingCount = daos.filter((d) => d.status === "pending").length;
+  const mirroredCount = daos.filter((d) => d.mirroredProposalCount > 0).length;
+  const cohortCount = daos.filter((d) => d.spawnedChildren.length > 0).length;
 
   return (
     <div className="min-h-screen">
@@ -79,18 +91,18 @@ export default function DAOsPage() {
         </div>
         <div className="border-r border-white/[0.08] px-6 py-4">
           <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">
-            ACTIVE
+            MIRRORED
           </div>
           <div className="font-mono text-3xl font-bold text-[#00ff88] leading-none">
-            {loading ? "—" : activeCount}
+            {loading ? "—" : mirroredCount}
           </div>
         </div>
         <div className="px-6 py-4">
           <div className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest mb-1">
-            PENDING
+            LIVE_COHORTS
           </div>
           <div className="font-mono text-3xl font-bold text-[#f5a623] leading-none">
-            {loading ? "—" : pendingCount}
+            {loading ? "—" : cohortCount}
           </div>
         </div>
       </div>
@@ -156,7 +168,7 @@ export default function DAOsPage() {
           <div className="border border-white/[0.08]">
             {/* Table header */}
             <div className="border-b border-white/[0.08] bg-[#0d0d14] grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-4 px-4 py-2">
-              {["DAO_NAME", "SOURCE", "PHILOSOPHY", "STATUS", "REGISTERED", ""].map((h) => (
+              {["DAO_NAME", "SOURCE", "PHILOSOPHY", "STATUS", "ACTIVITY", ""].map((h) => (
                 <span key={h} className="font-mono text-[10px] text-[#4a4f5e] uppercase tracking-widest">
                   {h}
                 </span>
@@ -166,7 +178,18 @@ export default function DAOsPage() {
             {/* DAO rows */}
             {daos.map((dao, i) => {
               const phil = PHILOSOPHY_CONFIG[dao.philosophy] ?? PHILOSOPHY_CONFIG.neutral;
-              const isActive = dao.status === "active";
+              const statusTone =
+                dao.status === "voting"
+                  ? "text-blue-300 border-blue-400/30 bg-blue-400/5"
+                  : dao.status === "cohort_spawned"
+                    ? "text-[#00ff88] border-[#00ff88]/30 bg-[#00ff88]/5"
+                    : dao.status === "mirrored"
+                      ? "text-cyan-300 border-cyan-400/30 bg-cyan-400/5"
+                      : dao.status === "discovering" || dao.status === "validated" || dao.status === "registered"
+                        ? "text-[#f5a623] border-[#f5a623]/30 bg-[#f5a623]/5"
+                        : dao.status === "error"
+                          ? "text-[#ff3b3b] border-[#ff3b3b]/30 bg-[#ff3b3b]/5"
+                          : "text-[#4a4f5e] border-white/[0.08] bg-transparent";
 
               return (
                 <Link
@@ -198,22 +221,14 @@ export default function DAOsPage() {
 
                   {/* Status */}
                   <span
-                    className={`font-mono text-[10px] uppercase border px-2 py-0.5 flex-shrink-0 ${
-                      isActive
-                        ? "text-[#00ff88] border-[#00ff88]/30 bg-[#00ff88]/5"
-                        : "text-[#f5a623] border-[#f5a623]/30 bg-[#f5a623]/5"
-                    }`}
+                    className={`font-mono text-[10px] uppercase border px-2 py-0.5 flex-shrink-0 ${statusTone}`}
                   >
-                    {isActive ? "ACTIVE" : "PENDING"}
+                    {dao.status.replace(/_/g, " ")}
                   </span>
 
-                  {/* Date */}
-                  <span className="font-mono text-[10px] text-[#4a4f5e] flex-shrink-0 tabular-nums">
-                    {new Date(dao.createdAt).toLocaleDateString("en-US", {
-                      month: "short",
-                      day: "2-digit",
-                      year: "numeric",
-                    }).toUpperCase()}
+                  {/* Activity */}
+                  <span className="font-mono text-[10px] text-[#4a4f5e] flex-shrink-0 tabular-nums uppercase">
+                    {dao.activeProposalCount} active · {dao.spawnedChildren.length} live
                   </span>
 
                   {/* Arrow */}

@@ -6,10 +6,10 @@ import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
   { href: "/", label: "SWARM", icon: "⬡" },
-  { href: "/graph", label: "NETWORK", icon: "◎" },
-  { href: "/proposals", label: "GOVERNANCE", icon: "◈" },
+  { href: "/network", label: "NETWORK", icon: "◎" },
+  { href: "/governance", label: "GOVERNANCE", icon: "◈" },
   { href: "/daos", label: "DAOS", icon: "◭" },
-  { href: "/timeline", label: "LEDGER", icon: "≡" },
+  { href: "/ledger", label: "LEDGER", icon: "≡" },
   { href: "/judge-flow", label: "JUDGE_FLOW", icon: "◇" },
   { href: "/receipt", label: "RECEIPTS", icon: "▣" },
   { href: "/logs", label: "EXEC_LOG", icon: "◉" },

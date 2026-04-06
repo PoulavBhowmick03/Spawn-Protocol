@@ -11,6 +11,11 @@ interface RegistrationResult {
   dashboardUrl: string;
   resolvedName: string;
   status: string;
+  statusUrl?: string;
+  mirroredProposalCount?: number;
+  activeProposalCount?: number;
+  cohortSpawned?: boolean;
+  message?: string;
 }
 
 interface RegisterDAOProps {
@@ -47,7 +52,8 @@ export function RegisterDAO({ onSuccess }: RegisterDAOProps) {
     setResult(null);
 
     try {
-      const res = await fetch("/api/daos/register", {
+      const target = "/api/daos/register?wait=true";
+      const res = await fetch(target, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, source, sourceRef, displaySlug, philosophy, contact }),
@@ -58,7 +64,17 @@ export function RegisterDAO({ onSuccess }: RegisterDAOProps) {
       if (!res.ok) {
         if (res.status === 409 && data.slug) {
           setError(`Already registered as "${data.slug}"`);
-          setResult({ slug: data.slug, dashboardUrl: `/dao/${data.slug}`, resolvedName: name, status: "existing" });
+          setResult({
+            slug: data.slug,
+            dashboardUrl: `/dao/${data.slug}`,
+            resolvedName: name,
+            status: "existing",
+            statusUrl: data.statusUrl,
+            mirroredProposalCount: data.mirroredProposalCount,
+            activeProposalCount: data.activeProposalCount,
+            cohortSpawned: data.cohortSpawned,
+            message: data.message,
+          });
         } else {
           setError(data.error || `Registration failed (${res.status})`);
         }
@@ -70,6 +86,11 @@ export function RegisterDAO({ onSuccess }: RegisterDAOProps) {
         dashboardUrl: `/dao/${data.slug}`,
         resolvedName: data.resolvedName || name,
         status: data.status,
+        statusUrl: data.statusUrl,
+        mirroredProposalCount: data.mirroredProposalCount,
+        activeProposalCount: data.activeProposalCount,
+        cohortSpawned: data.cohortSpawned,
+        message: data.message,
       });
       setName("");
       setSourceRef("");
@@ -112,6 +133,17 @@ export function RegisterDAO({ onSuccess }: RegisterDAOProps) {
                 {result.status === "existing" ? "ALREADY_REGISTERED:" : "REGISTERED:"}{" "}
                 <span className="font-bold">{result.resolvedName}</span>
               </p>
+              {result.message ? (
+                <p className="mt-1 font-mono text-[10px] text-[#00ff88]/70 uppercase">
+                  {result.message}
+                </p>
+              ) : null}
+              {(typeof result.mirroredProposalCount === "number" ||
+                typeof result.activeProposalCount === "number") && (
+                <p className="mt-1 font-mono text-[10px] text-[#4a4f5e] uppercase">
+                  MIRRORED: {result.mirroredProposalCount ?? 0} · ACTIVE: {result.activeProposalCount ?? 0} · COHORT: {result.cohortSpawned ? "SPAWNED" : "PENDING"}
+                </p>
+              )}
               <Link
                 href={result.dashboardUrl}
                 className="mt-1 inline-block font-mono text-[10px] text-[#00ff88]/70 hover:text-[#00ff88] uppercase tracking-wider transition-colors"

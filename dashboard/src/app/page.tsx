@@ -554,7 +554,7 @@ export default function SwarmPage() {
           {/* Footer: link to full timeline */}
           <div className="border-t border-white/[0.08] px-3 py-2 flex-shrink-0">
             <Link
-              href="/timeline"
+              href="/ledger"
               className="font-mono text-[9px] text-[#4a4f5e] uppercase tracking-widest hover:text-[#f5f5f0] transition-colors"
             >
               VIEW_FULL_LEDGER →

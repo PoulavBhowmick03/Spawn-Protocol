@@ -10,6 +10,7 @@ import type { DeployedAddresses, ProposalInfo } from "./types.js";
 import { logChildAction } from "./logger.js";
 import { readJudgeFlowState } from "./judge-flow.js";
 import { findMirroredProposalByInternal, getAllMirroredProposals } from "./mirror-index.js";
+import { getRegisteredDAOBySlug, updateRegisteredDAO } from "./dao-registry.js";
 
 /**
  * Log a child action via IPC if running as a forked process (single-writer pattern),
@@ -527,6 +528,21 @@ async function childCycle(
       console.log(
         `[Child:${childLabel}] Voted ${decision} on proposal ${i} (tx: ${receipt.transactionHash})${usedDelegation ? " [via delegation]" : ""}`
       );
+      if (mirroredProposal?.sourceDaoSlug) {
+        const dao = getRegisteredDAOBySlug(mirroredProposal.sourceDaoSlug);
+        if (dao) {
+          updateRegisteredDAO(dao.slug, {
+            status: "voting",
+            lastVoteAt: new Date().toISOString(),
+            timeToFirstVoteMs:
+              dao.timeToFirstVoteMs == null
+                ? Math.max(0, Date.now() - Date.parse(dao.createdAt))
+                : dao.timeToFirstVoteMs,
+            votesLast24h: Math.max(0, dao.votesLast24h) + 1,
+            lastError: null,
+          });
+        }
+      }
       try {
         const judgePayload = currentJudgeRunId
           ? {

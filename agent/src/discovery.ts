@@ -121,7 +121,7 @@ function buildDiscoverySources(): DiscoverySourceConfig {
   }
 
   for (const dao of getAllRegisteredDAOs()) {
-    if (dao.status !== "active") continue;
+    if (!dao.enabled) continue;
     if (dao.source === "tally") {
       const existing = tallyById.get(dao.sourceRef);
       tallyById.set(dao.sourceRef, {
@@ -745,7 +745,7 @@ async function pollOnce(
 ): Promise<DiscoveredProposal[]> {
   const newlyMirrored: DiscoveredProposal[] = [];
   const candidateProposals: DiscoveredProposal[] = [];
-  const registeredDaos = getAllRegisteredDAOs();
+  const registeredDaos = getAllRegisteredDAOs().filter((dao) => dao.enabled);
   syncMirroredProposalsForRegisteredDaos(registeredDaos);
   const sources = buildDiscoverySources();
   const mirroredKeys = new Set(
