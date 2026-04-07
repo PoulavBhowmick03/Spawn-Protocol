@@ -1053,7 +1053,10 @@ async function initChain(config: ChainConfig) {
   } // end governors loop
   } // end if (existingChildren === 0n)
 
-  // Get children and launch as separate processes
+  await ensureActiveChildProcesses(config);
+}
+
+async function ensureActiveChildProcesses(config: ChainConfig) {
   const children = (await config.readClient.readContract({
     address: config.factory,
     abi: SpawnFactoryABI,
@@ -1070,123 +1073,149 @@ async function initChain(config: ChainConfig) {
       console.log(`  ${child.ensLabel}: skipping judge proof child during normal process reattachment`);
       continue;
     }
+
     const key = `${config.name}:${child.ensLabel}`;
-    if (!childProcesses.has(key)) {
-      let childKey = childWalletKeys.get(child.ensLabel);
+    if (childProcesses.has(key)) continue;
 
-      // If no key in map, try to find it by deriving wallets and matching the operator
-      let onchainOperator: `0x${string}` | undefined;
-      if (!childKey) {
-        try {
-          onchainOperator = await config.readClient.readContract({
-            address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
-          }) as `0x${string}`;
+    console.log(`  ${child.ensLabel}: missing local child process — reattaching`);
+    try {
+      logParentAction(
+        "reattach_child_process",
+        {
+          chain: config.name,
+          child: child.ensLabel,
+          governance: child.governance,
+          reason: "missing_local_process",
+        },
+        {
+          childAddr: child.childAddr,
+        }
+      );
+    } catch {}
 
-          if (onchainOperator && onchainOperator !== "0x0000000000000000000000000000000000000000") {
-            // If operator is the parent wallet itself, use the parent key directly
-            if (onchainOperator.toLowerCase() === account.address.toLowerCase()) {
-              childKey = process.env.PRIVATE_KEY as `0x${string}`;
-              saveChildKey(child.ensLabel, childKey);
-              console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
-            } else {
-              // Search derived wallets to find matching key (expanded to 1000)
-              for (let id = 0; id < CHILD_ID_RECOVERY_SCAN_LIMIT; id++) {
-                const w = deriveChildWallet(id);
-                if (w.address.toLowerCase() === onchainOperator.toLowerCase()) {
-                  childKey = w.privateKey;
-                  saveChildKey(child.ensLabel, childKey);
-                  console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
-                  break;
-                }
+    let childKey = childWalletKeys.get(child.ensLabel);
+
+    // If no key in map, try to find it by deriving wallets and matching the operator
+    let onchainOperator: `0x${string}` | undefined;
+    if (!childKey) {
+      try {
+        onchainOperator = await config.readClient.readContract({
+          address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
+        }) as `0x${string}`;
+
+        if (onchainOperator && onchainOperator !== "0x0000000000000000000000000000000000000000") {
+          // If operator is the parent wallet itself, use the parent key directly
+          if (onchainOperator.toLowerCase() === account.address.toLowerCase()) {
+            childKey = process.env.PRIVATE_KEY as `0x${string}`;
+            saveChildKey(child.ensLabel, childKey);
+            console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
+          } else {
+            // Search derived wallets to find matching key (expanded to 1000)
+            for (let id = 0; id < CHILD_ID_RECOVERY_SCAN_LIMIT; id++) {
+              const w = deriveChildWallet(id);
+              if (w.address.toLowerCase() === onchainOperator.toLowerCase()) {
+                childKey = w.privateKey;
+                saveChildKey(child.ensLabel, childKey);
+                console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
+                break;
               }
             }
           }
-        } catch {}
-      }
-
-      // If we have the child key but the on-chain operator is not the child wallet
-      // (e.g. it was previously set to the DeleGator), reset it so the child can sign
-      // its own transactions without racing on the shared parent wallet nonce.
-      if (childKey) {
-        try {
-          const childAcct = privateKeyToAccount(childKey);
-          if (!onchainOperator) {
-            onchainOperator = await config.readClient.readContract({
-              address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
-            }) as `0x${string}`;
-          }
-          if (
-            onchainOperator &&
-            onchainOperator !== "0x0000000000000000000000000000000000000000" &&
-            onchainOperator.toLowerCase() !== childAcct.address.toLowerCase() &&
-            onchainOperator.toLowerCase() !== account.address.toLowerCase()
-          ) {
-            // Operator is DeleGator or something else — reset to child wallet
-            await config.sendTx({
-              address: child.childAddr as `0x${string}`,
-              abi: ChildGovernorABI,
-              functionName: "setOperator",
-              args: [childAcct.address],
-            });
-            try { await updateSubdomainAddress(child.ensLabel, childAcct.address); } catch {}
-            console.log(`  ${child.ensLabel}: operator reset to child wallet (was ${onchainOperator.slice(0, 10)}...)`);
-          }
-        } catch {}
-      }
-
-      // Top up recovered operators before reattaching child processes.
-      if (childKey) {
-        try {
-          const childAccount = privateKeyToAccount(childKey);
-          await fundChildWallet(childAccount.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
-        } catch {}
-      }
-
-      // Create (or recreate) a delegation for recovered children so the child
-      // process receives it via DELEGATION_DATA env var and can route votes
-      // through the DeleGator rather than calling the governor directly.
-      let recoveredDelegation: DelegationRecord | undefined;
-      if (childKey) {
-        try {
-          const childAccount = privateKeyToAccount(childKey);
-          recoveredDelegation = await createVotingDelegation(
-            child.childAddr as `0x${string}`,  // scope to ChildGovernor clone, not MockGovernor
-            childAccount.address as `0x${string}`,
-            100,
-            child.ensLabel
-          );
-          storeDelegationForChild(child.ensLabel, recoveredDelegation);
-          console.log(`  ${child.ensLabel}: delegation recreated (hash=${recoveredDelegation.delegationHash.slice(0, 18)}...)`);
-        } catch (delErr: any) {
-          console.log(`  ${child.ensLabel}: delegation recreation failed (${delErr?.message?.slice(0, 60)})`);
         }
-      }
+      } catch {}
+    }
 
-      // Last resort: if we still have no key (e.g. operator was DeleGator and persisted
-      // mapping pre-dates this fix), derive a fresh wallet and re-key the child onchain.
-      // The parent EOA is always authorized via `msg.sender == parent` in onlyAuthorized.
-      if (!childKey) {
-        try {
-          const rekeyId = allocateChildId();
-          const rekeyWallet = deriveChildWallet(rekeyId);
-          await fundChildWallet(rekeyWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
+    // If we have the child key but the on-chain operator is not the child wallet
+    // (e.g. it was previously set to the DeleGator), reset it so the child can sign
+    // its own transactions without racing on the shared parent wallet nonce.
+    if (childKey) {
+      try {
+        const childAcct = privateKeyToAccount(childKey);
+        if (!onchainOperator) {
+          onchainOperator = await config.readClient.readContract({
+            address: child.childAddr, abi: ChildGovernorABI, functionName: "operator",
+          }) as `0x${string}`;
+        }
+        if (
+          onchainOperator &&
+          onchainOperator !== "0x0000000000000000000000000000000000000000" &&
+          onchainOperator.toLowerCase() !== childAcct.address.toLowerCase() &&
+          onchainOperator.toLowerCase() !== account.address.toLowerCase()
+        ) {
+          // Operator is DeleGator or something else — reset to child wallet
           await config.sendTx({
             address: child.childAddr as `0x${string}`,
             abi: ChildGovernorABI,
             functionName: "setOperator",
-            args: [rekeyWallet.address],
+            args: [childAcct.address],
           });
-          childKey = rekeyWallet.privateKey;
-          saveChildKey(child.ensLabel, childKey);
-          try { await updateSubdomainAddress(child.ensLabel, rekeyWallet.address); } catch {}
-          console.log(`  ${child.ensLabel}: re-keyed with new wallet ${rekeyWallet.address.slice(0, 10)}...`);
-        } catch (rekeyErr: any) {
-          console.log(`  ${child.ensLabel}: re-key failed (${rekeyErr?.message?.slice(0, 60)}) — spawning with shared wallet`);
+          try { await updateSubdomainAddress(child.ensLabel, childAcct.address); } catch {}
+          console.log(`  ${child.ensLabel}: operator reset to child wallet (was ${onchainOperator.slice(0, 10)}...)`);
         }
-      }
-
-      spawnChildProcess(child.childAddr, child.governance, child.ensLabel, config.treasury, childKey, config.name, undefined, recoveredDelegation);
+      } catch {}
     }
+
+    // Top up recovered operators before reattaching child processes.
+    if (childKey) {
+      try {
+        const childAccount = privateKeyToAccount(childKey);
+        await fundChildWallet(childAccount.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
+      } catch {}
+    }
+
+    // Create (or recreate) a delegation for recovered children so the child
+    // process receives it via DELEGATION_DATA env var and can route votes
+    // through the DeleGator rather than calling the governor directly.
+    let recoveredDelegation: DelegationRecord | undefined;
+    if (childKey) {
+      try {
+        const childAccount = privateKeyToAccount(childKey);
+        recoveredDelegation = await createVotingDelegation(
+          child.childAddr as `0x${string}`,  // scope to ChildGovernor clone, not MockGovernor
+          childAccount.address as `0x${string}`,
+          100,
+          child.ensLabel
+        );
+        storeDelegationForChild(child.ensLabel, recoveredDelegation);
+        console.log(`  ${child.ensLabel}: delegation recreated (hash=${recoveredDelegation.delegationHash.slice(0, 18)}...)`);
+      } catch (delErr: any) {
+        console.log(`  ${child.ensLabel}: delegation recreation failed (${delErr?.message?.slice(0, 60)})`);
+      }
+    }
+
+    // Last resort: if we still have no key (e.g. operator was DeleGator and persisted
+    // mapping pre-dates this fix), derive a fresh wallet and re-key the child onchain.
+    // The parent EOA is always authorized via `msg.sender == parent` in onlyAuthorized.
+    if (!childKey) {
+      try {
+        const rekeyId = allocateChildId();
+        const rekeyWallet = deriveChildWallet(rekeyId);
+        await fundChildWallet(rekeyWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
+        await config.sendTx({
+          address: child.childAddr as `0x${string}`,
+          abi: ChildGovernorABI,
+          functionName: "setOperator",
+          args: [rekeyWallet.address],
+        });
+        childKey = rekeyWallet.privateKey;
+        saveChildKey(child.ensLabel, childKey);
+        try { await updateSubdomainAddress(child.ensLabel, rekeyWallet.address); } catch {}
+        console.log(`  ${child.ensLabel}: re-keyed with new wallet ${rekeyWallet.address.slice(0, 10)}...`);
+      } catch (rekeyErr: any) {
+        console.log(`  ${child.ensLabel}: re-key failed (${rekeyErr?.message?.slice(0, 60)}) — spawning with shared wallet`);
+      }
+    }
+
+    spawnChildProcess(
+      child.childAddr,
+      child.governance,
+      child.ensLabel,
+      config.treasury,
+      childKey,
+      config.name,
+      undefined,
+      recoveredDelegation
+    );
   }
 }
 
@@ -3331,6 +3360,12 @@ async function main() {
       `Venice=${runtimeBudgetState.veniceTokens} tokens | ` +
       `reasons=${runtimeBudgetState.reasons.join(",") || "healthy"}`
     );
+
+    try {
+      await ensureActiveChildProcesses(BASE_CONFIG);
+    } catch (err: any) {
+      console.log(`[Children] Reattach check failed: ${err?.message?.slice(0, 80)}`);
+    }
 
     // Dynamic scaling first so newly mirrored registered DAOs can get their
     // dedicated cohort without waiting for a long alignment pass to finish.
