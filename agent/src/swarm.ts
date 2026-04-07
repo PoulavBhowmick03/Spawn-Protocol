@@ -419,7 +419,7 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
     if (!isJudgeChildLabel(child.ensLabel) || exemptLabels.includes(child.ensLabel)) continue;
 
     try {
-      const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+      const proc = childProcesses.get(getChildProcessKey(config.name, child.ensLabel, child.childAddr));
       if (proc) proc.kill();
     } catch {}
 
@@ -440,7 +440,7 @@ async function cleanupStaleJudgeChildren(config: ChainConfig, exemptLabels: stri
     if (!recalled) continue;
 
     if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
-      deleteChildKey(child.ensLabel);
+      deleteChildKey(child.childAddr, [child.ensLabel]);
     }
   }
 }
@@ -587,7 +587,7 @@ async function fundChildWallet(
 
 async function sweepChildWallet(deadLabel: string, config: ChainConfig, childAddr?: string): Promise<boolean> {
   try {
-    let deadKey = childWalletKeys.get(deadLabel);
+    let deadKey = getChildKey(childAddr, deadLabel);
     if (!deadKey && childAddr) {
       try {
         const operator = await config.readClient.readContract({
@@ -603,7 +603,7 @@ async function sweepChildWallet(deadLabel: string, config: ChainConfig, childAdd
           const recoveredId = findDerivedChildIdByAddress(operator);
           if (recoveredId !== null) {
             deadKey = deriveChildWallet(recoveredId).privateKey;
-            saveChildKey(deadLabel, deadKey);
+            saveChildKey(childAddr, deadKey);
             console.log(`  [Sweep] Recovered key for ${deadLabel} (childId=${recoveredId})`);
           }
         }
@@ -640,15 +640,43 @@ const strikes = new Map<string, number>();
 const CHILD_KEYS_PATH = join(__dirname, "..", "..", "child_keys.json");
 const CHILD_ID_STATE_PATH = join(__dirname, "..", "..", "child_id_state.json");
 const CHILD_ID_RECOVERY_SCAN_LIMIT = Number(process.env.CHILD_ID_RECOVERY_SCAN_LIMIT || "4096");
-const childWalletKeys = new Map<string, `0x${string}`>(); // label => child private key
+const childWalletKeys = new Map<string, `0x${string}`>(); // childAddr (preferred) or label => child private key
 let nextChildId = 1; // persisted across restarts via CHILD_ID_STATE_PATH
+
+function isChildAddressIdentifier(identifier?: string): identifier is `0x${string}` {
+  return Boolean(identifier && /^0x[a-fA-F0-9]{40}$/.test(identifier));
+}
+
+function normalizeChildKeyIdentifier(identifier: string) {
+  return isChildAddressIdentifier(identifier) ? identifier.toLowerCase() : identifier;
+}
+
+function persistChildKeys() {
+  try {
+    const data: Record<string, string> = {};
+    for (const [identifier, key] of childWalletKeys) data[identifier] = key;
+    writeFileSync(CHILD_KEYS_PATH, JSON.stringify(data, null, 2));
+  } catch {}
+}
+
+function getChildKey(childAddr?: string, label?: string) {
+  if (childAddr) {
+    const key = childWalletKeys.get(normalizeChildKeyIdentifier(childAddr));
+    if (key) return key;
+  }
+  if (label) {
+    const key = childWalletKeys.get(normalizeChildKeyIdentifier(label));
+    if (key) return key;
+  }
+  return undefined;
+}
 
 function loadPersistedChildKeys() {
   try {
     if (existsSync(CHILD_KEYS_PATH)) {
       const data = JSON.parse(readFileSync(CHILD_KEYS_PATH, "utf-8")) as Record<string, string>;
-      for (const [label, key] of Object.entries(data)) {
-        childWalletKeys.set(label, key as `0x${string}`);
+      for (const [identifier, key] of Object.entries(data)) {
+        childWalletKeys.set(normalizeChildKeyIdentifier(identifier), key as `0x${string}`);
       }
       console.log(`[Keys] Loaded ${childWalletKeys.size} child keys from disk`);
     }
@@ -686,22 +714,27 @@ function allocateChildId(): number {
   return childId;
 }
 
-function saveChildKey(label: string, key: `0x${string}`) {
-  childWalletKeys.set(label, key);
-  try {
-    const data: Record<string, string> = {};
-    for (const [l, k] of childWalletKeys) data[l] = k;
-    writeFileSync(CHILD_KEYS_PATH, JSON.stringify(data, null, 2));
-  } catch {}
+function saveChildKey(identifier: string, key: `0x${string}`, aliases: string[] = []) {
+  childWalletKeys.set(normalizeChildKeyIdentifier(identifier), key);
+  for (const alias of aliases) {
+    childWalletKeys.set(normalizeChildKeyIdentifier(alias), key);
+  }
+  persistChildKeys();
 }
 
-function deleteChildKey(label: string) {
-  childWalletKeys.delete(label);
-  try {
-    const data: Record<string, string> = {};
-    for (const [l, k] of childWalletKeys) data[l] = k;
-    writeFileSync(CHILD_KEYS_PATH, JSON.stringify(data, null, 2));
-  } catch {}
+function deleteChildKey(identifier?: string, aliases: string[] = []) {
+  if (identifier) {
+    childWalletKeys.delete(normalizeChildKeyIdentifier(identifier));
+  }
+  for (const alias of aliases) {
+    childWalletKeys.delete(normalizeChildKeyIdentifier(alias));
+  }
+  persistChildKeys();
+}
+
+function getChildProcessKey(chainName: string | undefined, label: string, childAddr?: string) {
+  const identity = childAddr ? childAddr.toLowerCase() : label;
+  return chainName ? `${chainName}:${identity}` : identity;
 }
 
 // ── Multi-DAO Addresses (3 governors per chain) ──
@@ -886,7 +919,7 @@ async function repairDuplicateChildOperators(config: ChainConfig, children: any[
           functionName: "setOperator",
           args: [freshWallet.address],
         });
-        saveChildKey(child.ensLabel, freshWallet.privateKey);
+        saveChildKey(child.childAddr, freshWallet.privateKey);
         try {
           await updateSubdomainAddress(child.ensLabel, freshWallet.address);
         } catch {}
@@ -895,6 +928,77 @@ async function repairDuplicateChildOperators(config: ChainConfig, children: any[
         );
       } catch (repairErr: any) {
         console.log(`[Repair] ${child.ensLabel}: duplicate-operator repair failed (${repairErr?.message?.slice(0, 80)})`);
+      }
+    }
+  }
+}
+
+async function repairDuplicateChildLabels(config: ChainConfig, children: any[]) {
+  const childrenByLabel = new Map<string, any[]>();
+
+  for (const child of children) {
+    if (isJudgeChildLabel(child.ensLabel)) continue;
+    const siblings = childrenByLabel.get(child.ensLabel) || [];
+    siblings.push(child);
+    childrenByLabel.set(child.ensLabel, siblings);
+  }
+
+  for (const [label, siblings] of childrenByLabel) {
+    if (siblings.length < 2) continue;
+    const ordered = [...siblings].sort((a, b) => {
+      const aId = BigInt(String(a.id));
+      const bId = BigInt(String(b.id));
+      if (aId === bId) return 0;
+      return aId > bId ? -1 : 1;
+    });
+    const [keep, ...duplicates] = ordered;
+    console.log(
+      `[Repair] Duplicate label ${label} active for child ids ${ordered
+        .map((child) => String(child.id))
+        .join(", ")} — keeping ${keep.id}`
+    );
+
+    for (const child of duplicates) {
+      try {
+        const proc = childProcesses.get(getChildProcessKey(config.name, child.ensLabel, child.childAddr));
+        if (proc) proc.kill();
+      } catch {}
+
+      try { await revokeAllForChild(child.childAddr, child.ensLabel, "duplicate_active_label"); } catch {}
+
+      try {
+        await config.sendTx({
+          address: config.factory,
+          abi: SpawnFactoryABI,
+          functionName: "recallChild",
+          args: [child.id],
+        });
+        const swept = await sweepChildWallet(child.ensLabel, config, child.childAddr);
+        if (swept) {
+          deleteChildKey(child.childAddr);
+        }
+        try {
+          logParentAction(
+            "repair_duplicate_label",
+            {
+              chain: config.name,
+              child: child.ensLabel,
+              childId: String(child.id),
+              keptChildId: String(keep.id),
+              reason: "duplicate_active_label",
+            },
+            {
+              childAddr: child.childAddr,
+              keptChildAddr: keep.childAddr,
+              walletSwept: swept,
+            }
+          );
+        } catch {}
+        console.log(`[Repair] Recalled duplicate label ${label} child ${child.id}`);
+      } catch (repairErr: any) {
+        console.log(
+          `[Repair] ${label}: duplicate-label recall failed for child ${child.id} (${repairErr?.message?.slice(0, 80)})`
+        );
       }
     }
   }
@@ -1057,7 +1161,7 @@ async function initChain(config: ChainConfig) {
 }
 
 async function ensureActiveChildProcesses(config: ChainConfig) {
-  const children = (await config.readClient.readContract({
+  let children = (await config.readClient.readContract({
     address: config.factory,
     abi: SpawnFactoryABI,
     functionName: "getActiveChildren",
@@ -1065,6 +1169,13 @@ async function ensureActiveChildProcesses(config: ChainConfig) {
 
   await seedNextChildIdFromActiveChildren(config, children);
   await repairDuplicateChildOperators(config, children);
+  await repairDuplicateChildLabels(config, children);
+
+  children = (await config.readClient.readContract({
+    address: config.factory,
+    abi: SpawnFactoryABI,
+    functionName: "getActiveChildren",
+  })) as any[];
 
   console.log(`[${config.name}] Active children: ${children.length}`);
 
@@ -1074,7 +1185,7 @@ async function ensureActiveChildProcesses(config: ChainConfig) {
       continue;
     }
 
-    const key = `${config.name}:${child.ensLabel}`;
+    const key = getChildProcessKey(config.name, child.ensLabel, child.childAddr);
     if (childProcesses.has(key)) continue;
 
     console.log(`  ${child.ensLabel}: missing local child process — reattaching`);
@@ -1093,7 +1204,7 @@ async function ensureActiveChildProcesses(config: ChainConfig) {
       );
     } catch {}
 
-    let childKey = childWalletKeys.get(child.ensLabel);
+    let childKey = getChildKey(child.childAddr, child.ensLabel);
 
     // If no key in map, try to find it by deriving wallets and matching the operator
     let onchainOperator: `0x${string}` | undefined;
@@ -1107,7 +1218,7 @@ async function ensureActiveChildProcesses(config: ChainConfig) {
           // If operator is the parent wallet itself, use the parent key directly
           if (onchainOperator.toLowerCase() === account.address.toLowerCase()) {
             childKey = process.env.PRIVATE_KEY as `0x${string}`;
-            saveChildKey(child.ensLabel, childKey);
+            saveChildKey(child.childAddr, childKey);
             console.log(`  ${child.ensLabel}: operator is parent wallet — using parent key`);
           } else {
             // Search derived wallets to find matching key (expanded to 1000)
@@ -1115,7 +1226,7 @@ async function ensureActiveChildProcesses(config: ChainConfig) {
               const w = deriveChildWallet(id);
               if (w.address.toLowerCase() === onchainOperator.toLowerCase()) {
                 childKey = w.privateKey;
-                saveChildKey(child.ensLabel, childKey);
+                saveChildKey(child.childAddr, childKey);
                 console.log(`  ${child.ensLabel}: recovered wallet (childId=${id})`);
                 break;
               }
@@ -1198,7 +1309,7 @@ async function ensureActiveChildProcesses(config: ChainConfig) {
           args: [rekeyWallet.address],
         });
         childKey = rekeyWallet.privateKey;
-        saveChildKey(child.ensLabel, childKey);
+        saveChildKey(child.childAddr, childKey, [child.ensLabel]);
         try { await updateSubdomainAddress(child.ensLabel, rekeyWallet.address); } catch {}
         console.log(`  ${child.ensLabel}: re-keyed with new wallet ${rekeyWallet.address.slice(0, 10)}...`);
       } catch (rekeyErr: any) {
@@ -1343,13 +1454,13 @@ function spawnChildProcess(
       }
     });
 
+    const processKey = getChildProcessKey(chainName, label, childAddr);
+
     child.on("exit", (code) => {
       console.log(`[Swarm] ${label} exited (code ${code})`);
       childProcesses.delete(processKey);
     });
 
-    // Use same key format as the dedup check: config.name:label
-    const processKey = chainName ? `${chainName}:${label}` : label;
     childProcesses.set(processKey, child);
     const walletAddr = childPrivateKey ? "(unique wallet)" : "(shared wallet)";
     console.log(`  ${label}.spawn.eth: PID ${child.pid} ${walletAddr}`);
@@ -1466,6 +1577,7 @@ async function spawnJudgeProofChild(config: ChainConfig, runId: string, governor
   });
 
   const spawnedChild = await getChildFromReceipt(config, receipt, proofChildLabel);
+  saveChildKey(spawnedChild.childAddr, childWallet.privateKey, [proofChildLabel]);
 
   const proofAgent = await registerJudgeAgentWithRetries(`spawn://${proofChildLabel}.spawn.eth`, {
     agentType: "child",
@@ -1804,7 +1916,7 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
     } catch {}
   });
 
-  const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+  const proc = childProcesses.get(getChildProcessKey(config.name, child.ensLabel, child.childAddr));
   if (proc) proc.kill();
   try { await revokeAllForChild(child.childAddr, child.ensLabel, `judge_flow_forced_score_${forcedScore}`); } catch {}
   const terminationReceipt = await config.sendTx({
@@ -1856,7 +1968,7 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
   const respawnChildId = allocateChildId();
   const respawnWallet = deriveChildWallet(respawnChildId);
   if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
-    deleteChildKey(child.ensLabel);
+    deleteChildKey(child.childAddr, [child.ensLabel]);
   }
   await fundChildWallet(respawnWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
   saveChildKey(respawnLabel, respawnWallet.privateKey);
@@ -1869,6 +1981,7 @@ async function executeJudgeFailureAndRespawn(config: ChainConfig, runId: string)
   });
 
   const respawned = await getChildFromReceipt(config, respawnReceipt, respawnLabel);
+  saveChildKey(respawned.childAddr, respawnWallet.privateKey, [respawnLabel]);
 
   const respawnAgent = await registerJudgeAgentWithRetries(`spawn://${respawnLabel}.spawn.eth`, {
     agentType: "child",
@@ -1968,7 +2081,7 @@ async function executeJudgeFlow(config: ChainConfig, queuedState: JudgeFlowState
     await cleanupStaleJudgeChildren(config);
     const spawnedProofChild = await spawnJudgeProofChild(config, runId, queuedState.governor);
     const proposal = await createJudgeProposalOnChain(config, runId, queuedState.governor);
-    const proofChildKey = childWalletKeys.get(spawnedProofChild.proofChildLabel);
+    const proofChildKey = getChildKey(spawnedProofChild.child.childAddr, spawnedProofChild.proofChildLabel);
     if (!proofChildKey) {
       throw new Error(`Judge proof child wallet missing for ${spawnedProofChild.proofChildLabel}`);
     }
@@ -2290,7 +2403,7 @@ async function evaluateChainChildren(config: ChainConfig) {
 
         if (s >= STRIKES_TO_KILL || clamped <= 10) {
           console.log(`  TERMINATING ${child.ensLabel}`);
-          const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+          const proc = childProcesses.get(getChildProcessKey(config.name, child.ensLabel, child.childAddr));
           if (proc) proc.kill();
 
           // Step 1: Revoke delegation FIRST (needs ENS subdomain to still exist)
@@ -2389,7 +2502,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           } catch {}
 
           if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
-            deleteChildKey(child.ensLabel);
+            deleteChildKey(child.childAddr, [child.ensLabel]);
           }
           await fundChildWallet(newChildWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
 
@@ -2407,6 +2520,7 @@ async function evaluateChainChildren(config: ChainConfig) {
             })) as any[];
             const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
             if (respawned) {
+              saveChildKey(respawned.childAddr, newChildWallet.privateKey, [newLabel]);
               let respawnedAgentId: bigint | undefined;
               try {
                 const governanceName = config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO";
@@ -2487,7 +2601,7 @@ async function evaluateChainChildren(config: ChainConfig) {
         }));
         if (onchainScore < ALIGNMENT_THRESHOLD && onchainScore > 0) {
           console.log(`  ${child.ensLabel}: onchain score ${onchainScore} < ${ALIGNMENT_THRESHOLD} — TERMINATING (fallback)`);
-          const proc = childProcesses.get(`${config.name}:${child.ensLabel}`);
+          const proc = childProcesses.get(getChildProcessKey(config.name, child.ensLabel, child.childAddr));
           if (proc) proc.kill();
 
           // Step 1: Revoke delegation FIRST (needs ENS subdomain)
@@ -2562,7 +2676,7 @@ async function evaluateChainChildren(config: ChainConfig) {
           } catch {}
 
           if (await sweepChildWallet(child.ensLabel, config, child.childAddr)) {
-            deleteChildKey(child.ensLabel);
+            deleteChildKey(child.childAddr, [child.ensLabel]);
           }
           await fundChildWallet(newChildWallet.address, CHILD_WALLET_TARGET_BALANCE_ETH, config.name);
           saveChildKey(newLabel, newChildWallet.privateKey);
@@ -2580,6 +2694,7 @@ async function evaluateChainChildren(config: ChainConfig) {
             })) as any[];
             const respawned = newChildren.find((c: any) => c.ensLabel === newLabel);
             if (respawned) {
+              saveChildKey(respawned.childAddr, newChildWallet.privateKey, [newLabel]);
               let respawnedAgentId: bigint | undefined;
               try {
                 const governanceName = config.governors.find((gov) => gov.addr.toLowerCase() === String(child.governance).toLowerCase())?.name || "Unknown DAO";
@@ -2946,6 +3061,7 @@ async function dynamicScaling(config: ChainConfig) {
         })) as any[];
         const newChild = freshChildren.find((c: any) => c.ensLabel === childName);
         if (newChild) {
+          saveChildKey(newChild.childAddr, childWallet.privateKey, [childName]);
           // Create delegation BEFORE fork so it can be passed via env var
           let scalingDelegation: DelegationRecord | undefined;
           try {
@@ -3033,6 +3149,7 @@ async function dynamicScaling(config: ChainConfig) {
         const newChild = freshChildren.find((child: any) => child.ensLabel === childName);
 
         if (newChild) {
+          saveChildKey(newChild.childAddr, childWallet.privateKey, [childName]);
           let delegationRecord: DelegationRecord | undefined;
           try {
             delegationRecord = await createVotingDelegation(
@@ -3174,7 +3291,7 @@ async function dynamicScaling(config: ChainConfig) {
           if (!hasActiveProposals) {
             console.log(`[Scaling] ${child.ensLabel} idle for ${idle} cycles with no active proposals — recalling`);
             try {
-              const procKey = `${config.name}:${child.ensLabel}`;
+              const procKey = getChildProcessKey(config.name, child.ensLabel, child.childAddr);
               const proc = childProcesses.get(procKey);
               if (proc) proc.kill();
 
@@ -3205,7 +3322,7 @@ async function dynamicScaling(config: ChainConfig) {
               idleCycleCount.delete(key);
               idleCycleCount.delete(`${key}:votes`);
               strikes.delete(key);
-              if (swept) deleteChildKey(child.ensLabel);
+              if (swept) deleteChildKey(child.childAddr, [child.ensLabel]);
             } catch (err: any) {
               console.log(`[Scaling] Recall failed: ${err?.message?.slice(0, 40)}`);
             }
